@@ -1,0 +1,120 @@
+بناءً على اعتماد **Frigate NVR** كركيزة أساسية للمشروع، تم إعادة صياغة بنية النظام وتحديث التلخيص التقني الموجه للـ AI أو المهندس المنفذ. هذا التعديل يقلل التعقيد البرمجي بنسبة 80%؛ حيث يتكفل Frigate بإدارة البث، كشف الحركة، واقتطاع الصور عالي الدقة، بينما يتفرغ الكود الخاص بنا لمعالجة الذكاء الاصطناعي التوليدي والتقارير.
+
+---
+
+# Comprehensive Project Architecture: AI-Powered Edge Security System
+
+### 1. Core Technology Stack
+
+* **Infrastructure & Server:** Debian Linux running Docker & Docker Compose.
+* **Camera Ingest & NVR:** **Frigate NVR** (Containerized).
+* **Substream (`640x360@15fps / H.264`):** Continuous background analysis for motion and object detection.
+* **Main Stream (`1080p / H.265`):** Instant high-res snapshots and video clip recordings triggered on events.
+
+
+* **Messaging & Communication:** Mosquitto MQTT Broker (For real-time event triggers between Frigate and Python scripts).
+* **AI & Vision Pipeline:**
+* **Frigate Internal Detector:** OpenVINO / Coral / TensorRT for real-time person & object tracking.
+* **YOLOv8 (Custom):** For specialized fire & smoke detection.
+* **Ollama (LLaVA-7b / Qwen2-VL):** Local Vision-Language Model for natural language scene descriptions.
+* **YOLOv8-Pose / DeepFace:** Attribute, gait, and face identification.
+
+
+* **Database & Storage:** SQLite for event histories + local folder storage for high-res snapshots.
+
+---
+
+### 2. System Architecture Diagram
+
+```
+                       ┌─────────────────────────┐
+                       │   UNV IP Cameras (LAN)  │
+                       └────────────┬────────────┘
+                                    │ Dual RTSP Streams
+                                    ▼
+                       ┌─────────────────────────┐
+                       │      Frigate NVR        │
+                       │   (Docker Container)    │
+                       └────────────┬────────────┘
+                                    │ Real-time Event JSON + 1080p Image
+                                    ▼ (via MQTT Broker)
+                       ┌─────────────────────────┐
+                       │  Python AI Middleware   │
+                       └────────────┬────────────┘
+                                    │
+         ┌──────────────────────────┼──────────────────────────┐
+         ▼                          ▼                          ▼
+  [Phase 1: Fire Alert]     [Phase 2: Event Logging]   [Phase 3: Person Identity]
+  YOLOv8 Fire Model         Ollama LLaVA Description   Pose / Face Recognition
+         │                          │                          │
+         └──────────────────────────┼──────────────────────────┘
+                                    ▼
+                       ┌─────────────────────────┐
+                       │ SQLite Database & Log   │
+                       │ Daily Summary Report    │
+                       └─────────────────────────┘
+
+```
+
+---
+
+### 3. Phased Implementation Roadmap
+
+#### Phase 1: Fire & Smoke Real-Time Alerting
+
+* **Logic:** Frigate passes continuous frames (or custom detector plugin) to a fine-tuned YOLOv8 model.
+* **Execution:** Immediate priority execution. If Fire/Smoke is detected with high confidence ($> 0.65$), skip queue and issue instant notification (Webhook/Telegram) with a high-res snapshot.
+
+#### Phase 2: Event Capture & Daily Natural Language Summarization
+
+* **Logic:**
+1. Frigate detects person/object activity via low-resource Substream.
+2. Frigate captures a high-resolution 1080p snapshot from the Main Stream and publishes an MQTT message to topic `frigate/events`.
+3. A Python listener receives the payload, grabs the image, and routes it to local **LLaVA** via Ollama API.
+4. LLaVA generates a 1-2 sentence description.
+5. Description + Timestamp + Image Path are saved into SQLite.
+
+
+* **Cron Daily Summary (11:59 PM):** A scheduled Python script aggregates all today's text logs and feeds them into an LLM to generate a structured timeline summary (`Summary_YYYY-MM-DD.txt`).
+
+#### Phase 3: Person Attribute, Gait & Identity Profiling
+
+* **Logic:**
+1. When an event contains a person, the snapshot is evaluated by `DeepFace` (or `face_recognition`).
+2. **IF Known:** Append identity tag (e.g., *"Employee: Ali"*) to event log.
+3. **IF Unknown:** Run `YOLOv8-Pose` + LLaVA with targeted prompt to extract physical traits: *Estimated height, clothing colors, posture, carried items, gait speed*.
+
+
+
+---
+
+### 4. Database Schema (`events_log.db`)
+
+```sql
+CREATE TABLE IF NOT EXISTS security_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT UNIQUE, -- Frigate Event ID
+    timestamp TEXT NOT NULL,
+    camera_name TEXT NOT NULL,
+    event_type TEXT CHECK(event_type IN ('FIRE_SMOKE', 'KNOWN_PERSON', 'UNKNOWN_PERSON', 'GENERAL_MOTION')),
+    entity_name TEXT DEFAULT 'UNKNOWN',
+    description TEXT,
+    snapshot_path TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+```
+
+---
+
+### 5. Direct Master Prompt for AI Developer / Implementation Agent
+
+> *"You are an expert Edge AI and Systems Software Engineer. We are building a multi-phased edge security AI system on Debian using Docker, Frigate NVR, Mosquitto MQTT, Python, SQLite, and Ollama (LLaVA).*
+> *The infrastructure relies on **Frigate NVR** to handle RTSP streams, motion detection, and 1080p snapshot generation upon event creation. Frigate outputs events over MQTT.*
+> *Please generate the complete project setup consisting of:*
+> 1. *A production-ready `docker-compose.yml` including Frigate NVR and Mosquitto MQTT broker.*
+> 2. *A `frigate.yml` configuration file supporting UNV camera dual-streams (Substream for detect, Main stream for snapshots).*
+> 3. *A Python MQTT listener script (`ai_processor.py`) that subscribes to Frigate events, processes snapshots with local Ollama LLaVA for description generation, handles Phase 1 Fire checks, and stores structured logs into SQLite.*
+> 4. *A daily summary generator script (`daily_summary.py`) triggered by Cron to compile end-of-day reports."*
+>
+>

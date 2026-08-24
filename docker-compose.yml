@@ -1,0 +1,49 @@
+# ============================================================
+# Frigate NVR + Mosquitto MQTT broker - Phase 0 baseline
+# Target: Debian host, CPU-only (OpenVINO detector)
+# ============================================================
+
+services:
+  frigate:
+    container_name: frigate
+    image: ghcr.io/blakeblackshear/frigate:stable
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # Shared memory (/dev/shm) used by FFmpeg decode buffers.
+    # Frigate recommends >=254MB for 10 cameras with hardware decode
+    # (it logged "SHM size too small" at 128mb).
+    shm_size: "256mb"
+    # Pass RTSP credentials from .env into the container so that
+    # config/frigate.yml can reference them with !env_var tags.
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"   # Frigate Web UI (HTTP)
+      - "8971:8971"   # Frigate Web UI (TLS, self-signed)
+      - "8554:8554"   # RTSP restream
+      - "8555:8555/tcp" # WebRTC
+      - "8555:8555/udp" # WebRTC
+    volumes:
+      - ./config:/config
+      - ./media:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000 # 1GB tmpfs cache for recordings/snapshots in RAM
+    # Intel Quick Sync Video hardware decode (i7-9700 iGPU / UHD 630).
+    # Enabled because /dev/dri/renderD128 is present on the host.
+    # If VAAPI decode fails, remove this device and drop
+    # hwaccel_args from config/frigate.yml to fall back to software decode.
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+
+  mqtt:
+    container_name: mqtt
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883" # MQTT broker (Frigate publishes events here)
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log

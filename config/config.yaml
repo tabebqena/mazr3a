@@ -1,0 +1,199 @@
+# ============================================================
+# Frigate NVR configuration - Phase 0 baseline
+# NOTE: Frigate 0.17+ reads this file as config/config.yaml.
+# Detector: OpenVINO on CPU (Intel i7-9700)
+# Cameras: 10 (9 UNV/VCP + 1 Hikvision)
+# MQTT: publish events to local Mosquitto broker (service "mqtt")
+#
+# CREDENTIALS: Frigate 0.17 does NOT substitute !env_var tags,
+# so the RTSP username/password are written inline below.
+# Replace CHANGE_ME with the real camera password:
+#     sed -i 's/CHANGE_ME/YOUR_REAL_PASSWORD/' config/config.yaml
+# This file now contains secrets - do not commit it.
+#
+# RECORDING: disabled in Phase 0. The high-res main streams
+# (3200x1800 HEVC @20fps) overwhelmed the CPU when continuously
+# decoded for the record role and produced invalid segments.
+# Only the lightweight 640x360 detect substreams are pulled now.
+# Re-enable recording later (see README "Re-enable recording").
+# ============================================================
+
+mqtt:
+  host: mqtt
+  port: 1883
+  topic_prefix: frigate
+  client_id: frigate
+
+# ------------------------------------------------------------------
+# Logging
+# Frigate writes logs to /config/frigate.log (mounted ./config) and
+# to container stdout -> view with: docker compose logs frigate
+# Set default: debug while troubleshooting camera/ffmpeg issues.
+# ------------------------------------------------------------------
+logger:
+  default: info
+
+# ------------------------------------------------------------------
+# OpenVINO CPU detector
+# Paths verified inside the Frigate 0.17.2 container:
+#   model:    /openvino-model/ssdlite_mobilenet_v2.xml  (bundled)
+#   labelmap: /labelmap.txt                             (bundled)
+# Explicit paths are required - Frigate 0.17's default OpenVINO
+# model path points to a non-bundled model and fails to start.
+# ------------------------------------------------------------------
+detectors:
+  ov:
+    type: openvino
+    device: CPU
+    model:
+      path: /openvino-model/ssdlite_mobilenet_v2.xml
+      labelmap_path: /labelmap.txt
+
+# ------------------------------------------------------------------
+# Objects to track and detection thresholds
+# ------------------------------------------------------------------
+objects:
+  track:
+    - person
+    - car
+  filters:
+    person:
+      min_score: 0.5
+      threshold: 0.7
+
+# ------------------------------------------------------------------
+# Recording - DISABLED for Phase 0 (see header comment).
+# Kept as documentation for when it is re-enabled.
+# ------------------------------------------------------------------
+record:
+  enabled: false
+
+# Snapshots are generated from the detect stream and stay enabled.
+snapshots:
+  enabled: true
+  retain:
+    default: 14
+  timestamp: true
+  bounding_box: true
+
+# ------------------------------------------------------------------
+# Motion detection sensitivity (Frigate defaults - standard sensitivity)
+#   threshold: 25     higher = fewer pixels count as motion (LESS sensitive)
+#   contour_area: 10  higher = motion must be a bigger blob (LESS sensitive)
+#   delta_alpha: 0.2  higher = background adapts faster (LESS sensitive)
+# Lower values increase sensitivity -> more motion triggers.
+# ------------------------------------------------------------------
+motion:
+  threshold: 25
+  contour_area: 10
+  delta_alpha: 0.2
+  improve_contrast: false
+
+# ------------------------------------------------------------------
+# Cameras - 10 total (detect-only in Phase 0)
+# UNV:       detect substream /media/video2 (640x360@12)
+# Hikvision: detect substream /Streaming/Channels/102
+# Credentials are INLINE (Frigate 0.17 ignores !env_var). Replace CHANGE_ME.
+# Main streams are NOT pulled in Phase 0 (recording disabled).
+# ------------------------------------------------------------------
+cameras:
+
+  cam01:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.200:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam02:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.201:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam03:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.202:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam04:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.203:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam05:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.204:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam06:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.205:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam07:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.206:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  # ---- Hikvision camera (192.168.1.207) ----
+  # Substream (102) resolution is auto-detected by Frigate.
+  cam08:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.207:554/Streaming/Channels/102
+          roles: [detect]
+    detect:
+      fps: 5
+
+  cam09:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.208:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  cam10:
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:CHANGE_ME@192.168.1.209:554/media/video2
+          roles: [detect]
+    detect:
+      width: 640
+      height: 360
+      fps: 5

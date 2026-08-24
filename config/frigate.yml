@@ -1,0 +1,9 @@
+# ============================================================
+# DEPRECATED - Frigate 0.17+ does NOT read this file.
+#
+# The active config file is: config/config.yaml
+# Please edit config/config.yaml instead of this file.
+#
+# This stub is kept only to prevent accidental reuse of the
+# old filename. It can be deleted from the workspace and host.
+# ============================================================

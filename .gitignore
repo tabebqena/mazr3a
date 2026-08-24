@@ -1,0 +1,18 @@
+# Secrets - never commit camera credentials
+.env
+
+# Frigate media (recordings, snapshots, cache)
+media/
+
+# Mosquitto runtime data and logs
+mosquitto/data/
+mosquitto/log/
+
+# SQLite databases (added in later phases)
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor noise
+.DS_Store
+*.swp

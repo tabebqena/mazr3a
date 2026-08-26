@@ -14,6 +14,10 @@
 # docker-compose.yml), e.g.:
 #     FRIGATE_RTSP_USER=admin
 #     FRIGATE_RTSP_PASS=REAL_CAMERA_PASSWORD
+# The Hikvision cam08 uses SEPARATE credentials
+# (FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS) because its admin
+# password differs from the UNV cameras - using the shared password
+# makes ffmpeg fail with "DESCRIBE failed: 401 Unauthorized".
 # Edit .env (or .env.example -> .env) to change credentials - never
 # edit the paths in this file. See .env.example and README.md.
 #
@@ -25,6 +29,18 @@
 # events (see record block below). Disk-cap cleanup is handled by a
 # host cron running scripts/cleanup_media.sh (see cleanup_media.conf).
 # ============================================================
+
+# ------------------------------------------------------------------
+# IMPORTANT: keep this version in sync with the running Frigate
+# (Frigate 0.17.x = "0.17-0"). If `version` is missing, Frigate's
+# migrate_frigate_config treats the file as 0.13 and REWRITES
+# config.yaml on every fresh start, dropping fields it does not
+# understand - including the OpenVINO detector model width/height
+# below (which are required to match ssdlite_mobilenet_v2's 300x300
+# input). With the version declared, migration is skipped and the
+# file is left untouched.
+# ------------------------------------------------------------------
+version: 0.17-0
 
 mqtt:
   host: mqtt
@@ -42,32 +58,96 @@ logger:
   default: info
 
 # ------------------------------------------------------------------
-# OpenVINO CPU detector
-# Paths verified inside the Frigate 0.17.2 container:
-#   model:    /openvino-model/ssdlite_mobilenet_v2.xml  (bundled)
-#   labelmap: /labelmap.txt                             (bundled)
-# Explicit paths are required - Frigate 0.17's default OpenVINO
-# model path points to a non-bundled model and fails to start.
+# Global FFmpeg options - FORCE SOFTWARE DECODE (no VAAPI/QSV).
+# Frigate 0.17 AUTO-DETECTS vaapi ("Automatically detected vaapi
+# hwaccel for video decoding") and applies it even when no
+# hwaccel_args are set. Hardware decoding of the HEVC camera streams
+# on this host crashes ffmpeg (VPS 0 does not exist / Failed to sync
+# surface / Failed to download frame: -5), breaking the detect streams
+# and yielding zero motion/detection/events (and therefore no
+# recordings). An explicit empty `hwaccel_args: []` forces software
+# decode, which is reliable on the i7-9700 for 10 substreams at 5fps.
+# ------------------------------------------------------------------
+ffmpeg:
+  hwaccel_args: []
+
+# ------------------------------------------------------------------
+# Detection model (TOP-LEVEL) - REQUIRED for the OpenVINO detector.
+#
+# IMPORTANT (Frigate 0.17): a per-detector `model:` block is
+# DISCARDED at load ("users should not set model themselves" in
+# frigate/config/config.py). The detector's model (including its
+# input width/height) is built from THIS top-level `model:` block,
+# with the detector's flat `model_path:` overriding only the path.
+#
+# width/height MUST match the model's real input tensor:
+# ssdlite_mobilenet_v2 expects 300x300. If they are missing, Frigate
+# defaults the resize to 320x320 and every detect frame crashes the
+# detector with:
+#   ValueError: could not broadcast input array from shape
+#   (1,320,320,3) into shape (1,300,300,3)
+# which stops detection and crash-loops Frigate (the detect toggles
+# in the UI never stay checked; clicking one black-screens the page).
+# If you later swap in a custom model, set width/height to THAT
+# model's input size.
+# ------------------------------------------------------------------
+model:
+  path: /openvino-model/ssdlite_mobilenet_v2.xml
+  labelmap_path: /labelmap.txt
+  width: 300
+  height: 300
+
+# ------------------------------------------------------------------
+# OpenVINO CPU detector (paths verified in the 0.17.2 container).
+# The flat `model_path:` overrides the model path; input width/height
+# come from the top-level `model:` block above.
 # ------------------------------------------------------------------
 detectors:
   ov:
     type: openvino
     device: CPU
-    model:
-      path: /openvino-model/ssdlite_mobilenet_v2.xml
-      labelmap_path: /labelmap.txt
+    model_path: /openvino-model/ssdlite_mobilenet_v2.xml
 
 # ------------------------------------------------------------------
 # Objects to track and detection thresholds
+# Animal detection Part 1 (plans/animal-motion-detection.md): the
+# bundled ssdlite_mobilenet_v2 model already recognizes these COCO
+# animal classes, so we only add them to track + per-class filters.
+# Farm animals are often small/far, so keep their min_score/threshold
+# slightly lower than person. Tune after observing false positives.
 # ------------------------------------------------------------------
 objects:
   track:
     - person
     - car
+    - dog
+    - cat
+    - bird
+    - horse
+    - sheep
+    - cow
   filters:
     person:
       min_score: 0.5
       threshold: 0.7
+    dog:
+      min_score: 0.45
+      threshold: 0.6
+    cat:
+      min_score: 0.45
+      threshold: 0.6
+    bird:
+      min_score: 0.4
+      threshold: 0.5
+    horse:
+      min_score: 0.45
+      threshold: 0.6
+    sheep:
+      min_score: 0.45
+      threshold: 0.6
+    cow:
+      min_score: 0.45
+      threshold: 0.6
 
 # ------------------------------------------------------------------
 # Recording - EVENT-ONLY (Phase 0b).
@@ -81,14 +161,20 @@ objects:
 # ------------------------------------------------------------------
 record:
   enabled: true
-  retain:
-    default: 7
-    mode: active_objects
-  events:
-    pre_capture: 3
+  # Frigate 0.17 schema. The pre-0.17 `record.retain` / `record.events`
+  # keys are REJECTED by 0.17 ("Extra inputs are not permitted") - if
+  # present, the config is invalid and Frigate starts in safe mode with
+  # no cameras. Retain alerts + detection clips for 7 days each, with a
+  # 3s pre-capture (same intent as the old `retain.default: 7` +
+  # `events.pre_capture: 3`).
+  alerts:
     retain:
-      default: 7
-      mode: active_objects
+      days: 7
+    pre_capture: 3
+  detections:
+    retain:
+      days: 7
+    pre_capture: 3
 
 # Snapshots are generated from the detect stream and stay enabled.
 snapshots:
@@ -128,6 +214,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -138,6 +225,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -148,6 +236,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -158,6 +247,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -168,6 +258,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -178,6 +269,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -188,18 +280,24 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
 
   # ---- Hikvision camera (192.168.1.207) ----
   # Substream (102) resolution is auto-detected by Frigate.
+  # Uses SEPARATE credentials (FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS)
+  # because the Hikvision admin password differs from the UNV cameras - the
+  # shared FRIGATE_RTSP_PASS makes ffmpeg fail with "DESCRIBE failed:
+  # 401 Unauthorized". Set the real Hikvision password in .env.
   cam08:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
+        - path: rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
           roles: [detect]
     detect:
+      enabled: true
       fps: 5
 
   cam09:
@@ -208,6 +306,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5
@@ -218,6 +317,7 @@ cameras:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
           roles: [detect]
     detect:
+      enabled: true
       width: 640
       height: 360
       fps: 5

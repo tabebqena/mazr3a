@@ -5,17 +5,25 @@
 # Cameras: 10 (9 UNV/VCP + 1 Hikvision)
 # MQTT: publish events to local Mosquitto broker (service "mqtt")
 #
-# CREDENTIALS: Frigate 0.17 does NOT substitute !env_var tags,
-# so the RTSP username/password are written inline below.
-# Replace CHANGE_ME with the real camera password:
-#     sed -i 's/CHANGE_ME/YOUR_REAL_PASSWORD/' config/config.yaml
-# This file now contains secrets - do not commit it.
+# CREDENTIALS: NO secrets are stored in this file (safe to commit).
+# Frigate 0.17 substitutes environment variables in the camera RTSP
+# paths below using Python str.format() on {FRIGATE_...} placeholders
+# applied to the ffmpeg input path. The old !env_var YAML tag is NOT
+# supported in 0.17 - if used, the literal text is left in the URL.
+# The container receives the values from .env (env_file in
+# docker-compose.yml), e.g.:
+#     FRIGATE_RTSP_USER=admin
+#     FRIGATE_RTSP_PASS=REAL_CAMERA_PASSWORD
+# Edit .env (or .env.example -> .env) to change credentials - never
+# edit the paths in this file. See .env.example and README.md.
 #
-# RECORDING: disabled in Phase 0. The high-res main streams
+# RECORDING: EVENT-ONLY since Phase 0b. The high-res main streams
 # (3200x1800 HEVC @20fps) overwhelmed the CPU when continuously
-# decoded for the record role and produced invalid segments.
-# Only the lightweight 640x360 detect substreams are pulled now.
-# Re-enable recording later (see README "Re-enable recording").
+# decoded for the record role and produced invalid segments, so only
+# the lightweight 640x360 detect substreams are pulled. Frigate now
+# records video clips from the detect stream ONLY on motion/object
+# events (see record block below). Disk-cap cleanup is handled by a
+# host cron running scripts/cleanup_media.sh (see cleanup_media.conf).
 # ============================================================
 
 mqtt:
@@ -62,11 +70,25 @@ objects:
       threshold: 0.7
 
 # ------------------------------------------------------------------
-# Recording - DISABLED for Phase 0 (see header comment).
-# Kept as documentation for when it is re-enabled.
+# Recording - EVENT-ONLY (Phase 0b).
+# Frigate records a video clip from the detect substream only when
+# motion / a tracked object is detected. No continuous recording, so
+# CPU and disk stay low. Main high-res streams are NOT pulled (they
+# previously overwhelmed the CPU and produced invalid segments).
+# Disk-cap backstop: host cron runs scripts/cleanup_media.sh, which
+# deletes the oldest media files when usage exceeds the cap defined
+# in config/cleanup_media.conf.
 # ------------------------------------------------------------------
 record:
-  enabled: false
+  enabled: true
+  retain:
+    default: 7
+    mode: active_objects
+  events:
+    pre_capture: 3
+    retain:
+      default: 7
+      mode: active_objects
 
 # Snapshots are generated from the detect stream and stay enabled.
 snapshots:

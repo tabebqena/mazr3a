@@ -1,0 +1,16 @@
+# ============================================================
+# Frigate media disk-cap cleanup - crontab entry
+#
+# Install on the host (overwrites the whole crontab):
+#     crontab scripts/crontab.sample
+# or merge into an existing crontab:
+#     crontab -e     # paste the line below
+#
+# The script writes its own log to config/cleanup_media.conf's
+# LOG_FILE, so cron output is sent to /dev/null.
+#
+# Adjust /home/dr/frigate if the host deploy dir is different.
+# ============================================================
+
+# Run every 30 minutes
+*/30 * * * * /home/dr/frigate/scripts/cleanup_media.sh >> /dev/null 2>&1

@@ -13,8 +13,12 @@ services:
     # Frigate recommends >=254MB for 10 cameras with hardware decode
     # (it logged "SHM size too small" at 128mb).
     shm_size: "256mb"
-    # Pass RTSP credentials from .env into the container so that
-    # config/frigate.yml can reference them with !env_var tags.
+    # Pass camera credentials from .env into the container. Frigate 0.17
+    # reads them via {FRIGATE_...} placeholders in config/config.yaml
+    # (str.format() on FRIGATE_-prefixed vars; the old !env_var YAML tag
+    # is NOT supported and would be left literal in the URL). Keep the
+    # variable names in .env prefixed with FRIGATE_, e.g.:
+    #   FRIGATE_RTSP_USER / FRIGATE_RTSP_PASS  (see .env.example)
     env_file:
       - .env
     ports:

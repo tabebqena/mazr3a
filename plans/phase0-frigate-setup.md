@@ -44,7 +44,7 @@ Note: cam08 Hikvision uses `Streaming/Channels/101` and `102` for main/sub inste
 |---|---|
 | `docker-compose.yml` | Frigate service (`ghcr.io/blakeblackshear/frigate:stable`, ports `5000`/`8971`, `config/` + `media/` mounts, `env_file: .env`, `restart: unless-stopped`) + Mosquitto service (`eclipse-mosquitto:2`, port `1883`, volume for config/persist) |
 | `config/config.yaml` | MQTT block (`host: mqtt`, `port: 1883`); `detectors` → OpenVINO on CPU; `objects` → person, car; `record` + `snapshots` on events only; 10 camera blocks. Named `config.yaml` because Frigate 0.17+ ignores `frigate.yml` |
-| `.env` | `RTSP_USER`, `RTSP_PASS` placeholders; camera IP list documented in comments |
+| `.env` | `FRIGATE_RTSP_USER`, `FRIGATE_RTSP_PASS` placeholders (Frigate 0.17 requires the `FRIGATE_` prefix); camera IP list documented in comments |
 | `.gitignore` | Ignore `.env`, `media/`, `*.db` |
 | `README.md` | SSH transfer to `~/frigate`, `docker compose up -d`, verification checklist, optional QSV note |
 
@@ -54,9 +54,9 @@ cam01:
   enabled: true
   ffmpeg:
     inputs:
-      - path: rtsp://!env_var RTSP_USER:!env_var RTSP_PASS@192.168.1.200:554/media/video1
+      - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video1
         roles: [record]
-      - path: rtsp://!env_var RTSP_USER:!env_var RTSP_PASS@192.168.1.200:554/media/video2
+      - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
         roles: [detect]
   detect:
     width: 640
@@ -69,10 +69,18 @@ cam01:
 ```
 cam08 uses `/Streaming/Channels/101` (main) and `/Streaming/Channels/102` (detect, no fixed size → auto-detected).
 
+> **Credential mechanism (anti-regression):** Frigate 0.17 substitutes
+> `{FRIGATE_RTSP_USER}` / `{FRIGATE_RTSP_PASS}` placeholders in the camera ffmpeg
+> input path using Python `str.format()` on **`FRIGATE_`-prefixed** env vars loaded
+> from `.env` via `env_file` (`frigate/config/env.py` → `EnvString`). It does **not**
+> support the old `!env_var` tag (the literal text stays in the URL → 401), and only
+> `FRIGATE_`-prefixed names are substituted. Keep the variable names prefixed with
+> `FRIGATE_` — see the header of `config/config.yaml` and README.
+
 ## 5. Design Decisions
 
 1. **OpenVINO CPU detector** — only option without GPU/Coral; sufficient for 10 low-res substreams at 5fps.
-2. **`!env_var` credentials** — Frigate supports env substitution; keeps secrets out of YAML and git.
+2. **`{FRIGATE_...}` env credentials** — Frigate 0.17 dropped the old `!env_var` tag; it substitutes `{FRIGATE_...}` placeholders in the ffmpeg input path via `str.format()` using only `FRIGATE_`-prefixed env vars from `.env` (`env_file`). Keeps secrets out of YAML and git.
 3. **Event-only record + snapshots** — no continuous recording; low disk/CPU. Main stream read only on demand.
 4. **Detect fps capped at 5** — reduces CPU load; 12fps source is fine.
 5. **Software decode first** — if CPU saturates, add Intel QSV via `/dev/dri` (documented as optional follow-up, not in initial config).

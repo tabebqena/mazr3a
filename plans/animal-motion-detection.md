@@ -47,6 +47,11 @@ already tight i7-9700. Therefore:
 
 ## Part 1 — Enable built-in COCO animal classes (config only)
 
+> **STATUS: IMPLEMENTED (2026-08-26).** `dog`, `cat`, `bird`, `horse`, `sheep`, `cow`
+> were added to `objects.track` with per-class filters in `config/config.yaml` and
+> deployed/verified. Remaining farm animals (`goat`, `camel`, `donkey`, `fox`, `wolf`)
+> still require the Part 2 custom model.
+
 ### 1.1 Edit [`config/config.yaml`](../config/config.yaml:55)
 
 Add the farm-relevant COCO animal classes to `objects.track` and per-class filters:
@@ -199,16 +204,25 @@ Add a volume to the `frigate` service in [`docker-compose.yml`](../docker-compos
 
 ### 2.5 Point the detector at the custom model
 
-In [`config/config.yaml`](../config/config.yaml:44):
+In [`config/config.yaml`](../config/config.yaml:44), set the model in the **top-level
+`model:` block** (NOT under the detector). Frigate 0.17 discards a per-detector `model:`
+block ("users should not set model themselves" in `frigate/config/config.py`) and builds
+the detector's model from the top-level `model:` block, with the detector's flat
+`model_path:` only overriding the path. The `width`/`height` must match the custom
+model's real input size (this was the cause of the 320×320-vs-300×300 detector crash):
 
 ```yaml
+model:
+  path: /models/animals/best.xml
+  labelmap_path: /models/animals/labelmap.txt
+  width: <custom model input width>    # e.g. 640 for YOLOv8n at 640
+  height: <custom model input height>  # must match the model's real input tensor
+
 detectors:
   ov:
     type: openvino
     device: CPU
-    model:
-      path: /models/animals/best.xml
-      labelmap_path: /models/animals/labelmap.txt
+    model_path: /models/animals/best.xml
 ```
 
 Update `objects.track` to the union of classes (custom + COCO) and add filters for the

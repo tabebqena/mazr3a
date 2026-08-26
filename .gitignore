@@ -8,6 +8,9 @@ media/
 mosquitto/data/
 mosquitto/log/
 
+# Frigate runtime logs (diagnostic artifact, not source)
+frigate.log
+
 # SQLite databases (added in later phases)
 *.db
 *.db-wal

@@ -39,16 +39,23 @@ phases and are not part of this baseline.
 
 | Camera | IP | Brand | Main stream | Substream (detect) |
 |---|---|---|---|---|
-| cam01 | 192.168.1.200 | UNV | `/media/video1` (3200x1800@20) | `/media/video2` (640x360@12) |
-| cam02 | 192.168.1.201 | UNV | `/media/video1` | `/media/video2` |
-| cam03 | 192.168.1.202 | UNV | `/media/video1` | `/media/video2` |
-| cam04 | 192.168.1.203 | UNV | `/media/video1` | `/media/video2` |
-| cam05 | 192.168.1.204 | UNV | `/media/video1` | `/media/video2` |
-| cam06 | 192.168.1.205 | UNV | `/media/video1` | `/media/video2` |
-| cam07 | 192.168.1.206 | UNV | `/media/video1` | `/media/video2` |
-| cam08 | 192.168.1.207 | Hikvision | `/Streaming/Channels/101` (2560x1440@20) | `/Streaming/Channels/102` |
-| cam09 | 192.168.1.208 | UNV | `/media/video1` | `/media/video2` |
-| cam10 | 192.168.1.209 | UNV | `/media/video1` | `/media/video2` |
+| cam01 | 192.168.1.200 | UNV | `/media/video1` (3200x1800@20) | `/media/video2` (H.264 640x360@12) |
+| cam02 | 192.168.1.201 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam03 | 192.168.1.202 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam04 | 192.168.1.203 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam05 | 192.168.1.204 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam06 | 192.168.1.205 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam07 | 192.168.1.206 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam08 | 192.168.1.207 | Hikvision | `/Streaming/Channels/101` (2560x1440@20) | `/Streaming/Channels/102` (H.264 640x360@12) |
+| cam09 | 192.168.1.208 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+| cam10 | 192.168.1.209 | UNV | `/media/video1` | `/media/video2` (H.264 640x360@12) |
+
+> **Note (2026-08-27):** all 10 substreams were switched from H.265/HEVC to **H.264 with
+> U-Code (smart coding) disabled** so Frigate can decode them cleanly (no more
+> `VPS 0 does not exist` / `Invalid data` / `Discarding`). This raises LAN bandwidth
+> slightly (negligible — same network); remote/mobile viewers use a separate
+> low-bandwidth transcoded stream instead (see Path B in
+> [`plans/improve-camera-substreams.md`](plans/improve-camera-substreams.md)).
 
 ## Prerequisites (Debian host)
 
@@ -258,7 +265,7 @@ The global `ffmpeg: hwaccel_args: []` in the config forces software decode (fine
 | A camera shows "no video" | Verify stream from the host:
 `ffprobe -rtsp_transport tcp -v error -show_entries stream=codec_name,width,height -of csv "rtsp://admin:PASS@IP:554/media/video1"` |
 | Hikvision cam08 crash-loops with `DESCRIBE failed: 401 Unauthorized` | The Hikvision admin password differs from the UNV cameras — the shared `FRIGATE_RTSP_PASS` is rejected. Set the real Hikvision credentials as `FRIGATE_HIK_RTSP_USER` / `FRIGATE_HIK_RTSP_PASS` in `.env` (cam08 already uses these in `config/config.yaml`), then `docker compose up -d --force-recreate frigate`. Verify first from the host: `ffprobe -rtsp_transport tcp -v error -show_entries stream=codec_name,width,height -of csv "rtsp://admin:HIK_PASS@192.168.1.207:554/Streaming/Channels/102"` |
-| `Invalid data found when processing input` / `Invalid or missing video stream in segment ... Discarding` for cam01/02/03/09/10 only | Camera-side, not a Frigate config bug (cam04–07 work with the identical config). In each failing camera's web UI check the substream `/media/video2`: ensure it is enabled, set to H.264 (not H.265), and actively streaming; then `docker compose restart frigate`. Verify from the host: `ffprobe -rtsp_transport tcp -v error -show_entries stream=codec_name,width,height -of csv "rtsp://admin:PASS@192.168.1.20X:554/media/video2"` |
+| `Invalid data found when processing input` / `Invalid or missing video stream in segment ... Discarding` for cam01/02/03/09/10 only | **Resolved (2026-08-27):** the failing cameras' HEVC substreams sent the VPS parameter set in-band, which ffmpeg could not read (`VPS 0 does not exist`). Fixed camera-side by setting each substream `/media/video2` to **H.264 with U-Code disabled** (all 10 cameras now report `codec_name=h264`). If it recurs, check a camera's substream is H.264 (not H.265), U-Code off, enabled and streaming, then `docker compose restart frigate`. Verify from the host: `ffprobe -rtsp_transport tcp -v error -show_entries stream=codec_name,width,height -of csv "rtsp://admin:PASS@192.168.1.20X:554/media/video2"` |
 | "Invalid data found when processing input" / discarded recordings | Known with `preset-vaapi` on this setup. Software decode is now the default (no `hwaccel_args` in `config/config.yaml`). If you want to retry QSV later, add `hwaccel_args: preset-vaapi` per camera and keep the `devices:` block in `docker-compose.yml` |
 | Detect toggles in the UI never stay checked; clicking one freezes/blackens the page; log shows `ValueError: could not broadcast input array from shape (1,320,320,3) into shape (1,300,300,3)` then `Detection appears to have stopped. Exiting Frigate...` | The model input size is wrong. The bundled `ssdlite_mobilenet_v2` needs `300`×`300`. In `config/config.yaml` put `width: 300` / `height: 300` in the **top-level `model:` block** (Frigate 0.17 discards a per-detector `model:` block), keep `version: 0.17-0` (prevents migration rewriting the file), and use flat `model_path:` on the detector. Also ensure the `record:` block uses the 0.17 `alerts`/`detections` schema (the old `retain`/`events` keys make the config invalid → safe mode with no cameras). Then `docker compose up -d --force-recreate frigate` and verify `detectors.ov.model.width == 300` via `/api/config` |
 | High CPU during decode | Software decode of 10 substreams at 5fps is fine on the i7-9700; the high-res main streams are only decoded on demand. If CPU is high, reduce per-camera `detect.fps` from 5 to 3 in `config/config.yaml` |

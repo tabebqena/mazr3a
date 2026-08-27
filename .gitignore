@@ -19,3 +19,4 @@ frigate.log
 # OS / editor noise
 .DS_Store
 *.swp
+.roo/rules/sshuser.md

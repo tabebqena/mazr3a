@@ -8,7 +8,8 @@ Provides:
   - ensure_creds():   validate Telegram credentials are present.
   - esc_html():       HTML-escape a dynamic value for parse_mode=html.
   - send_telegram():  post a message to the configured chat/group.
-  - get_cpu_temp_max(): hottest live CPU temperature from lm-sensors.
+  - get_cpu_temp_max(): hottest live CPU temperature from lm-sensors
+                      (parsing delegated to collect_sensors.py).
 
 Default conf path: <scripts>/../config/telegram.conf (override with the
 TELEGRAM_CONF environment variable).
@@ -16,13 +17,18 @@ TELEGRAM_CONF environment variable).
 import html
 import json
 import os
-import re
-import subprocess
+import sys
 import urllib.parse
 import urllib.request
 
 LIB_DIR = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_CONF = os.path.join(LIB_DIR, "..", "config", "telegram.conf")
+
+# Make the sibling collect_sensors.py importable however monitor_lib itself is
+# loaded, and reuse its canonical lm-sensors parser (single source of truth
+# with the conky cache writer scripts/collect_sensors.py).
+sys.path.insert(0, LIB_DIR)
+import collect_sensors  # noqa: E402
 
 
 def load_conf(path=None):
@@ -116,35 +122,26 @@ def send_telegram_photo(cfg, photo_bytes, caption="", parse_mode="html"):
         raise RuntimeError(f"Telegram API error: {result.get('description')}")
 
 
-_SENSOR_KEYS = ("Core", "Package", "Tctl", "Tdie", "Tccd")
-_TEMP_RE = re.compile(r"[+-]?\d+(?:\.\d+)?°C")
-
-
 def get_cpu_temp_max():
     """Hottest live CPU temperature in °C (int) or None if unavailable.
 
-    lm-sensors prints the live reading and the high/crit thresholds on the
-    same line, so we keep only the FIRST °C value on each sensor line (the
-    live reading) and take the maximum across cores/packages.
+    Delegates to collect_sensors.run_sensors()/collect() - the same parser
+    that feeds the conky cache - so monitoring alerts and the dashboard agree.
+    Only the CPU fields (CPU_PACK, CORE_*) are considered; the first °C value
+    on each sensor line is the live reading (high/crit are not).
     """
     try:
-        result = subprocess.run(
-            ["sensors"], capture_output=True, text=True, timeout=15
-        )
-        output = result.stdout
+        values = collect_sensors.collect(collect_sensors.run_sensors())
     except Exception:
         return None
-    best = None
-    for line in output.splitlines():
-        if not any(key in line for key in _SENSOR_KEYS):
+    temps = []
+    for key, value in values:
+        if not (key == "CPU_PACK" or key.startswith("CORE_")):
             continue
-        match = _TEMP_RE.search(line)
-        if not match:
+        if value is None:
             continue
         try:
-            value = float(match.group(0).rstrip("°C").lstrip("+"))
+            temps.append(float(value.replace("°C", "").lstrip("+")))
         except ValueError:
             continue
-        if best is None or value > best:
-            best = value
-    return int(round(best)) if best is not None else None
+    return int(round(max(temps))) if temps else None

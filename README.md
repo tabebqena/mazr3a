@@ -40,9 +40,7 @@ fire model) stay deferred to later phases.
 │   ├── diagnose_detection.py   # On-host detection diagnosis (read-only)
 │   └── verify_remote.py        # Post-deploy config verification on the host
 ├── dev_scripts/                # LOCAL scripts - dev/debug + deploy orchestrators only
-│   ├── deploy_all.sh           # UNIFIED git-based deploy (configs + firewatch + model)
-│   ├── deploy_config.sh        # (deprecated shim) -> deploy_all.sh config
-│   ├── deploy_firewatch.sh     # (deprecated shim) -> deploy_all.sh firewatch
+│   ├── deploy_all.sh           # git-based FULL deploy (configs + firewatch + model)
 │   ├── prep_fire_model.sh      # best.pt -> OpenVINO IR (models/fire)
 │   ├── promote_fire_model.sh   # Promote a versioned checkpoint to ACTIVE
 │   ├── test_fire_model.py      # Local fire-model benchmark
@@ -95,25 +93,23 @@ Deploys are **git-based** (2026-09-05): the repo lives at
 and the deploy script SSHes to the host and runs `git pull --ff-only`. Git handles
 adds/edits/moves/deletes, and the ACTIVE fire model
 (`models/fire/best.xml/best.bin/best.pt/labelmap.txt`) is git-tracked so it rides
-the pull too. One orchestrator replaces the old `deploy_config.sh` /
-`deploy_firewatch.sh` (kept only as shims):
+the pull too. One orchestrator, [`dev_scripts/deploy_all.sh`](dev_scripts/deploy_all.sh),
+runs every deploy step on the host (the old `deploy_config.sh` /
+`deploy_firewatch.sh` were removed - no more scopes):
 
 ```bash
 # from this workspace - one-time: add origin (usually already set)
 git remote add origin https://github.com/tabebqena/mazr3a
 
-# one-time ONLY on a fresh host: make /home/dr/frigate a clone
-./dev_scripts/deploy_all.sh bootstrap
+# one-time ONLY on a fresh host (done by YOU, not the deploy script):
+# make /home/dr/frigate a clone of origin/master - git init + remote add
+# origin + fetch + hard reset. This must NOT touch the git-ignored host
+# state (.env, config/telegram.conf, media/, mosquitto data/log,
+# models/fire/versions/).
 
-# normal deploy: commit locally, then
-./dev_scripts/deploy_all.sh            # full deploy (configs + firewatch + model)
-./dev_scripts/deploy_all.sh config     # config scope
-./dev_scripts/deploy_all.sh firewatch  # firewatch scope
+# normal deploy: commit locally, then run the FULL deploy (no subcommands):
+./dev_scripts/deploy_all.sh            # configs + firewatch + model
 ```
-
-`bootstrap` turns `/home/dr/frigate` into a git clone **without touching** the
-git-ignored host state (`.env`, `config/telegram.conf`, `media/`, mosquitto
-data/log, `models/fire/versions/`).
 
 ### 1. Set credentials in `.env` (host, git-ignored)
 

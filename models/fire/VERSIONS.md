@@ -66,14 +66,14 @@ promoting, flip that version's `status` to `active` (and the old one to `superse
 + in its `VERSION.json`, then:
 
 ```bash
-./dev_scripts/deploy_all.sh firewatch
+./dev_scripts/deploy_all.sh          # full deploy (no subcommands - runs every step on the host)
 docker compose exec firewatch python /scripts/firewatch.py --check
 docker compose exec firewatch python /scripts/firewatch.py --dry-run
 ```
 
 > Deploys are **git-based** (2026-09-05): the ACTIVE model files
 > (`best.xml`/`best.bin`/`labelmap.txt`[/`best.pt`]) are **git-tracked** and ride
-> `deploy_all.sh firewatch` via `git pull` — the host always matches the repo.
+> `deploy_all.sh` (full deploy) via `git pull` — the host always matches the repo.
 > The git-ignored `versions/` archive never ships. To change the served model, generate
 > its IR from the active `.pt`
 > ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)), commit the ACTIVE set,

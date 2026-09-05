@@ -76,8 +76,8 @@ models/fire/
 ```
 It copies `model.pt` → `best.pt` (plus a bundled OpenVINO IR if present), prints the exact
 `prep_fire_model.sh` command to regenerate the IR, and reminds you to deploy
-(`./dev_scripts/deploy_all.sh firewatch`) and verify (`firewatch.py --check` /
-`--dry-run`) on the host.
+(`./dev_scripts/deploy_all.sh` — full deploy, no subcommands) and verify
+(`firewatch.py --check` / `--dry-run`) on the host.
 
 ## What the watcher expects from the exported model
 
@@ -113,7 +113,7 @@ git-tracked), commit them, and deploy:
 ```bash
 git add models/fire/best.xml models/fire/best.bin models/fire/labelmap.txt
 git commit -m "fire model: update ACTIVE OpenVINO IR"
-./dev_scripts/deploy_all.sh firewatch
+./dev_scripts/deploy_all.sh            # full deploy (runs every step on the host)
 ```
 
 **YOLO26 decode check:** after deploying, run

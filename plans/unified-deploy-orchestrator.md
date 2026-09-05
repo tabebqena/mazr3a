@@ -1,5 +1,13 @@
 # Unified deploy orchestrator — `dev_scripts/deploy_all.sh` (git-based)
 
+> **2026-09-05 (superseded in part):** the `config` / `firewatch` / `bootstrap`
+> subcommands were removed — `deploy_all.sh` is now a single full deploy that
+> always runs every step on the host, the two shim scripts
+> (`deploy_config.sh` / `deploy_firewatch.sh`) were deleted, and host bootstrap
+> is done by the user, not the script. See
+> [`plans/simplify-deploy.md`](simplify-deploy.md). The git transport/restart
+> logic below is unchanged.
+
 ## Goal
 
 Replace the two separate deploy scripts (`dev_scripts/deploy_config.sh` +

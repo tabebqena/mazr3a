@@ -87,6 +87,6 @@ echo "  - labelmap.txt was written as: $(tr '\n' ',' < "$DEST_DIR/labelmap.txt")
 echo "    Its line order MUST equal the checkpoint's class index order,"
 echo "    otherwise fire/smoke labels/box colors are swapped."
 echo "  - Commit the ACTIVE set (it is git-tracked) and deploy with:"
-echo "      ./dev_scripts/deploy_all.sh firewatch"
+echo "      ./dev_scripts/deploy_all.sh   # full deploy (no subcommands)"
 echo "  - Sanity-check model load + one live frame:"
 echo "      docker compose exec firewatch python /scripts/firewatch.py --dry-run"

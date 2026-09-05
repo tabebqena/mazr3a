@@ -18,7 +18,7 @@
 # plans/model-versioning.md. After promoting, update the version's status in
 # its VERSION.json + VERSIONS.md, commit the ACTIVE set, then deploy & verify
 # on the host (per .roo/rules/sshuser.md):
-#   ./dev_scripts/deploy_all.sh firewatch
+#   ./dev_scripts/deploy_all.sh   # full deploy (no subcommands)
 # ============================================================
 set -euo pipefail
 
@@ -102,6 +102,6 @@ echo "     ACTIVE model files ride git pull; generate best.xml/bin/labelmap.txt 
 echo "     first so the ACTIVE set is complete):"
 echo "       git add models/fire/best.xml models/fire/best.bin models/fire/labelmap.txt models/fire/best.pt"
 echo "       git commit -m \"fire model: promote ${VERSION_ID} to ACTIVE\""
-echo "       ./dev_scripts/deploy_all.sh firewatch"
+echo "       ./dev_scripts/deploy_all.sh   # full deploy (no subcommands)"
 echo "       docker compose exec firewatch python /scripts/firewatch.py --check"
 echo "       docker compose exec firewatch python /scripts/firewatch.py --dry-run"

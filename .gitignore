@@ -27,7 +27,13 @@ models/fire/*.pt
 __pycache__/
 *.pyc
 
+# Local fire/smoke model eval virtualenv (see plans/fire-model-dataset-test.md)
+.venv/
+
 # OS / editor noise
 .DS_Store
 *.swp
 .roo/rules/sshuser.md
+
+
+dataset/*

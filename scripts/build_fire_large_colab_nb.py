@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""build_fire_large_colab_nb.py - generate notebooks/fire-large-finetune-colab.ipynb.
+
+A ready-to-import Google Colab notebook that fine-tunes models/fire/best.pt (YOLO26-S,
+classes fire/other/smoke) on the large local fire/smoke dataset built by
+scripts/prep_fire_large_dataset.py (dataset/large_finetune_colab.zip).
+
+Data entry supports either (a) Google Drive (recommended for the ~600 MB zip) or
+(b) files.upload(). Set the DRIVE_* variables to "" to trigger an upload dialog instead.
+
+Usage:
+    python scripts/build_fire_large_colab_nb.py   # writes notebooks/fire-large-finetune-colab.ipynb
+"""
+import json
+import os
+
+OUT = "notebooks/fire-large-finetune-colab.ipynb"
+
+
+def md(source):
+    return {"cell_type": "markdown", "metadata": {}, "source": source}
+
+
+def code(source):
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": source,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Cell sources (list of lines, each ending with newline)
+# --------------------------------------------------------------------------- #
+C_TITLE = md(
+    [
+        "# Further fine-tune the fire/smoke model on the LARGE dataset\n",
+        "\n",
+        "Fine-tunes [`models/fire/best.pt`](../models/fire/best.pt) (HF **YOLO26-S**, classes "
+        "`fire(0)/other(1)/smoke(2)`) on the big local Roboflow export "
+        "`ready_fire_smoke_dataset.yolov8` (12,799 train imgs) + the curated `default-other` "
+        "background negatives.\n",
+        "\n",
+        "- Plan: [`plans/fire-model-large-finetune-colab.md`](../plans/fire-model-large-finetune-colab.md)\n",
+        "- Dataset prep (run once, locally): "
+        "`python scripts/prep_fire_large_dataset.py --ready dataset/ready_fire_smoke_dataset.yolov8 "
+        "--negatives dataset/default-other --out dataset/large_finetune --val-frac 0.05 --seed 0 --zip`\n",
+        "  → produces `dataset/large_finetune_colab.zip` (train 12,170 / val 629, all 640×640).\n",
+        "- **Class contract:** fire=0 / other=1 / smoke=2. The export is already index-aligned, "
+        "so labels are **not** remapped; only the `data.yaml` names are set. `other` is trained but "
+        "ignored in production.\n",
+    ]
+)
+
+C_SETUP = code(
+    [
+        "# Cell 1 - runtime + install a current ultralytics (YOLO26 needs >= ~8.3)\n",
+        "!nvidia-smi\n",
+        "!pip install -q --upgrade ultralytics\n",
+        "\n",
+        "import ultralytics, torch\n",
+        "print('ultralytics', ultralytics.__version__)\n",
+        "print('torch', torch.__version__, 'cuda', torch.cuda.is_available())\n",
+    ]
+)
+
+C_CONFIG = md(
+    [
+        "## Configuration\n",
+        "\n",
+        "Set the `DRIVE_*` paths if you keep the zip / `best.pt` on Google Drive (recommended for "
+        "the ~600 MB dataset zip). Set either to `\"\"` and the matching step will pop up a file "
+        "upload dialog instead.",
+    ]
+)
+
+C_CONFIG_CODE = code(
+    [
+        "# Cell 2 - EDIT THIS\n",
+        "\n",
+        "DRIVE_ZIP = '/content/drive/MyDrive/mazr3a/large_finetune_colab.zip'  # dataset zip (or '')\n",
+        "DRIVE_BEST = '/content/drive/MyDrive/mazr3a/models_fire_best.pt'       # base checkpoint (or '')\n",
+        "\n",
+        "# --- training hyperparameters (tune freely) ---\n",
+        "EPOCHS   = 50     # large set -> more epochs than the Abonia smoke run; patience will stop early\n",
+        "BATCH    = 16     # reduce to 8 if OOM on a T4; raise on A100/L4\n",
+        "IMGSZ    = 640    # matches production input\n",
+        "FREEZE   = 10     # keep early backbone (faster, less forgetting); 0 = full fine-tune\n",
+        "LR0      = 0.001  # low LR for a pretrained fine-tune\n",
+        "PATIENCE = 15     # early stop on the held-out val split\n",
+        "PROJECT  = 'fire_large_finetune'\n",
+        "NAME     = 'run1'\n",
+        "WORKDIR  = '/content/fire_large'\n",
+    ]
+)
+
+C_MOUNT = code(
+    [
+        "# Cell 3 - (only needed if you use Drive paths) mount Drive\n",
+        "if DRIVE_ZIP or DRIVE_BEST:\n",
+        "    from google.colab import drive\n",
+        "    drive.mount('/content/drive')\n",
+        "else:\n",
+        "    print('Drive not required - using file upload dialogs.')\n",
+    ]
+)
+
+C_DATASET = code(
+    [
+        "# Cell 4 - get + extract the dataset, then fix data.yaml path for Colab\n",
+        "import glob, os, shutil, zipfile\n",
+        "\n",
+        "os.makedirs(WORKDIR, exist_ok=True)\n",
+        "\n",
+        "data_zip = None\n",
+        "if DRIVE_ZIP and os.path.exists(DRIVE_ZIP):\n",
+        "    data_zip = DRIVE_ZIP\n",
+        "else:\n",
+        "    if DRIVE_ZIP:\n",
+        "        print('Drive zip not found - uploading instead.')\n",
+        "    from google.colab import files\n",
+        "    uploaded = files.upload()\n",
+        "    data_zip = next(iter(uploaded))\n",
+        "print('data zip:', data_zip)\n",
+        "\n",
+        "with zipfile.ZipFile(data_zip) as z:\n",
+        "    z.extractall(WORKDIR)\n",
+        "\n",
+        "# the zip top-level contains train/ val/ data.yaml prep_report.txt\n",
+        "yaml_path = os.path.join(WORKDIR, 'data.yaml')\n",
+        "assert os.path.isfile(yaml_path), 'data.yaml not found after extract: ' + yaml_path\n",
+        "\n",
+        "# rewrite the absolute local `path:` to the Colab location\n",
+        "lines = []\n",
+        "for ln in open(yaml_path, encoding='utf-8'):\n",
+        "    if ln.startswith('path:'):\n",
+        "        lines.append(f'path: {WORKDIR}\\n')\n",
+        "    else:\n",
+        "        lines.append(ln)\n",
+        "open(yaml_path, 'w', encoding='utf-8').writelines(lines)\n",
+        "\n",
+        "print('data.yaml ->', yaml_path)\n",
+        "print(open(yaml_path, encoding='utf-8').read())\n",
+    ]
+)
+
+C_VERIFY_DATASET = code(
+    [
+        "# Cell 5 - verify the extracted layout + class coverage\n",
+        "import collections, os\n",
+        "\n",
+        "def tally(img_dir, lbl_dir):\n",
+        "    n = n_box = 0\n",
+        "    cls = collections.Counter()\n",
+        "    for f in sorted(os.listdir(img_dir)):\n",
+        "        if not f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp')):\n",
+        "            continue\n",
+        "        n += 1\n",
+        "        lb = os.path.join(lbl_dir, os.path.splitext(f)[0] + '.txt')\n",
+        "        if os.path.isfile(lb):\n",
+        "            for row in open(lb, encoding='utf-8'):\n",
+        "                if row.split():\n",
+        "                    cls[int(float(row.split()[0]))] += 1\n",
+        "                    n_box += 1\n",
+        "    return n, n_box, cls\n",
+        "\n",
+        "for split in ('train', 'val'):\n",
+        "    n, nb, cls = tally(os.path.join(WORKDIR, split, 'images'), os.path.join(WORKDIR, split, 'labels'))\n",
+        "    names = {0: 'fire', 1: 'other', 2: 'smoke'}\n",
+        "    print(f'{split}: images={n} boxes={nb} per-class=' +\n",
+        "          ', '.join(f'{names[k]}={v}' for k, v in sorted(cls.items())))\n",
+    ]
+)
+
+C_MODEL = code(
+    [
+        "# Cell 6 - get the BASE checkpoint (models/fire/best.pt) and verify class order\n",
+        "base_pt = None\n",
+        "if DRIVE_BEST and os.path.exists(DRIVE_BEST):\n",
+        "    base_pt = DRIVE_BEST\n",
+        "else:\n",
+        "    if DRIVE_BEST:\n",
+        "        print('Drive best.pt not found - uploading instead.')\n",
+        "    from google.colab import files\n",
+        "    up = files.upload()\n",
+        "    base_pt = next(k for k in up if k.endswith('.pt'))\n",
+        "print('base:', base_pt)\n",
+        "\n",
+        "from ultralytics import YOLO\n",
+        "m = YOLO(base_pt)\n",
+        "assert list(m.names.values()) == ['fire', 'other', 'smoke'], m.names\n",
+        "print('class order OK ->', m.names)\n",
+    ]
+)
+
+C_TRAIN = code(
+    [
+        "# Cell 7 - FINE-TUNE on the large dataset (GPU)\n",
+        "m.train(data=os.path.join(WORKDIR, 'data.yaml'),\n",
+        "        epochs=EPOCHS, imgsz=IMGSZ, batch=BATCH, device=0,\n",
+        "        project=PROJECT, name=NAME,\n",
+        "        freeze=FREEZE, lr0=LR0, patience=PATIENCE,\n",
+        "        plots=True, exist_ok=True, verbose=True)\n",
+    ]
+)
+
+C_AFTER = code(
+    [
+        "# Cell 8 - post-train: verify .names, keep a clean candidate, zip + download\n",
+        "import os, shutil, zipfile\n",
+        "\n",
+        "best = os.path.join(PROJECT, NAME, 'weights', 'best.pt')\n",
+        "last = os.path.join(PROJECT, NAME, 'weights', 'last.pt')\n",
+        "print('best exists:', os.path.exists(best), '->', best)\n",
+        "\n",
+        "fin = YOLO(best if os.path.exists(best) else last)\n",
+        "print('final .names:', fin.names)\n",
+        "assert list(fin.names.values()) == ['fire', 'other', 'smoke']\n",
+        "\n",
+        "cand = 'best_finetuned_large.pt'\n",
+        "shutil.copy(best if os.path.exists(best) else last, cand)\n",
+        "\n",
+        "# optional: bundle results for download\n",
+        "zname = 'fire_large_finetune_results.zip'\n",
+        "with zipfile.ZipFile(zname, 'w', zipfile.ZIP_DEFLATED) as z:\n",
+        "    z.write(cand, cand)\n",
+        "    for root, _dirs, files in os.walk(os.path.join(PROJECT, NAME)):\n",
+        "        for f in files:\n",
+        "            full = os.path.join(root, f)\n",
+        "            z.write(full, os.path.relpath(full, PROJECT))\n",
+        "print('results zip ->', zname)\n",
+        "\n",
+        "from google.colab import files\n",
+        "files.download(zname)\n",
+        "files.download(cand)\n",
+    ]
+)
+
+C_NEXT = md(
+    [
+        "## Next steps after the run\n",
+        "\n",
+        "1. Save `best_finetuned_large.pt` back into this repo as "
+        "`dataset/large_finetune/best_finetuned_large.pt` (git-ignored).\n",
+        "2. Run the local eval + class-order check in [`plans/fire-model-large-finetune-colab.md`]"
+        "(../plans/fire-model-large-finetune-colab.md) §5.\n",
+        "3. If metrics justify it, archive as a versioned candidate (`models/fire/versions/`, per "
+        "[`plans/model-versioning.md`](../plans/model-versioning.md)) and only then consider "
+        "promotion + OpenVINO export + on-host verification (`ssh.mazr3a.garden`).",
+    ]
+)
+
+
+def build():
+    cells = [
+        C_TITLE,
+        C_SETUP,
+        C_CONFIG,
+        C_CONFIG_CODE,
+        C_MOUNT,
+        C_DATASET,
+        C_VERIFY_DATASET,
+        C_MODEL,
+        C_TRAIN,
+        C_AFTER,
+        C_NEXT,
+    ]
+    nb = {
+        "cells": cells,
+        "metadata": {
+            "colab": {"provenance": []},
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "language_info": {"name": "python"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 0,
+    }
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    with open(OUT, "w", encoding="utf-8") as fh:
+        json.dump(nb, fh, indent=1, ensure_ascii=False)
+    print(f"wrote {OUT} ({len(cells)} cells)")
+
+
+if __name__ == "__main__":
+    build()

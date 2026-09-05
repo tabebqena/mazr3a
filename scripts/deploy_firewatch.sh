@@ -6,32 +6,34 @@
 # deploy_config.sh; user/pass from .roo/rules/sshuser.md:
 #   user: ai  /  host: ssh.mazr3a.garden  /  pass: 123456
 #
-# Uploads the files the firewatch service needs and builds/starts it:
-#   docker-compose.yml        (adds the firewatch service)
-#   firewatch/                (Dockerfile + requirements.txt)
-#   scripts/firewatch.py, scripts/monitor_lib.py
-#   config/firewatch.conf     (tunables - never touches telegram.conf)
-#   models/fire/              ACTIVE model only - see "MODEL HANDLING"
+# TRANSPORT (robust against a flaky tunnel)
+# ----------------------------------------
+# SSH/scp to this host travels through a Cloudflare Access tunnel
+# (cloudflared), where many small sequential connections stall. This deploy
+# therefore does ONE upload (a single tarball of everything firewatch needs)
+# + ONE docker `install.sh` pass that writes every file as root, and only then
+# builds/starts the service. Every ssh/scp retries and sends keep-alives.
 #
-# The git-ignored config/telegram.conf is NOT overwritten - the host copy
-# (already used by the machine-monitor/machine-status crons) is reused.
+# WHY ROOT WRITES
+# ---------------
+# User `ai` is NOT allowed to write the top-level project dir /home/dr/frigate
+# (owner dr, ACL user:ai:r-x), but IS in the docker group - so uploads are
+# staged under world-writable config/.deploy_stage/ and installed as root via
+# a bind-mounted `alpine` container. Files are replaced atomically (.new->mv).
 #
 # MODEL HANDLING (keeps a running host safe)
 # ------------------------------------------
 # - Only the ACTIVE model (best.xml + best.bin + labelmap.txt [+ best.pt]) is
-#   ever pushed into ${REMOTE_DIR}/models/fire/ - never the whole local
-#   models/ tree (so the versioned archive models/fire/versions/ stays local
-#   and a host model is never wiped by a wholesale directory replace).
-# - Each file is pushed only when its md5 differs from the host copy, and is
-#   swapped atomically (.new -> mv) so a live firewatch never sees a
-#   half-written model.
-# - If the local ACTIVE OpenVINO IR is INCOMPLETE but the host already runs a
-#   model, the host model is LEFT UNTOUCHED (firewatch keeps running) and the
-#   deploy only warns - code/config still deploy.
-# - If no model exists on either side, firewatch starts but exits until an IR
-#   is provided (see models/fire/README.md).
-# - frigate/mqtt are NEVER restarted by this script; only the firewatch
-#   container is restarted when its model/code/config changed.
+#   bundled into ${REMOTE_DIR}/models/fire/ - never the local models/ tree
+#   (the versioned archive models/fire/versions/ stays local; nothing on the
+#   host is ever deleted by install.sh - files absent from the bundle are left
+#   alone, so a working host model is never erased).
+# - If the local ACTIVE OpenVINO IR is INCOMPLETE but the host runs one, the
+#   model files are NOT bundled at all and the host model is left untouched.
+# - If neither side has an IR, firewatch starts but exits until one is
+#   provided (see models/fire/README.md).
+# - frigate/mqtt are NEVER restarted; only the firewatch container is restarted
+#   when the model/code/config changed.
 #
 # Verify after deploy: --check (config + model load) then --dry-run (one live
 # pass, prints instead of sending).
@@ -42,161 +44,216 @@ SSH_USER="ai"
 SSH_HOST="ssh.mazr3a.garden"
 SSH_PASS="123456"
 REMOTE_DIR="/home/dr/frigate"
+STAGE_DIR="/home/dr/frigate/config/.deploy_stage"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+BUNDLE="$(mktemp -d)"
+TARBALL="$(mktemp -u /tmp/firewatch_deploy.XXXXXX).tar.gz"
+trap 'rm -rf "$BUNDLE" "$TARBALL"' EXIT
+
 # --- non-interactive password via SSH_ASKPASS ---------------------------
 ASKPASS="$(mktemp)"
-trap 'rm -f "$ASKPASS"' EXIT
 printf '#!/usr/bin/env bash\necho "%s"\n' "$SSH_PASS" > "$ASKPASS"
 chmod 700 "$ASKPASS"
+trap 'rm -f "$ASKPASS"; rm -rf "$BUNDLE" "$TARBALL"' EXIT
 
 export SSH_ASKPASS="$ASKPASS"
 export SSH_ASKPASS_REQUIRE=force   # use askpass even without a tty
 export DISPLAY=:0
 
+# keep-alives + retries: the cloudflared tunnel drops idle/long connections.
 SSH_OPTS=(
   -o StrictHostKeyChecking=accept-new
   -o PreferredAuthentications=password
   -o PubkeyAuthentication=no
   -o NumberOfPasswordPrompts=1
-  -o ConnectTimeout=20
+  -o ConnectTimeout=25
+  -o ServerAliveInterval=15
+  -o ServerAliveCountMax=6
 )
 
-# host_cmd: run a remote shell command (askpass handles the auth, no tty).
-host_cmd() {
-  setsid /usr/bin/ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" "$@"
+# run_ssh "<remote-command>": retry up to 5x. Returns 0 on success.
+run_ssh() {
+  local cmd="$1" n=1
+  until setsid /usr/bin/ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" "$cmd"; do
+    echo "   (ssh retry ${n}/5)" >&2
+    if [ "$n" -ge 5 ]; then echo "ERROR: ssh failed after 5 attempts: $cmd" >&2; return 1; fi
+    n=$((n + 1)); sleep 10
+  done
+  return 0
 }
 
-# rput <local> <remote-abs>: scp to a .new name, then mv over the target
-# (rename only needs write on the parent dir - same trick as deploy_config.sh).
-rput() {
-  local local_file="$1" remote_file="$2"
-  setsid /usr/bin/scp "${SSH_OPTS[@]}" "$local_file" \
-    "${SSH_USER}@${SSH_HOST}:${remote_file}.new"
-  host_cmd "mv -f ${remote_file}.new ${remote_file}"
-}
-
-# rput_dir <local-dir> <remote-dir>: recursive upload with atomic swap.
-rput_dir() {
-  local local_dir="$1" remote_dir="$2"
-  setsid /usr/bin/scp -r "${SSH_OPTS[@]}" "$local_dir" \
-    "${SSH_USER}@${SSH_HOST}:${remote_dir}.new"
-  host_cmd "rm -rf ${remote_dir} && mv ${remote_dir}.new ${remote_dir}"
+# run_scp <local> <remote-abs>: retry up to 5x.
+run_scp() {
+  local src="$1" dst="$2" n=1
+  until setsid /usr/bin/scp "${SSH_OPTS[@]}" "$src" "${SSH_USER}@${SSH_HOST}:$dst"; do
+    echo "   (scp retry ${n}/5)" >&2
+    if [ "$n" -ge 5 ]; then echo "ERROR: scp failed after 5 attempts: $src" >&2; return 1; fi
+    n=$((n + 1)); sleep 10
+  done
+  return 0
 }
 
 MODEL_DIR="${ROOT_DIR}/models/fire"
 MODEL_REMOTE="${REMOTE_DIR}/models/fire"
-
-# local_md5 / remote_md5: md5 of a file, empty string when missing. Never abort.
-local_md5()  { md5sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
-remote_md5() { host_cmd "md5sum '$1' 2>/dev/null | cut -d' ' -f1" || true; }
+local_md5() { md5sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
 
 RESTART_FIREWATCH=0
 MODEL_CHANGED=0
 
 echo "=============================================================="
-echo "0) sanity checks"
-if [ ! -f "${ROOT_DIR}/docker-compose.yml" ]; then
-  echo "ERROR: docker-compose.yml missing in ${ROOT_DIR}" >&2; exit 1
-fi
-if [ ! -f "${ROOT_DIR}/firewatch/Dockerfile" ]; then
-  echo "ERROR: firewatch/Dockerfile missing - run from the repo root" >&2; exit 1
-fi
-echo "local root: ${ROOT_DIR}"
-echo "remote dir: ${SSH_USER}@${SSH_HOST}:${REMOTE_DIR}"
+echo "0) sanity checks + remote reachability"
+[ -f "${ROOT_DIR}/docker-compose.yml" ]  || { echo "ERROR: docker-compose.yml missing" >&2; exit 1; }
+[ -f "${ROOT_DIR}/firewatch/Dockerfile" ] || { echo "ERROR: firewatch/Dockerfile missing" >&2; exit 1; }
+echo "local root:  ${ROOT_DIR}"
+echo "remote dir:  ${SSH_USER}@${SSH_HOST}:${REMOTE_DIR}"
+run_ssh "mkdir -p ${STAGE_DIR}" || exit 1
 
 echo "=============================================================="
-echo "1) docker-compose.yml"
-rput "${ROOT_DIR}/docker-compose.yml" "${REMOTE_DIR}/docker-compose.yml"
+echo "1) assemble deploy bundle (single upload)"
 
-echo "=============================================================="
-echo "2) firewatch/ build context (Dockerfile + requirements.txt)"
-rput_dir "${ROOT_DIR}/firewatch" "${REMOTE_DIR}/firewatch"
+# --- regular files -------------------------------------------------------
+cp "${ROOT_DIR}/docker-compose.yml"          "$BUNDLE/docker-compose.yml"
+cp -r "${ROOT_DIR}/firewatch"                "$BUNDLE/firewatch"
+mkdir -p "$BUNDLE/scripts" "$BUNDLE/config"
+cp "${ROOT_DIR}/scripts/firewatch.py"        "$BUNDLE/scripts/firewatch.py"
+cp "${ROOT_DIR}/scripts/monitor_lib.py"      "$BUNDLE/scripts/monitor_lib.py"
+cp "${ROOT_DIR}/config/firewatch.conf"       "$BUNDLE/config/firewatch.conf"
 RESTART_FIREWATCH=1
 
-echo "=============================================================="
-echo "3) scripts/firewatch.py + scripts/monitor_lib.py"
-rput "${ROOT_DIR}/scripts/firewatch.py" "${REMOTE_DIR}/scripts/firewatch.py"
-rput "${ROOT_DIR}/scripts/monitor_lib.py" "${REMOTE_DIR}/scripts/monitor_lib.py"
-RESTART_FIREWATCH=1
-
-echo "=============================================================="
-echo "4) config/firewatch.conf (telegram.conf is never touched)"
-rput "${ROOT_DIR}/config/firewatch.conf" "${REMOTE_DIR}/config/firewatch.conf"
-RESTART_FIREWATCH=1
-
-echo "=============================================================="
-echo "5) ACTIVE fire model -> ${MODEL_REMOTE} (conditional)"
-
-# firewatch needs best.xml + best.bin + labelmap.txt; best.pt is optional
-# (source checkpoint kept for later re-conversion).
+# --- active model: bundle ONLY when the local IR is complete, and only when
+#     it differs from what the host already runs --------------------------
 LOCAL_IR_OK=1
 for f in best.xml best.bin labelmap.txt; do
   [ -f "${MODEL_DIR}/${f}" ] || LOCAL_IR_OK=0
 done
-
 if [ "$LOCAL_IR_OK" -eq 1 ]; then
-  host_cmd "mkdir -p ${MODEL_REMOTE}"
-  for f in best.xml best.bin labelmap.txt best.pt; do
-    lf="${MODEL_DIR}/${f}"
-    [ -f "$lf" ] || continue     # best.pt is optional on the host
-    lm="$(local_md5 "$lf")"
-    rmf="$(remote_md5 "${MODEL_REMOTE}/${f}")"
-    if [ "$lm" != "$rmf" ]; then
-      echo "   ${f}: differs from host -> push (atomic .new swap)"
-      setsid /usr/bin/scp "${SSH_OPTS[@]}" "$lf" \
-        "${SSH_USER}@${SSH_HOST}:${MODEL_REMOTE}/${f}.new"
-      host_cmd "mv -f ${MODEL_REMOTE}/${f}.new ${MODEL_REMOTE}/${f}"
-      MODEL_CHANGED=1
-    else
-      echo "   ${f}: unchanged -> skip"
-    fi
-  done
-  if [ "$MODEL_CHANGED" -eq 1 ]; then
-    echo "   host model updated -> firewatch restart will load it"
+  # sentinel check: does the host already run this exact best.xml?
+  remote_xml="$(run_ssh "md5sum ${MODEL_REMOTE}/best.xml 2>/dev/null | cut -d' ' -f1" || true)"
+  if [ "$(local_md5 "${MODEL_DIR}/best.xml")" != "$remote_xml" ]; then
+    mkdir -p "$BUNDLE/models/fire"
+    for f in best.xml best.bin labelmap.txt best.pt; do
+      [ -f "${MODEL_DIR}/${f}" ] && cp "${MODEL_DIR}/${f}" "$BUNDLE/models/fire/${f}"
+    done
+    MODEL_CHANGED=1
     RESTART_FIREWATCH=1
+    echo "   model bundled (host differs / missing)"
   else
-    echo "   host already runs this ACTIVE model (no model restart needed)"
+    echo "   host already runs this ACTIVE model - not re-uploaded"
   fi
 else
-  echo "   WARNING: local ACTIVE OpenVINO IR is INCOMPLETE"
-  echo "   (need best.xml + best.bin + labelmap.txt under models/fire/)."
-  echo "   Generate/place it first, e.g.:"
-  echo "     ./scripts/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
-  if remote_md5 "${MODEL_REMOTE}/best.xml" | grep -q .; then
-    echo "   The HOST still runs its existing model - left untouched so a live"
-    echo "   firewatch keeps working. Deploying code/config only."
-  else
-    echo "   The HOST has no fire model either - firewatch will start but cannot"
-    echo "   load a model until an IR is provided (see models/fire/README.md)."
-  fi
+  echo "   WARNING: local ACTIVE OpenVINO IR INCOMPLETE (need best.xml+best.bin+"
+  echo "   labelmap.txt under models/fire/). If the host runs a model it is left"
+  echo "   untouched. Generate IR first: ./scripts/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
 fi
 
+# --- install.sh (runs as root inside the bind-mounted alpine) ------------
+cat > "$BUNDLE/install.sh" <<'INSTALL'
+#!/bin/sh
+# Installs the firewatch deploy bundle into $1 (the project root).
+# POSIX sh, busybox-safe. Writes are atomic (.new -> mv). NEVER deletes
+# anything on the host except the firewatch build dir it is about to replace.
+set -e
+root="$1"
+src="$root/config/.deploy_extract"
+
+# 1) docker-compose.yml (atomic replace)
+if [ -f "$src/docker-compose.yml" ]; then
+  cat "$src/docker-compose.yml" > "$root/docker-compose.yml.new"
+  mv -f "$root/docker-compose.yml.new" "$root/docker-compose.yml"
+fi
+
+# 2) firewatch/ build context (replace wholesale - it is only a build context)
+if [ -d "$src/firewatch" ]; then
+  rm -rf "$root/firewatch"
+  mv "$src/firewatch" "$root/firewatch"
+fi
+
+# 3) scripts (firewatch.py + monitor_lib.py)
+if [ -f "$src/scripts/firewatch.py" ]; then
+  mkdir -p "$root/scripts"
+  cat "$src/scripts/firewatch.py" > "$root/scripts/firewatch.py"
+fi
+if [ -f "$src/scripts/monitor_lib.py" ]; then
+  mkdir -p "$root/scripts"
+  cat "$src/scripts/monitor_lib.py" > "$root/scripts/monitor_lib.py"
+fi
+
+# 4) config/firewatch.conf ONLY (telegram.conf is never touched)
+if [ -f "$src/config/firewatch.conf" ]; then
+  mkdir -p "$root/config"
+  cat "$src/config/firewatch.conf" > "$root/config/firewatch.conf"
+fi
+
+# 5) ACTIVE model files only - files NOT in the bundle are left untouched
+if [ -d "$src/models" ]; then
+  for f in "$src"/models/*/*; do
+    [ -f "$f" ] || continue
+    rel="${f#$src/}"
+    mkdir -p "$root/$(dirname "$rel")"
+    cat "$f" > "$root/$rel"
+  done
+fi
+echo "install.sh: OK"
+INSTALL
+chmod +x "$BUNDLE/install.sh"
+
+tar -C "$BUNDLE" -czf "$TARBALL" .
+
 echo "=============================================================="
-echo "6) build + start firewatch (first build pulls pip deps over network)"
-# `up -d --build` only (re)creates firewatch - unchanged frigate/mqtt stay up.
-# A restart is forced afterwards when the model/code/config changed so the
-# container re-reads the new weights/config.
-host_cmd "cd ${REMOTE_DIR} && docker compose up -d --build firewatch"
+echo "2) upload bundle (single scp)"
+run_scp "$TARBALL" "${STAGE_DIR}/deploy.tar.gz" || exit 1
+
+echo "=============================================================="
+echo "3) install as root (single docker alpine pass)"
+run_ssh "docker run --rm -v ${REMOTE_DIR}:/proj alpine sh -c 'set -e; rm -rf /proj/config/.deploy_extract; mkdir -p /proj/config/.deploy_extract; tar -xzf /proj/config/.deploy_stage/deploy.tar.gz -C /proj/config/.deploy_extract; sh /proj/config/.deploy_extract/install.sh /proj; rm -rf /proj/config/.deploy_extract /proj/config/.deploy_stage/deploy.tar.gz'" || {
+  echo "ERROR: remote install failed - cleaning staging" >&2
+  run_ssh "rm -rf /proj/config/.deploy_extract /proj/config/.deploy_stage/deploy.tar.gz" >/dev/null 2>&1 || true
+  exit 1
+}
+
+echo "=============================================================="
+echo "4) build + start firewatch (background; first build pulls pip deps)"
+# Run detached so a flaky ssh cannot kill the long build; poll for the result.
+run_ssh "cd ${REMOTE_DIR} && rm -f /tmp/fw_up.log && (nohup docker compose up -d --build firewatch >/tmp/fw_up.log 2>&1 &) && echo 'build started'" || exit 1
+
+echo "   polling firewatch (this can take minutes on first build)..."
+for i in $(seq 1 90); do   # up to ~15 min
+  sleep 10
+  state="$(run_ssh "cd ${REMOTE_DIR} && docker compose ps --format '{{.Service}}|{{.Status}}' 2>/dev/null | grep '^firewatch|' || true" || true)"
+  case "$state" in
+    *"Up"*)
+      echo "   firewatch is Up after ~$((i * 10))s"
+      break
+      ;;
+  esac
+  if ! run_ssh "pgrep -f 'docker compose up -d --build firewatch' >/dev/null" >/dev/null 2>&1; then
+    echo "   compose up process ended without 'Up' - build log tail:"
+    run_ssh "tail -40 /tmp/fw_up.log" || true
+    echo "ERROR: firewatch did not come up - see log above" >&2
+    exit 1
+  fi
+done
+
 if [ "$RESTART_FIREWATCH" -eq 1 ]; then
   echo "   restarting firewatch to load updated model/code/config"
-  host_cmd "cd ${REMOTE_DIR} && docker compose restart firewatch" || true
+  run_ssh "cd ${REMOTE_DIR} && docker compose restart firewatch" || true
 fi
-host_cmd "cd ${REMOTE_DIR} && sleep 8 && docker compose ps firewatch"
+run_ssh "cd ${REMOTE_DIR} && docker compose ps firewatch" || true
 
 echo "=============================================================="
-echo "7) verify: --check (config + model load)"
-host_cmd "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /scripts/firewatch.py --check" || true
+echo "5) verify: --check (config + model load)"
+run_ssh "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /scripts/firewatch.py --check" || true
 
 echo "=============================================================="
-echo "8) verify: --dry-run (one live pass, prints instead of sending)"
-host_cmd "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /scripts/firewatch.py --dry-run" || true
+echo "6) verify: --dry-run (one live pass, prints instead of sending)"
+run_ssh "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /scripts/firewatch.py --dry-run" || true
 
 echo "=============================================================="
-echo "9) recent firewatch logs"
-host_cmd "cd ${REMOTE_DIR} && docker compose logs --since 3m firewatch 2>&1 | tail -30" || true
+echo "7) recent firewatch logs"
+run_ssh "cd ${REMOTE_DIR} && docker compose logs --since 5m firewatch 2>&1 | tail -40" || true
 
 echo "=============================================================="
 echo "DEPLOY COMPLETE"

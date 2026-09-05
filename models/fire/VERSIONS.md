@@ -21,7 +21,7 @@ survive even where the `.pt` files are not present).
 
 | Version | Description |
 |---|---|
-| `v1-2026-09-05-hf-yolo26s-8939img` | **HF YOLO26-S baseline** — not replaced; v2 is an unevaluated-on-camera candidate. |
+| `v1-2026-09-05-hf-yolo26s-8939img` | **HF YOLO26-S baseline** — deployed + verified on `ssh.mazr3a.garden` (firewatch Up, `--check` OK, `--dry-run` 9 cams, 0 fire) 2026-09-05. v2 is an unevaluated-on-camera candidate. |
 
 ---
 

@@ -181,9 +181,10 @@ changed. To actually change the served model: generate the IR from the promoted 
       `--dry-run` verification.
 - [x] Commit per logical group.
 
-**No remote deploy for this step:** versioning only *archives* the existing checkpoints
-and leaves the active `models/fire/` root untouched (v1 is still active; no OpenVINO IR is
-regenerated or re-promoted). The remote host's running `firewatch` model is unchanged.
+**Result (this step grew into a full go-live, see §8):** after archiving the checkpoints,
+the user asked to deploy + verify on the host — so the ACTIVE OpenVINO IR was generated from
+v1, the `firewatch` decoder was adapted to the model's end-to-end output, and the service was
+deployed + verified on `ssh.mazr3a.garden`. **v1 is the ACTIVE deployed model.**
 
 ---
 
@@ -209,5 +210,24 @@ regenerated or re-promoted). The remote host's running `firewatch` model is unch
   `versions/` archive stays local; a host model is never erased); only the `firewatch`
   container is restarted; added `--dry-run` verification. Docs synced
   (`promote_fire_model.sh`, `models/fire/VERSIONS.md`).
-- **2026-09-05 — commit:** `e4b5892` — "fix(deploy): conditional ACTIVE-model push keeps
-  running host safe".
+- **2026-09-05 — commits:** `8fe39a5` "docs(plans): record model-versioning implementation
+  commit ba4954b"; `e4b5892` "fix(deploy): conditional ACTIVE-model push keeps running host
+  safe"; `9b5ce83` "docs(plans): record deploy hardening commit e4b5892".
+- **2026-09-05 — IR from v1 + decoder fix:** generated the ACTIVE OpenVINO IR from
+  `models/fire/best.pt` (installed `openvino` into `.venv`;
+  [`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh) ... `fire,other,smoke`).
+  Discovered the HF checkpoint is an **end-to-end YOLO26** (`[1,300,6]` = xyxy+score+
+  class_id), not the raw `[1,4+nc,N]` format: adapted
+  [`scripts/firewatch.py`](../scripts/firewatch.py) to decode e2e and to auto-read
+  `labelmap.txt` from `MODEL_DIR` (commit `21efddd`, validated on GT fire images).
+- **2026-09-05 — transport rework:** user `ai` cannot write the top-level project dir but IS
+  in the docker group, and SSH rides a flaky cloudflared tunnel —
+  [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh) rewritten to a SINGLE-bundle
+  upload + one docker-root `install.sh` pass (atomic writes; never deletes host model files),
+  with ssh/scp retries + keep-alives and a background build + poll.
+- **2026-09-05 — GO-LIVE (host):** deployed + verified on `ssh.mazr3a.garden`: `firewatch`
+  container **Up** (image `frigate-firewatch`); `--check` → "config + model OK" (output
+  `[1,300,6]`, classes fire/other/smoke); `--dry-run` → all 9 cameras polled, 0 fire.
+  **v1 is the ACTIVE deployed model.** frigate/mqtt untouched (still healthy).
+- **2026-09-05 — commits:** `59c6dd3` "fix(deploy): single-bundle transport via docker-root
+  install (cloudflared-safe)" + docs record below.

@@ -17,6 +17,13 @@ recall **88.8**.
 The checkpoint is already downloaded to **`models/fire/best.pt`** in this workspace
 (git-ignored, 20.3 MB, md5 `2fd972183c2ffec0d327ec534c119086`).
 
+**Deployed + verified (v1, 2026-09-05):** the ACTIVE OpenVINO IR (`best.xml`/`best.bin`/
+`labelmap.txt`) was generated from this `.pt` and `firewatch` is running on
+`ssh.mazr3a.garden` — `--check` OK (output `[1,300,6]`, classes fire/other/smoke), `--dry-run`
+polls all 9 cameras. Model is an **end-to-end YOLO26** (the decoder handles `[1,N,6]`); this
+checkpoint is the ACTIVE **v1** — see [`VERSIONS.md`](VERSIONS.md) for v2 (fine-tuned on
+Abonia `fire-8`, ~877 imgs) which is **not** yet promoted.
+
 > **Still not proven on your cameras** - those are benchmark numbers on the author's own
 > validation. Pilot with `--dry-run` on your day/night/IR, near/distance views and a test
 > flame before trusting it as an alarm. If recall is weak on your scenes, fine-tune this

@@ -196,4 +196,5 @@ regenerated or re-promoted). The remote host's running `firewatch` model is unch
   ignores `models/fire/versions/`; wrote tracked `models/fire/VERSIONS.md`; updated
   `models/fire/README.md` with the layout, naming convention, promote usage and the
   `fire/other/smoke` class-order note.
-- **2026-09-05 — commit:** (commits listed in git history for this plan).
+- **2026-09-05 — commit:** `ba4954b` — "feat(models): versioned fire checkpoint archive +
+  naming convention + promote helper" (implementation).

@@ -168,3 +168,53 @@ Working dir for outputs: **`dataset/eval/`** (already covered by `dataset/*` ign
 - Per [`.roo/rules/sshuser.md`](../.roo/rules/sshuser.md): no remote transfer/test required
   for this local benchmark; if the outcome triggers a firewatch threshold or model change,
   that change would be deployed/tested on `ssh.mazr3a.garden` as a separate plan.
+
+---
+
+## 8. Implementation log (2026-09-05)
+
+### Status: DONE — local CPU benchmark produced under `dataset/eval/`
+
+**Key deviation — no label remap was needed.** The plan (§3/§1) assumed
+[`best.pt`](../models/fire/best.pt) was ordered `fire/smoke/other` and made remapping
+"mandatory". Loading the checkpoint shows the real `.names` is
+**`{0: fire, 1: other, 2: smoke}`** — identical to the dataset's confirmed order
+(`0=fire`, `1=default/other`, `2=smoke`). So labels were scored as-is. This also matches
+the class contract already encoded in the shared helpers
+([`scripts/test_fire_model.py`](../scripts/test_fire_model.py),
+[`scripts/build_fire_eval_subset.py`](../scripts/build_fire_eval_subset.py)).
+`dataset/eval/class_map.json` records the final map.
+
+**Unlabeled images:** of 12,799 `train/` images, 442 have an empty label file (0 boxes)
+and were **excluded** from the eval subset (user instruction). 12,357 labeled images remain.
+
+**Steps completed:**
+
+1. **Env** — reused the existing local CPU venv `.venv/` (Python 3.11, torch 2.14 CPU,
+   ultralytics 8.4.140) instead of creating `.venv-firetest/`; [`.gitignore`](../.gitignore)
+   broadened to `.venv*`.
+2. **Analysis** — [`scripts/analyze_fire_dataset.py`](../scripts/analyze_fire_dataset.py) run
+   → [`dataset/eval/dataset_summary.txt`](../dataset/eval/dataset_summary.txt) (+ preview/,
+   +class_map.json). Class box counts: fire 14,145 / other 3,796 / smoke 12,334; class `1`
+   **does exist** (2,198 images).
+3. **Class map** — [`dataset/eval/class_map.json`](../dataset/eval/class_map.json) +
+   source-spanning GT preview montage in [`dataset/eval/preview/`](../dataset/eval/preview/).
+4. **Subset** — [`scripts/build_fire_eval_subset.py`](../scripts/build_fire_eval_subset.py)
+   updated to skip unlabeled images by default (`--include-unlabeled` opt-in) and accept
+   `--names`; 200-image stratified labeled-only subset built under `dataset/eval/train/`
+   + `dataset/eval/data.yaml`.
+5. **Run** — [`scripts/test_fire_model.py`](../scripts/test_fire_model.py) → metrics +
+   per-image CSV + annotated JPGs in [`dataset/eval/results/`](../dataset/eval/results/).
+6. **Report** — [`dataset/eval/report.md`](../dataset/eval/report.md).
+
+**Headline results (200-img subset):** all-class mAP@50 0.372 / fire 0.616 / smoke 0.307 /
+other 0.194 (author-reported 0.949 is on the model's own validation — different
+distribution). Deploy view (conf 0.5, image-level): fire recall **84.1%** (95/113), smoke
+recall **41.7%** (48/115), fire FP 11/87, smoke FP 4/85. **Recommendation: keep the
+checkpoint + 0.5 threshold for fire; do not fine-tune on this noisy off-domain export;
+decide on an on-camera `--dry-run` pilot.** Full detail in the report.
+
+**Commits:** `d8ceefc` (harness: gitignore + analyze unlabeled count + builder skip
+unlabeled). Outputs under `dataset/eval/` are git-ignored (`dataset/*`). No production
+`firewatch`/`config/firewatch.conf` change → **no remote-host deploy needed** (per
+[`.roo/rules/sshuser.md`](../.roo/rules/sshuser.md)).

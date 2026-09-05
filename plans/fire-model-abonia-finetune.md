@@ -1,7 +1,7 @@
-0l,0# Fine-tune `models/fire/best.pt` on the Abonia `fire-8` dataset
+# Fine-tune `models/fire/best.pt` on the Abonia `fire-8` dataset
 
-**Status:** planning. Related prior work:
-[`plans/fire-model-abonia-benchmark.md`](fire-model-abonia-benchmark.md) (baseline
+**Status:** ✅ CPU smoke run done + test-split eval recorded (2026-09-05). Related prior
+work: [`plans/fire-model-abonia-benchmark.md`](fire-model-abonia-benchmark.md) (baseline
 benchmark on the Abonia `fire-8` test split, commit `34dafc3`).
 
 **Goal:** domain-adapt the HF YOLO26-S checkpoint [`models/fire/best.pt`](../models/fire/best.pt)
@@ -46,8 +46,8 @@ the dataset's train split, so test-set lift is the honest measure.
 
 ## 2. Training `data.yaml`
 
-**To be created** (Code mode) at **`dataset/abonia_eval/finetune/data.yaml`** (git-ignored
-under `dataset/*`). The repo's own
+**Created** at **`dataset/abonia_eval/finetune/data.yaml`** (git-ignored under
+`dataset/*`). The repo's own
 [`datasets/fire-8/data.yaml`](../dataset/abonia_repo/datasets/fire-8/data.yaml:1) is NOT
 reused as-is because its Colab-relative paths (`train: fire-8/train/images`,
 `test: ../test/images`) do not resolve against the committed layout, and its names
@@ -90,15 +90,20 @@ m.train(data="dataset/abonia_eval/finetune/data.yaml",
 PY
 ```
 
-Expected outcome: clean run, ~`time/epoch` printed each epoch (this is the metric the
-user wants to measure), and `dataset/abonia_eval/finetune/smoke/weights/best.pt`.
+Expected outcome: clean run; measured ~5-11 s/iter ⇒ **~1 h per 5 epochs on CPU**.
+
+> ⚠️ Ultralytics resolves a *relative* `project` under its default runs dir, so outputs
+> land at `runs/detect/dataset/abonia_eval/finetune/smoke/weights/best.pt` (verified) —
+> NOT `dataset/abonia_eval/finetune/smoke/...`. Either pass an absolute `project` path or
+> copy from `runs/detect/...` as below.
 
 ### 3.2 Promote smoke candidate + quick test-split eval
 
 ```bash
-cp dataset/abonia_eval/finetune/smoke/weights/best.pt dataset/abonia_eval/finetune/best_finetuned_abonia.pt
+cp runs/detect/dataset/abonia_eval/finetune/smoke/weights/best.pt \
+   dataset/abonia_eval/finetune/best_finetuned_abonia.pt
 .venv/bin/python scripts/test_fire_model.py dataset/abonia_eval/finetune/best_finetuned_abonia.pt \
-    dataset/abonia_eval/eval/data.yaml --out dataset/abonia_eval/finetune/eval_smoke --conf 0.5 --annotate
+    dataset/abonia_eval/eval/data.yaml --out dataset/abonia_eval/finetune/eval_test --conf 0.5 --annotate
 ```
 
 Compares directly against the baseline numbers in §1 (same harness, same test split).
@@ -134,11 +139,11 @@ Then download `abonia_finetune/run1/weights/best.pt` → copy into this repo as
 
 ## 4. Implementation checklist
 
-- [ ] Create `dataset/abonia_eval/finetune/data.yaml` (§2) — Code mode.
-- [ ] Run the CPU smoke run (§3.1) — confirm pipeline + measure time/epoch (Code mode).
-- [ ] Promote smoke `best.pt` and evaluate on the test split (§3.2) (Code mode).
-- [ ] Record smoke-run results + measured time/epoch in this plan's §6.
-- [ ] Commit plan + any script/yaml scaffolding (local-only).
+- [x] Create `dataset/abonia_eval/finetune/data.yaml` (§2).
+- [x] Run the CPU smoke run (§3.1) — pipeline confirmed, time/epoch measured (~1 h / 5 ep).
+- [x] Promote smoke `best.pt` and evaluate on the test split (§3.2).
+- [x] Record smoke-run results + measured time/epoch in this plan's §6.
+- [x] Commit plan + scaffolding (local-only).
 - [ ] User runs the full GPU/Colab training (§3.3), drops the weights here, we evaluate
       and compare vs §1 baseline, then decide whether to promote + deploy (separate step).
 
@@ -164,7 +169,41 @@ Then download `abonia_finetune/run1/weights/best.pt` → copy into this repo as
 
 ## 6. Implementation log (filled as work completes)
 
-- *(to be appended: smoke-run outcome, time/epoch, eval numbers)*
+- **2026-09-05 — scaffolding:** created `dataset/abonia_eval/finetune/data.yaml`; plan
+  committed `975de7a`.
+- **2026-09-05 — CPU smoke run (user):** 5 epochs / 877 train / 47 val, imgsz 640,
+  batch 8, freeze 10, AdamW (auto-selected), ~1.02 h. Auto-val on `valid`: overall mAP@50
+  0.848. Weights at `runs/detect/dataset/abonia_eval/finetune/smoke/weights/{best,last}.pt`.
+- **2026-09-05 — test-split eval (Code):** promoted `best.pt` →
+  `dataset/abonia_eval/finetune/best_finetuned_abonia.pt` (`.names` still
+  fire/other/smoke); ran `scripts/test_fire_model.py` on the 55-image test split →
+  `dataset/abonia_eval/finetune/eval_test/`. Results in §6.1.
+
+### 6.1 Smoke-run candidate (5 epochs) vs baseline — Abonia test split (55 imgs / 57 boxes)
+
+| Class | Model | P | R | mAP@50 | mAP@50-95 |
+|---|---|---|---|---|---|
+| all | baseline | 0.525 | 0.416 | 0.405 | 0.142 |
+| all | fine-tuned 5ep | **0.906** | **0.900** | **0.948** | **0.440** |
+| fire (0) | baseline | 0.561 | 0.514 | 0.462 | 0.144 |
+| fire (0) | fine-tuned 5ep | **0.937** | **0.850** | **0.930** | 0.401 |
+| smoke (2) | baseline | 0.489 | 0.318 | 0.349 | 0.140 |
+| smoke (2) | fine-tuned 5ep | **0.875** | **0.951** | **0.965** | 0.479 |
+
+Deploy view (conf 0.5, image-level):
+
+| Metric | baseline | fine-tuned 5ep |
+|---|---|---|
+| fire image recall | 24/35 (68.6 %) | **27/35 (77.1 %)** |
+| smoke image recall | 7/21 (33.3 %) | **13/21 (61.9 %)** |
+| fire FP on non-fire | 0/20 | 0/20 |
+| smoke FP on non-smoke | 0/34 | 0/34 |
+
+Caveat: test is from the same source pool as the Abonia train split (domain adaptation),
+so the numbers are optimistic for the farm cameras — but the large lift confirms the
+fine-tune direction. 5 CPU epochs already near-saturate this small domain, so the longer
+GPU/Colab run (§3.3) is optional and mostly for extra margin. Real acceptance remains an
+on-camera `--dry-run` pilot.
 
 ## 7. Git & remote handoff
 

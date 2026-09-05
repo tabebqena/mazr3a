@@ -27,6 +27,9 @@ models/fire/*.pt
 __pycache__/
 *.pyc
 
+# Ultralytics run output (training/val artifacts written to ./runs by default)
+runs/
+
 # Local fire/smoke model eval virtualenv (see plans/fire-model-dataset-test.md)
 .venv/
 

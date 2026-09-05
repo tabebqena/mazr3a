@@ -86,12 +86,20 @@ Then unzip the three files into `models/fire/`, deploy `bash scripts/deploy_fire
 and validate with a `--dry-run` pass on live frames.
 
 Notes on this checkpoint:
+- **Measured training quality** (from the repo's `runs/detect/train/results.csv`, validation
+  = 48 images): precision **0.83**, recall **0.88**, mAP@50 **0.86**, mAP@50-95 **0.46** at
+  epoch 24/25 (YOLOv8s, 878 train images). These are **macro averages over all 3 classes**
+  (including the noisy `default`), so per-class fire/smoke accuracy is not reported - treat
+  them as "moderate", not proven.
+- **Pilot before trusting**: the source data is forest-fire-oriented, validation is only
+  48 images, and no per-class metrics exist. Run `--dry-run` over your own cameras at day,
+  night/IR, and distance before relying on alerts. If recall is weak on your scenes,
+  fine-tune this checkpoint on ~100-200 frames captured from your cameras (transfer
+  learning, ~10-20 min in Colab) - that is the recommended path if the pilot under-delivers.
 - Trained at imgsz 800; exporting at 640 keeps CPU low and matches the 640x360 detect
   frames. Export at 800 instead for maximum small-flame fidelity (slightly higher CPU).
 - The repo has **no license** (proprietary/default); the underlying dataset declares
   **CC BY 4.0**. Verify you are comfortable with this before production use.
-- Because `default` was a noisy extra class, sanity-check recall on your own footage
-  before trusting it (a real test fire / the `--dry-run` output).
 
 ### Option B — train your own YOLOv8n (free Google Colab, ~30-60 min)
 

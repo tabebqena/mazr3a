@@ -80,33 +80,43 @@ ffmpeg:
 # input width/height) is built from THIS top-level `model:` block,
 # with the detector's flat `model_path:` overriding only the path.
 #
-# width/height MUST match the model's real input tensor:
-# ssdlite_mobilenet_v2 expects 300x300. If they are missing, Frigate
-# defaults the resize to 320x320 and every detect frame crashes the
-# detector with:
-#   ValueError: could not broadcast input array from shape
-#   (1,320,320,3) into shape (1,300,300,3)
-# which stops detection and crash-loops Frigate (the detect toggles
-# in the UI never stay checked; clicking one black-screens the page).
-# If you later swap in a custom model, set width/height to THAT
-# model's input size.
+# MODEL: YOLO11n (Ultralytics COCO 80-class) exported to NMS-free ONNX
+# @640 - replaces the bundled ssdlite_mobilenet_v2 (weak at 300x300;
+# see plans/replace-coco-with-yolo-on-igpu.md). Frigate 0.17.2 OpenVINO
+# detector with model_type: yolo-generic routes to post_process_yolo(),
+# which decodes the raw [1,84,8400] output (cxcywh + class scores) and
+# applies its own NMS - no OpenVINO IR conversion needed.
+#
+# width/height MUST match the export imgsz (640) or the detector
+# crashes with the 320-vs-300 style shape error. input_tensor: nchw +
+# input_dtype: float make Frigate transpose NHWC->NCHW and divide by
+# 255 (0..1 RGB), exactly the preprocessing Ultralytics weights expect
+# (input_pixel_format defaults to rgb - correct).
+#
+# Model files live on the host in config/coco/ (world-writable config
+# dir) which is mounted at /config in the container.
 # ------------------------------------------------------------------
 model:
-  path: /openvino-model/ssdlite_mobilenet_v2.xml
-  labelmap_path: /labelmap.txt
-  width: 300
-  height: 300
+  model_type: yolo-generic
+  path: /config/coco/yolo11n.onnx
+  labelmap_path: /config/coco/labelmap.txt
+  width: 640
+  height: 640
+  input_tensor: nchw
+  input_dtype: float
 
 # ------------------------------------------------------------------
-# OpenVINO CPU detector (paths verified in the 0.17.2 container).
-# The flat `model_path:` overrides the model path; input width/height
-# come from the top-level `model:` block above.
+# OpenVINO detector (0.17.2 container).
+# The flat `model_path:` overrides the model path; model_type / input
+# config come from the top-level `model:` block above.
+# device: CPU - benchmarked ~17ms avg (YOLO11n@640) vs ~19.5ms on the
+# iGPU (plans/replace-coco-with-yolo-on-igpu.md §Results).
 # ------------------------------------------------------------------
 detectors:
   ov:
     type: openvino
-    device: GPU
-    model_path: /openvino-model/ssdlite_mobilenet_v2.xml
+    device: CPU
+    model_path: /config/coco/yolo11n.onnx
 
 # ------------------------------------------------------------------
 # Objects to track and detection thresholds

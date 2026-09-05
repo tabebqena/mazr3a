@@ -244,20 +244,49 @@ files in `config/coco/` are harmless when unused.
 
 ## 6. Verification checklist
 
-- [ ] Step 1 host baseline + version + schema recorded (detection_fps/process_fps, CPU, RAM)
+- [x] Step 1 host baseline + version + schema recorded (detection_fps/process_fps, CPU, RAM)
 - [x] Both candidates exported: `models/coco/yolo11n.onnx`, `models/coco/yolov8s.onnx`
 - [x] `labelmap.txt` present with 80 lines in exact COCO order; class sanity-check passed
-- [ ] Host benchmark run on CPU (GPU reference optional); winner + device recorded
-- [ ] ONNX + labelmap copied to host `config/coco/` (container `/config/coco/`)
-- [ ] [`config/config.yaml`](../config/config.yaml:94) top-level `model:` uses
-      `model_type: yolo-generic`, points to the winner, matching width/height,
-      `input_tensor: nchw`, `input_dtype: float`; `device: CPU` (unless contingency fired)
+- [x] Host benchmark run on CPU (GPU reference done); winner + device recorded (YOLO11n, CPU)
+- [x] ONNX + labelmap copied to host `config/coco/` (container `/config/coco/`)
+- [x] [`config/config.yaml`](../config/config.yaml:94) top-level `model:` uses
+      `model_type: yolo-generic`, points to `yolo11n.onnx`, 640×640,
+      `input_tensor: nchw`, `input_dtype: float`; `device: CPU`
 - [ ] Deployed to host; `/api/config` and `/api/stats` meet accept criteria
 - [ ] Walk-test person event + snapshot + clip (day and night/IR)
 - [ ] Event-label comparison shows person events and fewer mislabels vs baseline
-- [ ] Results recorded in this file; git commits made
+- [ ] Results fully recorded in this file; git commits made (group 1: `83d8844`/`1be57f8`)
 
-## 7. Results (recorded after implementation)
+## 7. Results (recorded during implementation, per the Agents rule)
 
-> To be filled after host baseline + benchmark + deploy + verification on
-> `ai@ssh.mazr3a.garden` — per the Agents rule.
+**Date:** 2026-09-05 · **Host:** `ai@ssh.mazr3a.garden` (`/home/dr/frigate`)
+
+### Step 1 baseline (pre-change)
+- Detector OpenVINO `ssdlite_mobilenet_v2` 300×300, `model_type: ssd`, `device: GPU`,
+  `inference_speed` ≈ 8.6 ms.
+- `/api/stats`: aggregate `detection_fps` 7.1. Cameras online: cam01–03 (det 3.7/1.3/2.1);
+  cam04–09 offline (`cam_fps 0`) → full-load check deferred until they return; cam10 disabled.
+- Container: CPU 57.8%, RAM 1.48 GiB / 7.5 GiB.
+- Rollback md5 of `config/config.yaml`: `2635206c28be7acde57768502192e641`.
+
+### Step 3 benchmark gate (`benchmark_app`, `-t 15`, in the frigate container)
+| Model @640 | Device | Median | Avg | Throughput |
+|---|---|---|---|---|
+| **YOLO11n** | **CPU** | 15.98 ms | **17.04 ms** | **57.6 FPS** |
+| YOLOv8s | CPU | 62.75 ms | 66.26 ms | 15.0 FPS |
+| YOLO11n | GPU (iGPU ref) | 18.64 ms | 19.52 ms | 50.3 FPS |
+
+**Decision: YOLO11n @ 640 on `device: CPU`.**
+- CPU faster than the iGPU for YOLO (17.0 vs 19.5 ms) → confirms §1; no GPU fallback needed.
+- YOLO11n throughput (57.6 FPS) ≫ ~12 fps aggregate ceiling → `detection_fps` will track
+  `process_fps` with large headroom.
+- YOLOv8s (15.0 FPS, 66 ms) sits at the aggregate ceiling → risk of dropped frames when all 10
+  cameras detect simultaneously; documented accuracy option (INT8 later).
+
+### Deployment state
+- Artifacts on host `config/coco/` (→ `/config/coco/`): `yolo11n.onnx`, `yolov8s.onnx`,
+  `labelmap.txt`.
+- `config/config.yaml`: `model_type: yolo-generic`, `/config/coco/yolo11n.onnx`, 640×640,
+  `input_tensor: nchw`, `input_dtype: float`; detector `device: CPU`.
+- Deploy + live verification: in progress (host restart + `/api/config` + `/api/stats` +
+  logs + walk-test pending; full camera set offline at benchmark time).

@@ -1,9 +1,15 @@
 # COCO replacement model — `models/coco/`
 
-Holds the Ultralytics **NMS-free ONNX** COCO detection candidates that will replace Frigate's
-bundled `ssdlite_mobilenet_v2` as the native detector (see
+Staging dir for the Ultralytics **NMS-free ONNX** COCO detection candidates that will replace
+Frigate's bundled `ssdlite_mobilenet_v2` as the native detector (see
 [`plans/replace-coco-with-yolo-on-igpu.md`](../../plans/replace-coco-with-yolo-on-igpu.md)).
-The directory is mounted read-only at `/models/coco` in the `frigate` container.
+
+**Deployment location on the host is `config/coco` → `/config/coco` in-container** (NOT
+`/models/coco`): the `ai` deploy user cannot write `/home/dr/frigate/models` (dr-owned), but
+the world-writable `config/` dir is deployable via the same `.new`+`mv` trick as `config.yaml`,
+and it matches Frigate's own convention (the image already keeps a root-owned `model_cache/`
+under `/config`). These `models/coco/` files are the local source that gets scp'd to
+`config/coco/`.
 
 ## CHOSEN model (active)
 
@@ -29,6 +35,9 @@ only this README and `labelmap.txt` are tracked.
 > `labelmap.txt` order is critical: line *i* must equal the model's class index *i*. The 80
 > Ultralytics COCO names are: `person`, `bicycle`, `car`, ... `toothbrush` (see the file).
 > A wrong index silently swaps labels/box colors.
+
+> Container paths used in `config/config.yaml` are `/config/coco/<winner>.onnx` and
+> `/config/coco/labelmap.txt` (the `config/` dir is already mounted at `/config`).
 
 ## License
 

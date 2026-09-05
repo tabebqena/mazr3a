@@ -30,7 +30,6 @@ services:
     volumes:
       - ./config:/config
       - ./media:/media/frigate
-      - ./models:/models:ro # custom models (see models/coco/)
       - type: tmpfs
         target: /tmp/cache
         tmpfs:

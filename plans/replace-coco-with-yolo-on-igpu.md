@@ -283,10 +283,32 @@ files in `config/coco/` are harmless when unused.
 - YOLOv8s (15.0 FPS, 66 ms) sits at the aggregate ceiling → risk of dropped frames when all 10
   cameras detect simultaneously; documented accuracy option (INT8 later).
 
-### Deployment state
+### Deployment state (verified live on the host, 2026-09-05)
 - Artifacts on host `config/coco/` (→ `/config/coco/`): `yolo11n.onnx`, `yolov8s.onnx`,
   `labelmap.txt`.
 - `config/config.yaml`: `model_type: yolo-generic`, `/config/coco/yolo11n.onnx`, 640×640,
   `input_tensor: nchw`, `input_dtype: float`; detector `device: CPU`.
-- Deploy + live verification: in progress (host restart + `/api/config` + `/api/stats` +
-  logs + walk-test pending; full camera set offline at benchmark time).
+- Deployed via config `.new`+`mv` + `docker compose up -d --force-recreate frigate`
+  (commit `63f8308`); container healthy.
+- `/api/config` confirms `model.model_type == yolo-generic`, path
+  `/config/coco/yolo11n.onnx`, 640×640, and the **correct Ultralytics COCO labelmap**
+  (0 person, 1 bicycle, 2 car, 7 truck … — the old ssdlite labelmap had duplicate/wrong
+  indices like 2 car & 7 car).
+- Live `/api/stats` (settled): detector `inference_speed` ≈ 38.8 ms (≈ model 17 ms +
+  Frigate numpy decode/NMS overhead); detection active on the online cams
+  (cam01 det 4.2 fps, cam03 2.0 fps, cam02 0.7 fps). No YOLO/ONNX/labelmap/shape errors.
+- Log errors are only cam04–09 ffmpeg `No route to host` — **cameras are offline on the LAN**
+  (pre-existing, unrelated to the model).
+
+### Pending (blocked by offline cameras cam04–09)
+- Re-check container CPU (≈192% right after restart vs 57.8% GPU-ssdlite baseline) once the
+  offline cameras settle/return and confirm `sum(detection_fps)` tracks `sum(process_fps)`
+  under all-10 load.
+- Walk-test (day + night/IR) and event-label FP/FN comparison vs baseline.
+- Optional: trial `YOLOv8s` (or INT8 `s`) for accuracy once the full camera set is online and
+  CPU headroom is confirmed.
+
+### Rollback
+Restore the md5-backed `config/config.yaml` baseline
+(`2635206c28be7acde57768502192e641`: ssdlite 300×300, `device: GPU`) and
+`docker compose up -d --force-recreate frigate`.

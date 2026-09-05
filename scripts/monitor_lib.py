@@ -74,6 +74,48 @@ def send_telegram(cfg, text, parse_mode="html"):
         raise RuntimeError(f"Telegram API error: {body.get('description')}")
 
 
+def send_telegram_photo(cfg, photo_bytes, caption="", parse_mode="html"):
+    """Post a photo (JPEG bytes) with an optional caption to the configured
+    chat via the Bot API sendPhoto method (multipart/form-data, stdlib only).
+
+    Used by the fire-watch watcher (scripts/firewatch.py) to send the alert
+    snapshot together with the detection caption.
+    """
+    token, chat = ensure_creds(cfg)
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    boundary = f"----firewatch{int(__import__('time').time() * 1000)}"
+    fields = [
+        ("chat_id", str(chat)),
+        ("caption", caption),
+        ("parse_mode", parse_mode),
+    ]
+    body = bytearray()
+    for name, value in fields:
+        body += (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode("utf-8")
+    body += (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="photo"; '
+        'filename="snapshot.jpg"\r\n'
+        "Content-Type: image/jpeg\r\n\r\n"
+    ).encode("utf-8")
+    body += bytes(photo_bytes)
+    body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.load(response)
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram API error: {result.get('description')}")
+
+
 _SENSOR_KEYS = ("Core", "Package", "Tctl", "Tdie", "Tccd")
 _TEMP_RE = re.compile(r"[+-]?\d+(?:\.\d+)?°C")
 

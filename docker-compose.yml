@@ -51,3 +51,30 @@ services:
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
+
+  # ------------------------------------------------------------------
+  # firewatch - farm fire/smoke watchdog (see plans/fire-detection.md).
+  # Out-of-band: does NOT touch Frigate's person/car/animal detection.
+  # Polls each camera's already-decoded detect frame via the Frigate REST
+  # API (/api/<cam>/latest.jpg) and alerts on Telegram with a snapshot.
+  # Dependency-only image (./firewatch); code/config/model are mounted
+  # read-only so edits need only `docker compose restart firewatch`.
+  # The fire/smoke OpenVINO IR model must exist at ./models/fire/ (see
+  # models/fire/README.md); the Telegram bot lives in config/telegram.conf
+  # (git-ignored). First build needs network for pip.
+  # ------------------------------------------------------------------
+  firewatch:
+    container_name: firewatch
+    build: ./firewatch
+    restart: unless-stopped
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+      - ./models:/models:ro
+    environment:
+      - FRIGATE_API=http://frigate:5000   # compose network: frigate service
+      - TELEGRAM_CONF=/config/telegram.conf
+      - FIREWATCH_CONF=/config/firewatch.conf
+      - MODEL_DIR=/models/fire
+    depends_on:
+      - frigate

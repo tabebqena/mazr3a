@@ -1,0 +1,6 @@
+# Fire-watch runtime dependencies (image only).
+# Keep minimal: inference (OpenVINO/numpy) + JPEG decode/box overlay (Pillow).
+# HTTP to Frigate and Telegram uses the Python standard library (urllib).
+openvino>=2024.2
+numpy>=1.24,<3
+Pillow>=9.1,<12

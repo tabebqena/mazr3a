@@ -17,6 +17,11 @@ frigate.log
 *.db-wal
 *.db-shm
 
+# Fire-watch OpenVINO IR model binaries (large, acquired once - see
+# models/fire/README.md for provenance; README.md and labelmap.txt stay tracked)
+models/fire/*.xml
+models/fire/*.bin
+
 # Python bytecode caches
 __pycache__/
 *.pyc

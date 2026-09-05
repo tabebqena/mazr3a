@@ -1,9 +1,11 @@
 # Frigate NVR — Edge Security System (Phase 0)
 
 Baseline deployment of **Frigate NVR** + **Mosquitto MQTT** on a Debian host with
-10 IP cameras (9 UNV/VCP + 1 Hikvision). AI features (fire detection, Ollama
-descriptions, daily summaries, face/gait profiling) are **deferred** to later
-phases and are not part of this baseline.
+10 IP cameras (9 UNV/VCP + 1 Hikvision). Fire/smoke detection is provided by an
+external **firewatch** service with instant Telegram photo alerts
+([`plans/fire-detection.md`](plans/fire-detection.md)). The remaining AI features
+(Ollama descriptions, daily summaries, face/gait profiling, a native in-Frigate
+fire model) stay deferred to later phases.
 
 ## Hardware / Environment
 
@@ -20,15 +22,25 @@ phases and are not part of this baseline.
 
 ```
 .
-├── docker-compose.yml          # Frigate + Mosquitto services
+├── docker-compose.yml          # Frigate + Mosquitto + firewatch services
 ├── .env.example                # RTSP credentials template (commit this)
 ├── .env                        # RTSP credentials (git-ignored; copy from .env.example)
 ├── config/
 │   ├── config.yaml             # Frigate config (0.17 name): 10 cameras, OpenVINO, MQTT
-│   └── cleanup_media.conf      # Cleanup-cron tunables (disk cap, min free space, age)
+│   ├── cleanup_media.conf      # Cleanup-cron tunables (disk cap, min free space, age)
+│   ├── firewatch.conf          # Fire-watch tunables (cameras, cadence, thresholds)
+│   └── telegram.conf           # Telegram bot creds (git-ignored; example in repo)
 ├── scripts/
 │   ├── cleanup_media.sh        # Deletes oldest media when over the disk cap (host cron)
-│   └── crontab.sample          # Sample cron line to install on the host
+│   ├── firewatch.py            # Fire-watch watcher (runs in the firewatch container)
+│   ├── deploy_firewatch.sh     # Deploys the firewatch service to the remote host
+│   ├── monitor_lib.py          # Shared Telegram/monitoring helpers
+│   └── crontab.sample          # Sample cron lines to install on the host
+├── firewatch/
+│   ├── Dockerfile              # firewatch runtime image (deps only)
+│   └── requirements.txt        # openvino + numpy + Pillow
+├── models/
+│   └── fire/                   # Fire/smoke OpenVINO IR model (xml/bin git-ignored)
 ├── mosquitto/
 │   └── config/mosquitto.conf   # MQTT broker config
 ├── media/                      # Frigate recordings & snapshots (auto-created)
@@ -272,9 +284,41 @@ The global `ffmpeg: hwaccel_args: []` in the config forces software decode (fine
 | MQTT errors in Frigate logs | Confirm the `mqtt` container is running (`docker compose ps`) |
 | "`--- Logging error ---` … `BrokenPipeError: [Errno 32] Broken pipe`" spam on Ctrl+C / shutdown | Cosmetic. During shutdown Frigate's internal log queue (a multiprocessing pipe) is closed while camera-maintainer threads still write to it, so each queued record raises `BrokenPipeError` and Python prints `--- Logging error ---`. Harmless — it never affects recordings or shutdown. Stop with `docker compose down` instead of Ctrl+C on `docker compose up`; deploy detached (`docker compose up -d`). A `docker compose pull` to the latest `:stable` image may remove it in newer releases. The related `resource_tracker: ... leaked semaphore objects` warning is also harmless cleanup noise. |
 
+## Fire detection — `firewatch` service (Phase 1a)
+
+Fire/smoke detection runs as an **out-of-band watcher**, not inside Frigate's detector
+(this avoids regressing the live person/car/animal detection and does not pull the
+high-res main streams). See [`plans/fire-detection.md`](plans/fire-detection.md) for the
+full design.
+
+How it works:
+- The `firewatch` container polls each camera's **already-decoded detect frame** via the
+  Frigate REST API (`http://frigate:5000/api/<cam>/latest.jpg`) - no extra ffmpeg decode,
+  so the 640x360 substream is sufficient for detection.
+- It runs a dedicated **fire/smoke YOLOv8n** model (OpenVINO IR in
+  [`models/fire/`](models/fire/README.md)) and sends a **Telegram photo alert** (via
+  `send_telegram_photo()` in [`scripts/monitor_lib.py`](scripts/monitor_lib.py)) after
+  `MIN_HITS` consecutive frames above `SCORE_THRESHOLD`, then cools down per camera.
+- Tunables (cameras, cadence, thresholds, fire-only vs fire+smoke) live in
+  [`config/firewatch.conf`](config/firewatch.conf); Telegram creds are shared with the
+  host-monitoring scripts via the git-ignored [`config/telegram.conf`](config/telegram.conf).
+
+Operate:
+```bash
+# build + start (first build downloads pip deps)
+docker compose up -d --build firewatch
+docker compose logs -f firewatch          # watch polls / alerts
+docker compose exec firewatch python /scripts/firewatch.py --dry-run   # one live pass
+docker compose restart firewatch          # apply firewatch.conf / code edits
+```
+
+Verification steps are in the plan file's checklist.
+
 ## Deferred (future phases)
 
-- **Phase 1** — Fire/smoke YOLOv8 detection + instant Telegram/webhook alert with high-res snapshot
+- **Phase 1b** — Native in-Frigate fire/smoke detection by swapping the sole detector
+  for a fire + smoke + person + car + animal **union** model (combine with the animal
+  Part-2 model work) so fire appears in the Frigate UI / MQTT events / recorded clips.
 - **Phase 2** — Ollama VLM scene descriptions + SQLite event log + cron daily summary
 - **Phase 3** — Person attributes, gait, and identity profiling (DeepFace / YOLOv8-Pose)
 

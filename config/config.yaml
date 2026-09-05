@@ -128,26 +128,26 @@ objects:
     - cow
   filters:
     person:
-      min_score: 0.7
-      threshold: 0.8
+      min_score: 0.5
+      threshold: 0.65
     dog:
-      min_score: 0.7
-      threshold: 0.8
+      min_score: 0.5
+      threshold: 0.65
     cat:
-      min_score: 0.7
-      threshold: 0.8
+      min_score: 0.5
+      threshold: 0.65
     bird:
       min_score: 0.7
       threshold: 0.8
     horse:
-      min_score: 0.7
+      min_score: 0.5
       threshold: 0.8
     sheep:
-      min_score: 0.7
-      threshold: 0.8
+      min_score: 0.5
+      threshold: 0.65
     cow:
-      min_score: 0.7
-      threshold: 0.8
+      min_score: 0.5
+      threshold: 0.65
 
 # ------------------------------------------------------------------
 # Recording - EVENT-ONLY (Phase 0b).
@@ -192,13 +192,13 @@ snapshots:
 # Lower values increase sensitivity -> more motion triggers.
 # ------------------------------------------------------------------
 motion:
-  threshold: 40
-  contour_area: 20
+  threshold: 25
+  contour_area: 10
   delta_alpha: 0.2
   improve_contrast: false
 
 # ------------------------------------------------------------------
-# Cameras - 10 total (detect-only in Phase 0)
+# Cameras - 9 total (detect-only in Phase 0)
 # UNV:       detect substream /media/video2 (640x360@12)
 # Hikvision: detect substream /Streaming/Channels/102
 # RTSP user/pass come from .env -> container env -> the {FRIGATE_...}
@@ -213,33 +213,60 @@ cameras:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
           roles: [detect]
+    objects:
+      track:
+        - person
+        - car
+        - dog
+        - cat
+        - horse
+        - sheep
+        - cow
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 1
+      fps: 2
 
   cam02:
     ffmpeg:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
           roles: [detect]
+    objects:
+      track:
+        - person
+        - car
+        - dog
+        - cat
+        - horse
+        - sheep
+        - cow
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 1
+      fps: 2
 
   cam03:
     ffmpeg:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
           roles: [detect]
+    objects:
+      track:
+        - person
+        - car
+        - dog
+        - cat
+        - horse
+        - sheep
+        - cow
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 1
+      fps: 2
 
   cam04:
     ffmpeg:
@@ -335,13 +362,13 @@ cameras:
       height: 360
       fps: 1
 
-  cam10:
-    ffmpeg:
-      inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
-          roles: [detect]
-    detect:
-      enabled: true
-      width: 640
-      height: 360
-      fps: 1
+  # cam10:
+  #   ffmpeg:
+  #     inputs:
+  #       - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
+  #         roles: [detect]
+  #   detect:
+  #     enabled: true
+  #     width: 640
+  #     height: 360
+  #     fps: 1

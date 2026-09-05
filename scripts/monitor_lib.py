@@ -14,8 +14,8 @@ Provides:
   - get_cpu_temp_max(): hottest live CPU temperature in °C (read on demand).
 
 The sensor helpers are cache-free: they read live data from lm-sensors on
-every call and never read/write any cache file. scripts/collect_sensors.py (a
-separate daemon) imports run_sensors()/collect() from this module.
+every call and never read/write any cache file. scripts/collect_sensors.py (an
+on-demand reference tool) prints run_sensors()/collect() results to stdout.
 
 Default conf path: <scripts>/../config/telegram.conf (override with the
 TELEGRAM_CONF environment variable).
@@ -180,7 +180,7 @@ def collect(lines):
     """Parse ``sensors`` output into an ordered list of (key, value).
 
     Cache-free: parses whatever lines it is given (usually run_sensors()).
-    Reused by collect_sensors.py (a separate daemon) and get_cpu_temp_max().
+    Reused by collect_sensors.py (on-demand tool) and get_cpu_temp_max().
     """
     return [
         ("CPU_PACK", find_value(lines, "Package id 0", 3)),

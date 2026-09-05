@@ -8,8 +8,8 @@ read-only at `/models/fire` in the `firewatch` container.
 
 [`SalahALHaismawi/yolov26-fire-detection`](https://huggingface.co/SalahALHaismawi/yolov26-fire-detection)
 — **YOLO26-S**, trained on 8,939 images / 100 epochs at 640 (Ultralytics), MIT license.
-Classes: `fire`, `smoke`, `other` (`other` is a catch-all and is **ignored** by firewatch;
-only `fire`/`smoke` can alert).
+Classes (index order): `fire`(0), `other`(1), `smoke`(2) — `other` is a catch-all and is
+**ignored** by firewatch; only `fire`/`smoke` can alert.
 
 Author-reported metrics: mAP@50 **94.9**, mAP@50-95 **68.0**, precision **89.6**,
 recall **88.8**.
@@ -32,8 +32,44 @@ The checkpoint is already downloaded to **`models/fire/best.pt`** in this worksp
 | `best.pt`   | source checkpoint (git-ignored; used only to (re)convert) |
 
 `best.xml`/`best.bin`/`best.pt` are large and **git-ignored**
-(`models/fire/*.xml`, `models/fire/*.bin`, `models/fire/*.pt`) - only this README is
-tracked.
+(`models/fire/*.xml`, `models/fire/*.bin`, `models/fire/*.pt`) - only this README and
+[`VERSIONS.md`](VERSIONS.md) are tracked.
+
+## Versioned checkpoints — `versions/`
+
+Every checkpoint version is archived, self-described and immutable under the git-ignored
+`models/fire/versions/` directory. Naming convention + full design:
+[`plans/model-versioning.md`](../../plans/model-versioning.md); tracked registry with the
+current/active version and per-version provenance: [`VERSIONS.md`](VERSIONS.md).
+
+```
+models/fire/
+├── best.pt / best.xml / best.bin / labelmap.txt   # ACTIVE set (what firewatch loads)
+└── versions/
+    ├── v1-2026-09-05-hf-yolo26s-8939img/   # HF YOLO26-S baseline (active)
+    │   ├── model.pt                        # archived checkpoint
+    │   └── VERSION.json                    # provenance: source/dataset/metrics/md5
+    └── v2-2026-09-05-hf-abonia877-ft5ep/   # fine-tune on Abonia fire-8 train (877 imgs)
+        ├── model.pt
+        └── VERSION.json
+```
+
+- **`versions/<dir>/model.pt`** — the archived checkpoint (never named `best.pt`, so a
+  version folder can't be mistaken for the active model). Name format:
+  `v<N>-<YYYY-MM-DD>-<slug>`, e.g. `v1-2026-09-05-hf-yolo26s-8939img`.
+- **`versions/<dir>/VERSION.json`** — machine-readable provenance (class order, training
+  set, metrics + eval split, parent, md5, status).
+- The `models/fire/` root `best.*` files are just the **copy of the active version**;
+  `versions/` is the canonical archive. Promoting a version refreshes the root copies.
+
+**Promote a version to ACTIVE:**
+```bash
+./scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # or unique prefix "v2"
+```
+It copies `model.pt` → `best.pt` (plus a bundled OpenVINO IR if present), prints the exact
+`prep_fire_model.sh` command to regenerate the IR, and reminds you to deploy
+(`./scripts/deploy_firewatch.sh`) and verify (`firewatch.py --check` / `--dry-run`) on the
+host.
 
 ## What the watcher expects from the exported model
 
@@ -55,8 +91,8 @@ from ultralytics import YOLO
 YOLO("best.pt").export(format="onnx", imgsz=640)   # YOLO26 needs a current ultralytics
 !ovc best.onnx --output_model best                 # -> best.xml + best.bin
 
-# 3 classes in model order: 0=fire 1=smoke 2=other. firewatch ignores 'other'.
-open("labelmap.txt", "w").write("fire\nsmoke\nother\n")
+# 3 classes in model order: 0=fire 1=other 2=smoke. firewatch ignores 'other'.
+open("labelmap.txt", "w").write("fire\nother\nsmoke\n")
 import zipfile
 with zipfile.ZipFile("fire_model.zip", "w") as z:
     for fn in ["best.xml", "best.bin", "labelmap.txt"]:
@@ -93,6 +129,6 @@ any resulting `.pt` to this directory's OpenVINO IR format.
 | Source (active) | `huggingface.co/SalahALHaismawi/yolov26-fire-detection` → `best.pt` (file `models/fire/best.pt`) |
 | License | MIT (model) / CC BY 4.0 (underlying dataset) |
 | Base/input size | YOLO26-S, 640x640 |
-| Class order | `fire`(0), `smoke`(1), `other`(2) — `other` ignored by firewatch |
+| Class order | `fire`(0), `other`(1), `smoke`(2) — `other` ignored by firewatch |
 | Reported metrics | mAP@50 94.9 / mAP@50-95 68.0 / P 89.6 / R 88.8 (author-reported) |
 | Acquired by | AI assistant, 2026-09-05 (`best.pt` in `models/fire/`) |

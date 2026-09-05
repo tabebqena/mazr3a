@@ -2,8 +2,8 @@
 """build_fire_negatives_eval.py - stage curated negative images as an empty-label eval split.
 
 User-curated "background" images (no fire/smoke, e.g. the organised
-unlabelled-images-dir/default-other/ set) are copied into a self-contained
-eval split so a detector can be audited purely for fire/smoke false positives.
+dataset/default-other/ set) are copied into a self-contained eval split so a
+detector can be audited purely for fire/smoke false positives.
 
 Output layout (git-ignored under dataset/*):
     <eval-dir>/
@@ -12,7 +12,7 @@ Output layout (git-ignored under dataset/*):
       data.yaml    <- names fire/other/smoke, val -> images dir
 
 Usage:
-    python scripts/build_fire_negatives_eval.py --src unlabelled-images-dir/default-other
+    python scripts/build_fire_negatives_eval.py --src dataset/default-other
         [--eval-dir dataset/eval/negatives] [--names fire,other,smoke]
 
 Then run a pure FP audit:
@@ -30,7 +30,7 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True,
-                    help="dir of curated negative images (e.g. unlabelled-images-dir/default-other)")
+                    help="dir of curated negative images (e.g. dataset/default-other)")
     ap.add_argument("--eval-dir", default="dataset/eval/negatives")
     ap.add_argument("--names", default="fire,other,smoke",
                     help="comma class names (dataset/model order 0=fire 1=other 2=smoke)")

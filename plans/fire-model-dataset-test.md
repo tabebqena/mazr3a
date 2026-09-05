@@ -221,16 +221,17 @@ unlabeled). Outputs under `dataset/eval/` are git-ignored (`dataset/*`). No prod
 
 ### Follow-up (2026-09-05) — curated-negatives FP audit
 
-The 442 unlabeled images moved to `unlabelled-images-dir/` (git-ignored) were visually
-triaged by the user: **430 are pure background/negatives**, grouped into
-`unlabelled-images-dir/default-other/` (they contain no fire/smoke; "default/other" refers
-to the dataset's catch-all class 1, but per user decision they stay **empty-label
-background** samples — no class-1 boxes — and are used only to measure fire/smoke false
-positives).
+The 442 unlabeled images staged by [`scripts/find_unlabelled_images.py`](../scripts/find_unlabelled_images.py)
+into `dataset/unlabelled-images-dir/` (git-ignored via `dataset/*`) were visually triaged
+by the user: **430 are pure background/negatives**, grouped into `dataset/default-other/`
+(kept alongside the other datasets; they contain no fire/smoke — "default/other" refers to
+the dataset's catch-all class 1, but per user decision they stay **empty-label background**
+samples, no class-1 boxes, and are used only to measure fire/smoke false positives).
 
 - **New helper** [`scripts/build_fire_negatives_eval.py`](../scripts/build_fire_negatives_eval.py)
-  — copies the curated negatives into a self-contained `dataset/eval/negatives/{images,labels}`
-  split with one empty `.txt` per image + a `fire/other/smoke` `data.yaml`.
+  — copies the curated negatives (`--src dataset/default-other`) into a self-contained
+  `dataset/eval/negatives/{images,labels}` split with one empty `.txt` per image + a
+  `fire/other/smoke` `data.yaml`.
 - **FP audit** — [`scripts/test_fire_model.py`](../scripts/test_fire_model.py) over the 430
   negatives at conf 0.5: **fire FP 24/430 (5.6%)**, **smoke FP 2/430 (0.5%)**, `other`-only
   preds 41 (9.5%, ignored in production), any-pred 67 (15.6%), nothing 363 (84.4%).

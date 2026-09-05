@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Copy train images that have no label (missing or empty .txt) to unlabelled-images-dir."""
+"""Copy train images that have no label (missing or empty .txt) to dataset/unlabelled-images-dir."""
 import shutil
 from pathlib import Path
 
 BASE = Path("dataset/ready_fire_smoke_dataset.yolov8/train")
 IMAGES = BASE / "images"
 LABELS = BASE / "labels"
-DEST = Path("unlabelled-images-dir")
+DEST = Path("dataset/unlabelled-images-dir")
 
 
 def main() -> None:

@@ -46,9 +46,8 @@ runs/
 *.swp
 .roo/rules/sshuser.md
 
-# Images from fire/smoke datasets that have no label (empty/missing annotation)
-# so they are excluded from training - large + derived, see
-# scripts/find_unlabelled_images.py
-unlabelled-images-dir/
-
+# Curated fire/smoke dataset material - all large + derived and excluded from
+# training as appropriate. Includes the ready_fire_smoke export, the no-label
+# images staged by scripts/find_unlabelled_images.py (dataset/unlabelled-images-dir),
+# the curated negatives (dataset/default-other) and eval artifacts.
 dataset/*

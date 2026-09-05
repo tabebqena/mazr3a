@@ -105,7 +105,7 @@ model:
 detectors:
   ov:
     type: openvino
-    device: CPU
+    device: GPU
     model_path: /openvino-model/ssdlite_mobilenet_v2.xml
 
 # ------------------------------------------------------------------

@@ -30,8 +30,8 @@ __pycache__/
 # Ultralytics run output (training/val artifacts written to ./runs by default)
 runs/
 
-# Local fire/smoke model eval virtualenv (see plans/fire-model-dataset-test.md)
-.venv/
+# Local fire/smoke model eval virtualenv(s) (see plans/fire-model-dataset-test.md)
+.venv*
 
 # OS / editor noise
 .DS_Store

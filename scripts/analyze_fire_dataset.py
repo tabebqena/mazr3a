@@ -190,9 +190,12 @@ def main():
     lines.append("Splits (images, with>=1 box, boxes):")
     for split, (ni, nl, nb) in per_split.items():
         lines.append("  %-6s images=%4d labeled=%4d boxes=%5d" % (split, ni, nl, nb))
+    total_labeled = sum(v[1] for v in per_split.values())
     lines.append("")
     lines.append("Totals: images=%d labels-with-boxes=%d boxes=%d"
-                 % (total_imgs, sum(v[1] for v in per_split.values()), total_boxes))
+                 % (total_imgs, total_labeled, total_boxes))
+    lines.append("Unlabeled images (no .txt file or empty .txt / 0 boxes): %d"
+                 % (total_imgs - total_labeled))
     lines.append("")
     lines.append("Per-class boxes (index: count): %s" % dict(sorted(cls_boxes.items())))
     lines.append("Per-class images (index: count): %s" % dict(sorted(cls_images.items())))

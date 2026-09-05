@@ -1,16 +1,24 @@
 # ============================================================
-# Frigate media disk-cap cleanup - crontab entry
+# Frigate host cron jobs: media cleanup + Telegram monitoring.
 #
-# Install on the host (overwrites the whole crontab):
+# Install (overwrites the whole crontab):
 #     crontab scripts/crontab.sample
-# or merge into an existing crontab:
-#     crontab -e     # paste the line below
+# or merge the lines into an existing crontab:
+#     crontab -e
 #
-# The script writes its own log to config/cleanup_media.conf's
-# LOG_FILE, so cron output is sent to /dev/null.
-#
-# Adjust /home/dr/frigate if the host deploy dir is different.
+# Each job handles its own logging/alerting, so cron output is
+# sent to /dev/null. Adjust /home/dr/frigate if the host deploy
+# dir differs.
 # ============================================================
 
-# Run every 30 minutes
+# Media disk-cap cleanup (bash) - every 30 minutes
+# (logs to config/cleanup_media.conf -> LOG_FILE)
 */30 * * * * /home/dr/frigate/scripts/cleanup_media.sh >> /dev/null 2>&1
+
+# CPU temperature watchdog (python) - every 10 minutes
+# (Telegram alert when temp >= MAX_TEMP from config/telegram.conf)
+*/10 * * * * /usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py >> /dev/null 2>&1
+
+# Daily machine health report (python) - 08:00 every day
+# (Telegram summary of host + Frigate state, per-camera online/offline)
+0 8 * * * /usr/bin/python3 /home/dr/frigate/scripts/machine-status.py >> /dev/null 2>&1

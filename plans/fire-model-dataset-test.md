@@ -218,3 +218,25 @@ decide on an on-camera `--dry-run` pilot.** Full detail in the report.
 unlabeled). Outputs under `dataset/eval/` are git-ignored (`dataset/*`). No production
 `firewatch`/`config/firewatch.conf` change → **no remote-host deploy needed** (per
 [`.roo/rules/sshuser.md`](../.roo/rules/sshuser.md)).
+
+### Follow-up (2026-09-05) — curated-negatives FP audit
+
+The 442 unlabeled images moved to `unlabelled-images-dir/` (git-ignored) were visually
+triaged by the user: **430 are pure background/negatives**, grouped into
+`unlabelled-images-dir/default-other/` (they contain no fire/smoke; "default/other" refers
+to the dataset's catch-all class 1, but per user decision they stay **empty-label
+background** samples — no class-1 boxes — and are used only to measure fire/smoke false
+positives).
+
+- **New helper** [`scripts/build_fire_negatives_eval.py`](../scripts/build_fire_negatives_eval.py)
+  — copies the curated negatives into a self-contained `dataset/eval/negatives/{images,labels}`
+  split with one empty `.txt` per image + a `fire/other/smoke` `data.yaml`.
+- **FP audit** — [`scripts/test_fire_model.py`](../scripts/test_fire_model.py) over the 430
+  negatives at conf 0.5: **fire FP 24/430 (5.6%)**, **smoke FP 2/430 (0.5%)**, `other`-only
+  preds 41 (9.5%, ignored in production), any-pred 67 (15.6%), nothing 363 (84.4%).
+  Fire-FP confs 0.51–0.89 (mostly sunset/warm-glow unsplash photos); stricter fire conf
+  helps (≥0.7 → 2.6%, ≥0.8 → 1.6%). No image had both fire and smoke FP. Full detail in
+  `dataset/eval/report.md` §7.
+- **Commits:** this follow-up (`build_fire_negatives_eval.py` + plan note). Outputs under
+  `dataset/eval/negatives/` are git-ignored (`dataset/*`). No production change → no
+  remote-host deploy (per [`.roo/rules/sshuser.md`](../.roo/rules/sshuser.md)).

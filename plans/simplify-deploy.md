@@ -61,5 +61,6 @@
   `dev_scripts/promote_fire_model.sh`.
 - Noted in `plans/unified-deploy-orchestrator.md` that it is superseded for the
   scope/bootstrap parts.
-- Remote host deploy + verification pending per `.roo/rules/sshuser.md`
-  (host must be bootstrapped by the user first, then run `deploy_all.sh`).
+- Remote host deploy + verification skipped by user decision (2026-09-05).
+  When ready: user bootstraps `/home/dr/frigate` as a clone of origin/master,
+  then runs `./dev_scripts/deploy_all.sh` (full deploy + verify).

@@ -19,7 +19,7 @@ it to further train the model on:
 
 Deliverables chosen by the user:
 1. A **ready-to-import Colab notebook** (`.ipynb`) — [`notebooks/fire-large-finetune-colab.ipynb`](../notebooks/fire-large-finetune-colab.ipynb)
-2. A **local dataset-prep script** — [`scripts/prep_fire_large_dataset.py`](../scripts/prep_fire_large_dataset.py)
+2. A **local dataset-prep script** — [`dev_scripts/prep_fire_large_dataset.py`](../dev_scripts/prep_fire_large_dataset.py)
 3. A generated **`data.yaml`** (part of the prep output, under the git-ignored `dataset/large_finetune/`)
 4. This **plan file**
 
@@ -38,7 +38,7 @@ Deliverables chosen by the user:
 - `other`/`default` (index 1) is trained but ignored in production, exactly like today.
 - `default-other/` images are **pure background (no boxes)** → added to the training set as
   **empty-label** samples (Ultralytics keeps empty-label images as "backgrounds"), consistent
-  with how [`scripts/build_fire_negatives_eval.py`](../scripts/build_fire_negatives_eval.py) treats
+  with how [`dev_scripts/build_fire_negatives_eval.py`](../dev_scripts/build_fire_negatives_eval.py) treats
   them. Their purpose is false-positive reduction.
 - Local prep output lives under **`dataset/*` (git-ignored)**; only the notebook, prep script and
   plan are committed.
@@ -65,7 +65,7 @@ Deliverables chosen by the user:
 
 ---
 
-## 3. Dataset prep (local, `scripts/prep_fire_large_dataset.py`)
+## 3. Dataset prep (local, `dev_scripts/prep_fire_large_dataset.py`)
 
 Builds a self-contained training layout under **`dataset/large_finetune/`** (git-ignored):
 
@@ -149,18 +149,18 @@ print("names:", m.names)   # must be {0: fire, 1: other, 2: smoke}
 PY
 
 # (b) same harness as the other benchmarks, on the Abonia TEST split (independent)
-.venv/bin/python scripts/test_fire_model.py dataset/large_finetune/best_finetuned_large.pt \
+.venv/bin/python dev_scripts/test_fire_model.py dataset/large_finetune/best_finetuned_large.pt \
     dataset/abonia_eval/eval/data.yaml --out dataset/large_finetune/eval_abonia_test \
     --conf 0.5 --annotate
 
 # (c) FP audit on the 430 pure-background negatives (deploy view)
-.venv/bin/python scripts/test_fire_model.py dataset/large_finetune/best_finetuned_large.pt \
+.venv/bin/python dev_scripts/test_fire_model.py dataset/large_finetune/best_finetuned_large.pt \
     dataset/eval/negatives/data.yaml --out dataset/large_finetune/eval_negatives --conf 0.5
 ```
 
 Compare against: v1 baseline (Abonia test all mAP@50 **0.405**), v2 Abonia fine-tune (0.948), and
 the ready-dataset deploy view numbers. **Do not promote blindly** — promotion + OpenVINO export +
-on-host verification is a separate explicit step ([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh),
+on-host verification is a separate explicit step ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh),
 `.roo/rules/sshuser.md`).
 
 ---
@@ -168,7 +168,7 @@ on-host verification is a separate explicit step ([`scripts/prep_fire_model.sh`]
 ## 6. Implementation checklist
 
 - [x] Write plan (this file).
-- [x] Write [`scripts/prep_fire_large_dataset.py`](../scripts/prep_fire_large_dataset.py).
+- [x] Write [`dev_scripts/prep_fire_large_dataset.py`](../dev_scripts/prep_fire_large_dataset.py).
 - [x] Run prep locally → verify `dataset/large_finetune/` structure + counts + class coverage (§3).
 - [x] Write + validate the Colab notebook
       [`notebooks/fire-large-finetune-colab.ipynb`](../notebooks/fire-large-finetune-colab.ipynb).
@@ -182,8 +182,8 @@ on-host verification is a separate explicit step ([`scripts/prep_fire_model.sh`]
 ## 6a. Implementation log (scaffolding, filled 2026-09-05)
 
 - **2026-09-05 — scaffolding (Code):** wrote this plan,
-  [`scripts/prep_fire_large_dataset.py`](../scripts/prep_fire_large_dataset.py),
-  [`scripts/build_fire_large_colab_nb.py`](../scripts/build_fire_large_colab_nb.py) and generated
+  [`dev_scripts/prep_fire_large_dataset.py`](../dev_scripts/prep_fire_large_dataset.py),
+  [`dev_scripts/build_fire_large_colab_nb.py`](../dev_scripts/build_fire_large_colab_nb.py) and generated
   [`notebooks/fire-large-finetune-colab.ipynb`](../notebooks/fire-large-finetune-colab.ipynb)
   (11 cells, valid nbformat-4). Committed locally (git log).
 - **2026-09-05 — prep run (Code):** ran the prep script (val-frac 0.05, seed 0) → built

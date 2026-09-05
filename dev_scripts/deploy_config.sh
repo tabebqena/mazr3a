@@ -18,7 +18,9 @@ REMOTE_DIR="/home/dr/frigate"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CONFIG="${SCRIPT_DIR}/../config/config.yaml"
-LOCAL_VERIFY="${SCRIPT_DIR}/verify_remote.py"
+# verify_remote.py is a HOST script (stays in scripts/); dev_scripts/ holds only
+# local tooling + this deploy orchestrator, so point one level up.
+LOCAL_VERIFY="${SCRIPT_DIR}/../scripts/verify_remote.py"
 
 # --- non-interactive password via SSH_ASKPASS ---------------------------
 ASKPASS="$(mktemp)"

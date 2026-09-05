@@ -57,7 +57,7 @@ Consequences (implemented accordingly):
 - ⚠️ If the deployed OpenVINO `labelmap.txt` uses `fire/smoke/other`, indices 1 and 2 are
   swapped vs this checkpoint. `fire`-only alerts (index 0) are unaffected, but before any
   `TRACK_SMOKE=true`, regenerate `labelmap.txt` in model order (`fire/other/smoke`) via
-  [`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh).
+  [`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh).
 - [`fire-model-dataset-test.md`](fire-model-dataset-test.md:1) should be revisited before
   implementation (left untouched per scope).
 
@@ -82,11 +82,11 @@ flowchart LR
 
 Generic scripts (dataset-root/out-parametrised, reusable by the other benchmark):
 
-1. **`scripts/analyze_fire_dataset.py`** — audit splits, orphans, per-class tally, image
+1. **`dev_scripts/analyze_fire_dataset.py`** — audit splits, orphans, per-class tally, image
    dims; writes `dataset_summary.txt`, `class_map.json`, GT preview montage.
-2. **`scripts/build_fire_eval_subset.py`** — writes a corrected `data.yaml` for a chosen
+2. **`dev_scripts/build_fire_eval_subset.py`** — writes a corrected `data.yaml` for a chosen
    split (in-place, no copies) or an optional stratified subset (`--limit`).
-3. **`scripts/test_fire_model.py`** — `model.val()` (mAP@50 / mAP@50-95 / P / R,
+3. **`dev_scripts/test_fire_model.py`** — `model.val()` (mAP@50 / mAP@50-95 / P / R,
    per-class via `ap_class_index`) + per-image predict (conf 0.5) CSV, detection-rate
    summary and annotated JPGs.
 

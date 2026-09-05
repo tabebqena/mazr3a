@@ -71,11 +71,11 @@ models/fire/
 
 **Promote a version to ACTIVE:**
 ```bash
-./scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # or unique prefix "v2"
+./dev_scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # or unique prefix "v2"
 ```
 It copies `model.pt` → `best.pt` (plus a bundled OpenVINO IR if present), prints the exact
 `prep_fire_model.sh` command to regenerate the IR, and reminds you to deploy
-(`./scripts/deploy_firewatch.sh`) and verify (`firewatch.py --check` / `--dry-run`) on the
+(`./dev_scripts/deploy_firewatch.sh`) and verify (`firewatch.py --check` / `--dry-run`) on the
 host.
 
 ## What the watcher expects from the exported model
@@ -108,7 +108,7 @@ print("Download fire_model.zip -> unzip its 3 files into models/fire/")
 ```
 
 Then unzip `best.xml`, `best.bin`, `labelmap.txt` into `models/fire/` and deploy:
-`bash scripts/deploy_firewatch.sh`.
+`bash dev_scripts/deploy_firewatch.sh`.
 
 **YOLO26 decode check:** after deploying, run
 `docker compose exec firewatch python /scripts/firewatch.py --dry-run`. If it logs an
@@ -126,7 +126,7 @@ and MIT license. (Its weights were superseded; `models/fire/best.pt` is now the 
 
 Fine-tune the chosen checkpoint on ~100-200 frames from your own cameras (best
 generalization for your angles/lighting), or train `yolov8n` on a Roboflow fire/smoke
-dataset. Use [`scripts/prep_fire_model.sh`](../../scripts/prep_fire_model.sh) to convert
+dataset. Use [`dev_scripts/prep_fire_model.sh`](../../dev_scripts/prep_fire_model.sh) to convert
 any resulting `.pt` to this directory's OpenVINO IR format.
 
 ## Provenance

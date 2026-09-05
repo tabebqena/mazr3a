@@ -102,7 +102,7 @@ Expected outcome: clean run; measured ~5-11 s/iter ⇒ **~1 h per 5 epochs on CP
 ```bash
 cp runs/detect/dataset/abonia_eval/finetune/smoke/weights/best.pt \
    dataset/abonia_eval/finetune/best_finetuned_abonia.pt
-.venv/bin/python scripts/test_fire_model.py dataset/abonia_eval/finetune/best_finetuned_abonia.pt \
+.venv/bin/python dev_scripts/test_fire_model.py dataset/abonia_eval/finetune/best_finetuned_abonia.pt \
     dataset/abonia_eval/eval/data.yaml --out dataset/abonia_eval/finetune/eval_test --conf 0.5 --annotate
 ```
 
@@ -162,7 +162,7 @@ Then download `abonia_finetune/run1/weights/best.pt` → copy into this repo as
   training (the §2 names strings enforce this).
 - **Do not promote blindly:** promoting would change the deployed model — a separate,
   explicit step that must also regenerate the OpenVINO IR + `labelmap.txt`
-  ([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)) and deploy/test on
+  ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)) and deploy/test on
   `ssh.mazr3a.garden` (per `.roo/rules/sshuser.md`).
 
 ---
@@ -176,12 +176,12 @@ Then download `abonia_finetune/run1/weights/best.pt` → copy into this repo as
   0.848. Weights at `runs/detect/dataset/abonia_eval/finetune/smoke/weights/{best,last}.pt`.
 - **2026-09-05 — test-split eval (Code):** promoted `best.pt` →
   `dataset/abonia_eval/finetune/best_finetuned_abonia.pt` (`.names` still
-  fire/other/smoke); ran `scripts/test_fire_model.py` on the 55-image test split →
+  fire/other/smoke); ran `dev_scripts/test_fire_model.py` on the 55-image test split →
   `dataset/abonia_eval/finetune/eval_test/`. Results in §6.1.
 - **2026-09-05 — archive (Code):** canonically archived a copy of this candidate at
   `models/fire/versions/v2-2026-09-05-hf-abonia877-ft5ep/model.pt` (+ `VERSION.json`), per
   [`plans/model-versioning.md`](model-versioning.md); v1 = the HF baseline. Promote helper:
-  [`scripts/promote_fire_model.sh`](../scripts/promote_fire_model.sh). The eval workdir copy
+  [`dev_scripts/promote_fire_model.sh`](../dev_scripts/promote_fire_model.sh). The eval workdir copy
   `dataset/abonia_eval/finetune/best_finetuned_abonia.pt` is left in place.
 
 ### 6.1 Smoke-run candidate (5 epochs) vs baseline — Abonia test split (55 imgs / 57 boxes)

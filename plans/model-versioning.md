@@ -132,10 +132,10 @@ with [`models/fire/VERSIONS.md`](../models/fire/VERSIONS.md).
 
 ---
 
-## 6. Promote workflow — `scripts/promote_fire_model.sh`
+## 6. Promote workflow — `dev_scripts/promote_fire_model.sh`
 
 ```bash
-./scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep
+./dev_scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep
 ```
 
 What it does:
@@ -145,14 +145,14 @@ What it does:
    `labelmap.txt`) it copies all three to the root (deploy-ready).
 4. If **no** IR is present (the common case, since IR is generated from the promoted
    `.pt`), it prints the exact next command —
-   `./scripts/prep_fire_model.sh models/fire/best.pt 640 "fire,other,smoke"` —
+   `./dev_scripts/prep_fire_model.sh models/fire/best.pt 640 "fire,other,smoke"` —
    and warns that the running container still uses the *previous* IR until one is
    regenerated + deployed.
 5. Reminds you to flip `status` in `VERSION.json`/`VERSIONS.md` and to run
-   `./scripts/deploy_firewatch.sh` (push to host) + `--check`/`--dry-run` (per
+   `./dev_scripts/deploy_firewatch.sh` (push to host) + `--check`/`--dry-run` (per
    `.roo/rules/sshuser.md`).
 
-**Deploy is now conditional-safe:** [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh)
+**Deploy is now conditional-safe:** [`dev_scripts/deploy_firewatch.sh`](../dev_scripts/deploy_firewatch.sh)
 was hardened (§8 below) to push **only the ACTIVE model files** (`best.xml` + `best.bin` +
 `labelmap.txt` [+ `best.pt`]) into the host's `models/fire/` — never the whole local
 `models/` tree, so the versioned `versions/` archive stays local and a working host model is
@@ -161,7 +161,7 @@ host (atomic `.new` → `mv`); if the local ACTIVE OpenVINO IR is incomplete but
 already runs one, the host model is left untouched and only code/config deploy. `frigate`/
 `mqtt` are never restarted — only the `firewatch` container, when its model/code/config
 changed. To actually change the served model: generate the IR from the promoted `.pt`
-([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh), which also writes
+([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh), which also writes
 `labelmap.txt` in model order), then deploy.
 
 ---
@@ -172,11 +172,11 @@ changed. To actually change the served model: generate the IR from the promoted 
 - [x] Verify both checkpoints (md5, size, class order `fire/other/smoke`).
 - [x] Create `models/fire/versions/v1-*` with baseline `model.pt` + `VERSION.json`.
 - [x] Create `models/fire/versions/v2-*` with fine-tuned `model.pt` + `VERSION.json`.
-- [x] Add `scripts/promote_fire_model.sh`.
+- [x] Add `dev_scripts/promote_fire_model.sh`.
 - [x] Ignore `models/fire/versions/` in `.gitignore`.
 - [x] Write tracked `models/fire/VERSIONS.md` registry.
 - [x] Update `models/fire/README.md` (layout, convention, promote usage, class-order note).
-- [x] Harden `scripts/deploy_firewatch.sh`: conditional ACTIVE-model push (never whole
+- [x] Harden `dev_scripts/deploy_firewatch.sh`: conditional ACTIVE-model push (never whole
       `models/`, never erases a working host model), firewatch-only restart, `--check` +
       `--dry-run` verification.
 - [x] Commit per logical group.
@@ -199,13 +199,13 @@ deployed + verified on `ssh.mazr3a.garden`. **v1 is the ACTIVE deployed model.**
   `models/fire/best.pt` → `v1/.../model.pt` and
   `dataset/abonia_eval/finetune/best_finetuned_abonia.pt` → `v2/.../model.pt` (originals
   left in place — non-destructive); wrote each `VERSION.json`.
-- **2026-09-05 — helper + docs:** added `scripts/promote_fire_model.sh`; `.gitignore` now
+- **2026-09-05 — helper + docs:** added `dev_scripts/promote_fire_model.sh`; `.gitignore` now
   ignores `models/fire/versions/`; wrote tracked `models/fire/VERSIONS.md`; updated
   `models/fire/README.md` with the layout, naming convention, promote usage and the
   `fire/other/smoke` class-order note.
 - **2026-09-05 — commit:** `ba4954b` — "feat(models): versioned fire checkpoint archive +
   naming convention + promote helper" (implementation).
-- **2026-09-05 — deploy hardening:** rewrote `scripts/deploy_firewatch.sh` per user request —
+- **2026-09-05 — deploy hardening:** rewrote `dev_scripts/deploy_firewatch.sh` per user request —
   model push is now conditional on an md5 diff and limited to the ACTIVE files (the
   `versions/` archive stays local; a host model is never erased); only the `firewatch`
   container is restarted; added `--dry-run` verification. Docs synced
@@ -215,14 +215,14 @@ deployed + verified on `ssh.mazr3a.garden`. **v1 is the ACTIVE deployed model.**
   safe"; `9b5ce83` "docs(plans): record deploy hardening commit e4b5892".
 - **2026-09-05 — IR from v1 + decoder fix:** generated the ACTIVE OpenVINO IR from
   `models/fire/best.pt` (installed `openvino` into `.venv`;
-  [`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh) ... `fire,other,smoke`).
+  [`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh) ... `fire,other,smoke`).
   Discovered the HF checkpoint is an **end-to-end YOLO26** (`[1,300,6]` = xyxy+score+
   class_id), not the raw `[1,4+nc,N]` format: adapted
   [`scripts/firewatch.py`](../scripts/firewatch.py) to decode e2e and to auto-read
   `labelmap.txt` from `MODEL_DIR` (commit `21efddd`, validated on GT fire images).
 - **2026-09-05 — transport rework:** user `ai` cannot write the top-level project dir but IS
   in the docker group, and SSH rides a flaky cloudflared tunnel —
-  [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh) rewritten to a SINGLE-bundle
+  [`dev_scripts/deploy_firewatch.sh`](../dev_scripts/deploy_firewatch.sh) rewritten to a SINGLE-bundle
   upload + one docker-root `install.sh` pass (atomic writes; never deletes host model files),
   with ssh/scp retries + keep-alives and a background build + poll.
 - **2026-09-05 — GO-LIVE (host):** deployed + verified on `ssh.mazr3a.garden`: `firewatch`

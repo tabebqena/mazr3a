@@ -6,14 +6,14 @@ large) and per-version `VERSION.json` manifests are **git-ignored** under
 survive even where the `.pt` files are not present).
 
 - **Naming convention + full design:** [`plans/model-versioning.md`](../plans/model-versioning.md)
-- **Promote helper:** [`scripts/promote_fire_model.sh`](../scripts/promote_fire_model.sh)
+- **Promote helper:** [`dev_scripts/promote_fire_model.sh`](../dev_scripts/promote_fire_model.sh)
 - **Deploy semantics:** the `models/fire/` root `best.*` files are the *active* set that
   `firewatch` loads (`MODEL_DIR=/models/fire`, hardcodes `best.xml`). They are a copy of
   the active version; `versions/` holds the canonical archive.
 
 > **Class order for every version below: `fire`(0) / `other`(1) / `smoke`(2).** Production
 > is fire-only (index 0), so alerts are unaffected; keep `labelmap.txt` in this order when
-> regenerating IR ([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)).
+> regenerating IR ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)).
 
 ---
 
@@ -57,7 +57,7 @@ survive even where the `.pt` files are not present).
 ## Promote to active
 
 ```bash
-./scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # exact name or "v2"
+./dev_scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # exact name or "v2"
 ```
 
 The script copies the version's `model.pt` → `models/fire/best.pt` (+ bundled IR if any),
@@ -66,15 +66,15 @@ promoting, flip that version's `status` to `active` (and the old one to `superse
 + in its `VERSION.json`, then:
 
 ```bash
-./scripts/deploy_firewatch.sh
+./dev_scripts/deploy_firewatch.sh
 docker compose exec firewatch python /scripts/firewatch.py --check
 docker compose exec firewatch python /scripts/firewatch.py --dry-run
 ```
 
-> [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh) pushes **only the ACTIVE
+> [`dev_scripts/deploy_firewatch.sh`](../dev_scripts/deploy_firewatch.sh) pushes **only the ACTIVE
 > model files** (`best.xml`/`best.bin`/`labelmap.txt`[/`best.pt`]) into the host's
 > `models/fire/`, and only when their md5 differs (atomic swap). It never erases a working
 > host model and never ships the local `versions/` archive; only the `firewatch` container
 > is restarted. To change the served model, first generate its IR from the active `.pt`
-> ([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)) so the local active set is
+> ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)) so the local active set is
 > complete, then deploy.

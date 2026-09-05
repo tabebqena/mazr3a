@@ -24,7 +24,7 @@ val until ~--val-frac of the LABELED images are held out. Empty-label/background
 train.
 
 Usage:
-    .venv/bin/python scripts/prep_fire_large_dataset.py \
+    .venv/bin/python dev_scripts/prep_fire_large_dataset.py \
         --ready dataset/ready_fire_smoke_dataset.yolov8 \
         --negatives dataset/default-other \
         --out dataset/large_finetune \

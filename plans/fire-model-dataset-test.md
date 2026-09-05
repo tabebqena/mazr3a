@@ -112,7 +112,7 @@ Working dir for outputs: **`dataset/eval/`** (already covered by `dataset/*` ign
      `ultralytics` (YOLO26-capable). Add `.venv-firetest/` to [`.gitignore`](../.gitignore).
    - Load [`models/fire/best.pt`](../models/fire/best.pt) and print `.names` to confirm
      `['fire','smoke','other']` and that `.val`/`.predict` run on CPU.
-2. **Dataset analysis** — new [`scripts/analyze_fire_dataset.py`](../scripts/analyze_fire_dataset.py)
+2. **Dataset analysis** — new [`dev_scripts/analyze_fire_dataset.py`](../dev_scripts/analyze_fire_dataset.py)
    - Point at the dataset root; discover the YOLOv8 sub-dir; count images vs labels;
      report **orphan images** (no label) and **orphan labels** (no image); tally per-class
      box counts & images-per-class (this confirms whether class `1` exists); sample image
@@ -126,13 +126,13 @@ Working dir for outputs: **`dataset/eval/`** (already covered by `dataset/*` ign
      Record the final map in [`dataset/eval/class_map.json`](../dataset/eval/class_map.json)
      as `{"0":"fire","1":"other","2":"smoke"}` (or without `1` if it does not exist) for
      reuse by the subset builder and report.
-4. **Build subset** — new [`scripts/build_fire_eval_subset.py`](../scripts/build_fire_eval_subset.py)
+4. **Build subset** — new [`dev_scripts/build_fire_eval_subset.py`](../dev_scripts/build_fire_eval_subset.py)
    - Stratify across source prefixes and class presence; target ~150-250 images containing
      `fire`, `smoke`, and `fire+smoke`, plus a few “other-only/negative” for realism.
      Copy images + write remapped YOLO labels (`fire`/`smoke`; `other` dropped by default,
      `--keep-other` flag) into `dataset/eval/subset/{images,labels}` and a matching
      `data.yaml` (`names: [fire, smoke]`).
-5. **Run inference** — new [`scripts/test_fire_model.py`](../scripts/test_fire_model.py)
+5. **Run inference** — new [`dev_scripts/test_fire_model.py`](../dev_scripts/test_fire_model.py)
    - (a) `YOLO("models/fire/best.pt").val(data=subset/data.yaml)` → mAP/P/R table.
    - (b) `predict()` at conf 0.5 over the same images; write per-image CSV
      (`file,gt_fire,gt_smoke,det_fire,det_smoke,max_conf,...`), detection-rate summary, and
@@ -144,7 +144,7 @@ Working dir for outputs: **`dataset/eval/`** (already covered by `dataset/*` ign
 7. **Wrap-up** — commit per logical group (per [`.roo/rules/Agents.md`](../.roo/rules/Agents.md));
    this task is inherently local (dataset + `best.pt` live here) so **no remote-host deploy is
    needed**; document optional follow-ups (full-dataset run; OpenVINO-IR parity once
-   `best.xml` is generated via [`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)).
+   `best.xml` is generated via [`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)).
 
 ---
 
@@ -181,8 +181,8 @@ Working dir for outputs: **`dataset/eval/`** (already covered by `dataset/*` ign
 **`{0: fire, 1: other, 2: smoke}`** — identical to the dataset's confirmed order
 (`0=fire`, `1=default/other`, `2=smoke`). So labels were scored as-is. This also matches
 the class contract already encoded in the shared helpers
-([`scripts/test_fire_model.py`](../scripts/test_fire_model.py),
-[`scripts/build_fire_eval_subset.py`](../scripts/build_fire_eval_subset.py)).
+([`dev_scripts/test_fire_model.py`](../dev_scripts/test_fire_model.py),
+[`dev_scripts/build_fire_eval_subset.py`](../dev_scripts/build_fire_eval_subset.py)).
 `dataset/eval/class_map.json` records the final map.
 
 **Unlabeled images:** of 12,799 `train/` images, 442 have an empty label file (0 boxes)
@@ -193,17 +193,17 @@ and were **excluded** from the eval subset (user instruction). 12,357 labeled im
 1. **Env** — reused the existing local CPU venv `.venv/` (Python 3.11, torch 2.14 CPU,
    ultralytics 8.4.140) instead of creating `.venv-firetest/`; [`.gitignore`](../.gitignore)
    broadened to `.venv*`.
-2. **Analysis** — [`scripts/analyze_fire_dataset.py`](../scripts/analyze_fire_dataset.py) run
+2. **Analysis** — [`dev_scripts/analyze_fire_dataset.py`](../dev_scripts/analyze_fire_dataset.py) run
    → [`dataset/eval/dataset_summary.txt`](../dataset/eval/dataset_summary.txt) (+ preview/,
    +class_map.json). Class box counts: fire 14,145 / other 3,796 / smoke 12,334; class `1`
    **does exist** (2,198 images).
 3. **Class map** — [`dataset/eval/class_map.json`](../dataset/eval/class_map.json) +
    source-spanning GT preview montage in [`dataset/eval/preview/`](../dataset/eval/preview/).
-4. **Subset** — [`scripts/build_fire_eval_subset.py`](../scripts/build_fire_eval_subset.py)
+4. **Subset** — [`dev_scripts/build_fire_eval_subset.py`](../dev_scripts/build_fire_eval_subset.py)
    updated to skip unlabeled images by default (`--include-unlabeled` opt-in) and accept
    `--names`; 200-image stratified labeled-only subset built under `dataset/eval/train/`
    + `dataset/eval/data.yaml`.
-5. **Run** — [`scripts/test_fire_model.py`](../scripts/test_fire_model.py) → metrics +
+5. **Run** — [`dev_scripts/test_fire_model.py`](../dev_scripts/test_fire_model.py) → metrics +
    per-image CSV + annotated JPGs in [`dataset/eval/results/`](../dataset/eval/results/).
 6. **Report** — [`dataset/eval/report.md`](../dataset/eval/report.md).
 
@@ -221,18 +221,18 @@ unlabeled). Outputs under `dataset/eval/` are git-ignored (`dataset/*`). No prod
 
 ### Follow-up (2026-09-05) — curated-negatives FP audit
 
-The 442 unlabeled images staged by [`scripts/find_unlabelled_images.py`](../scripts/find_unlabelled_images.py)
+The 442 unlabeled images staged by [`dev_scripts/find_unlabelled_images.py`](../dev_scripts/find_unlabelled_images.py)
 into `dataset/unlabelled-images-dir/` (git-ignored via `dataset/*`) were visually triaged
 by the user: **430 are pure background/negatives**, grouped into `dataset/default-other/`
 (kept alongside the other datasets; they contain no fire/smoke — "default/other" refers to
 the dataset's catch-all class 1, but per user decision they stay **empty-label background**
 samples, no class-1 boxes, and are used only to measure fire/smoke false positives).
 
-- **New helper** [`scripts/build_fire_negatives_eval.py`](../scripts/build_fire_negatives_eval.py)
+- **New helper** [`dev_scripts/build_fire_negatives_eval.py`](../dev_scripts/build_fire_negatives_eval.py)
   — copies the curated negatives (`--src dataset/default-other`) into a self-contained
   `dataset/eval/negatives/{images,labels}` split with one empty `.txt` per image + a
   `fire/other/smoke` `data.yaml`.
-- **FP audit** — [`scripts/test_fire_model.py`](../scripts/test_fire_model.py) over the 430
+- **FP audit** — [`dev_scripts/test_fire_model.py`](../dev_scripts/test_fire_model.py) over the 430
   negatives at conf 0.5: **fire FP 24/430 (5.6%)**, **smoke FP 2/430 (0.5%)**, `other`-only
   preds 41 (9.5%, ignored in production), any-pred 67 (15.6%), nothing 363 (84.4%).
   Fire-FP confs 0.51–0.89 (mostly sunset/warm-glow unsplash photos); stricter fire conf

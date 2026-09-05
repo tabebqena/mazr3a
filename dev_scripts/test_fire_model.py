@@ -14,7 +14,7 @@ Two complementary outputs:
       image-level fire/smoke detection-rate, and annotated JPGs (GT + predictions).
 
 Usage:
-    python scripts/test_fire_model.py <model.pt> <data.yaml> [--images-dir DIR]
+    python dev_scripts/test_fire_model.py <model.pt> <data.yaml> [--images-dir DIR]
         [--conf 0.5] [--imgsz 640] [--out DIR] [--annotate]
 """
 import argparse

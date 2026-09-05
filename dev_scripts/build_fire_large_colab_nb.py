@@ -3,13 +3,13 @@
 
 A ready-to-import Google Colab notebook that fine-tunes models/fire/best.pt (YOLO26-S,
 classes fire/other/smoke) on the large local fire/smoke dataset built by
-scripts/prep_fire_large_dataset.py (dataset/large_finetune_colab.zip).
+dev_scripts/prep_fire_large_dataset.py (dataset/large_finetune_colab.zip).
 
 Data entry supports either (a) Google Drive (recommended for the ~600 MB zip) or
 (b) files.upload(). Set the DRIVE_* variables to "" to trigger an upload dialog instead.
 
 Usage:
-    python scripts/build_fire_large_colab_nb.py   # writes notebooks/fire-large-finetune-colab.ipynb
+    python dev_scripts/build_fire_large_colab_nb.py   # writes notebooks/fire-large-finetune-colab.ipynb
 """
 import json
 import os
@@ -45,7 +45,7 @@ C_TITLE = md(
         "\n",
         "- Plan: [`plans/fire-model-large-finetune-colab.md`](../plans/fire-model-large-finetune-colab.md)\n",
         "- Dataset prep (run once, locally): "
-        "`python scripts/prep_fire_large_dataset.py --ready dataset/ready_fire_smoke_dataset.yolov8 "
+        "`python dev_scripts/prep_fire_large_dataset.py --ready dataset/ready_fire_smoke_dataset.yolov8 "
         "--negatives dataset/default-other --out dataset/large_finetune --val-frac 0.05 --seed 0 --zip`\n",
         "  → produces `dataset/large_finetune_colab.zip` (train 12,170 / val 629, all 640×640).\n",
         "- **Class contract:** fire=0 / other=1 / smoke=2. The export is already index-aligned, "

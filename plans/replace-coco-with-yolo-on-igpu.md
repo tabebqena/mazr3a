@@ -43,7 +43,7 @@ the CPU cannot keep `detection_fps` tracking `process_fps` when all 10 cameras a
 | Tracked (global) | person, car, dog, cat, bird, horse, sheep, cow | [config](../config/config.yaml:119) |
 | Per-camera overrides | cam04–07 track person+car only; cam04–09 `fps: 1`, cam01–03 `fps: 2` | [config](../config/config.yaml:271) |
 | Detect input | 640×360 substreams | [config](../config/config.yaml:226) |
-| Host deploy user | `ai@ssh.mazr3a.garden`; in `docker` group; **cannot write `/home/dr/frigate/models`** (dr-owned); the **world-writable `config/` dir is the deploy path** | [`deploy_config.sh`](../scripts/deploy_config.sh:41) |
+| Host deploy user | `ai@ssh.mazr3a.garden`; in `docker` group; **cannot write `/home/dr/frigate/models`** (dr-owned); the **world-writable `config/` dir is the deploy path** | [`deploy_config.sh`](../dev_scripts/deploy_config.sh:41) |
 | Model location | host `config/coco/` → container `/config/coco/` (Frigate keeps models under `/config`, e.g. `model_cache/`) | — |
 
 ## 3. Architecture
@@ -137,7 +137,7 @@ Local staging in `models/coco/` using the workspace venv:
   output shape `[1, 84, 8400]` (verified) — exactly what Frigate's `post_process_yolo` parses.
 - `labelmap.txt`: 80 lines, exact Ultralytics COCO index order (tracked; sanity-check printed
   `person car dog horse sheep cow`).
-- Regenerate anytime with [`scripts/prep_coco_model.sh`](../scripts/prep_coco_model.sh).
+- Regenerate anytime with [`dev_scripts/prep_coco_model.sh`](../dev_scripts/prep_coco_model.sh).
 - **License:** Ultralytics weights are AGPL-3.0 (fine for self-hosted; see README).
 
 ### Step 3 — Host benchmark gate (in progress — decides model + device)
@@ -197,7 +197,7 @@ distributions differ from SSD, so tune `min_score`/`threshold` after the first d
 ### Step 6 — Deploy config + verify on the host
 
 Deploy `config/config.yaml` via the standard mechanism
-([`deploy_config.sh`](../scripts/deploy_config.sh:41) — scp `.new` + `mv`, then
+([`deploy_config.sh`](../dev_scripts/deploy_config.sh:41) — scp `.new` + `mv`, then
 `docker compose up -d`), then:
 
 ```bash

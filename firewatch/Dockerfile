@@ -3,7 +3,7 @@
 #
 # Dependency-only image: NO application code is baked in. At runtime the
 # compose service mounts read-only:
-#   ./scripts -> /scripts   (firewatch.py + monitor_lib.py)
+#   ./scripts -> /scripts   (firewatch.py + collect_sensors.py)
 #   ./config  -> /config    (firewatch.conf, telegram.conf)
 #   ./models  -> /models    (fire/smoke OpenVINO IR model)
 # so editing code or config needs only `docker compose restart firewatch`,

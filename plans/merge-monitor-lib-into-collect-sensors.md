@@ -27,7 +27,7 @@ no conky).
 - Consumers updated to `import collect_sensors as lib`:
   - `scripts/machine-monitor.py`, `scripts/machine-status.py`,
     `scripts/firewatch.py` (docstrings/comments updated too).
-- `scripts/deploy_firewatch.sh` bundles `collect_sensors.py` instead of
+- `dev_scripts/deploy_firewatch.sh` bundles `collect_sensors.py` instead of
   `monitor_lib.py`.
 
 ## 3. Verification

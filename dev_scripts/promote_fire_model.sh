@@ -9,16 +9,16 @@
 # container still uses the previous IR until then.
 #
 # Usage:
-#   ./scripts/promote_fire_model.sh <version-dir|unique-prefix>
+#   ./dev_scripts/promote_fire_model.sh <version-dir|unique-prefix>
 # Examples:
-#   ./scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep
-#   ./scripts/promote_fire_model.sh v2            # unique-prefix match
+#   ./dev_scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep
+#   ./dev_scripts/promote_fire_model.sh v2            # unique-prefix match
 #
 # Versioning convention + layout: see models/fire/VERSIONS.md and
 # plans/model-versioning.md. After promoting, update the version's status in
 # its VERSION.json + VERSIONS.md, then deploy & verify on the host
 # (per .roo/rules/sshuser.md):
-#   ./scripts/deploy_firewatch.sh
+#   ./dev_scripts/deploy_firewatch.sh
 # ============================================================
 set -euo pipefail
 
@@ -90,7 +90,7 @@ else
   echo "   previous OpenVINO IR until you regenerate + deploy it. Generate IR from"
   echo "   the new best.pt (class order is fire/other/smoke for both current versions;"
   echo "   labelmap.txt MUST match the checkpoint's class index order):"
-  echo "     ./scripts/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
+  echo "     ./dev_scripts/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
 fi
 
 echo "=============================================================="
@@ -100,6 +100,6 @@ echo "     update the Active table in models/fire/VERSIONS.md"
 echo "   - deploy + verify on the host (deploy pushes only the ACTIVE model files, and"
 echo "     only when they differ - so generate best.xml/bin/labelmap.txt locally first"
 echo "     to make the ACTIVE set complete):"
-echo "       ./scripts/deploy_firewatch.sh"
+echo "       ./dev_scripts/deploy_firewatch.sh"
 echo "       docker compose exec firewatch python /scripts/firewatch.py --check"
 echo "       docker compose exec firewatch python /scripts/firewatch.py --dry-run"

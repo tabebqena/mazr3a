@@ -14,7 +14,7 @@ If --limit N is given and the split is larger than N, a class-stratified subset 
 materialised (copies images + labels) so heavy CPU runs stay bounded.
 
 Usage:
-    python scripts/build_fire_eval_subset.py <dataset_root> --split train \
+    python dev_scripts/build_fire_eval_subset.py <dataset_root> --split train \
         [--eval-dir DIR] [--limit N] [--seed 0] [--names fire,other,smoke] \
         [--include-unlabeled]
 

@@ -288,7 +288,7 @@ labels the new model provides (e.g. keep `person`, `car`, farm animals only if w
    new model artifacts under `models/`).
 2. Ask to move changes to the remote host and run test/verification there
    (`ai@ssh.mazr3a.garden`).
-3. Deploy config: reuse/extend [`scripts/deploy_config.sh`](../scripts/deploy_config.sh)
+3. Deploy config: reuse/extend [`dev_scripts/deploy_config.sh`](../dev_scripts/deploy_config.sh)
    (scp → mv over `config/config.yaml.new` → `docker compose restart frigate`).
 4. Verify:
    - `/api/config` shows the new model width/height and per-camera `detect`/`mask`.
@@ -316,5 +316,5 @@ labels the new model provides (e.g. keep `person`, `car`, farm animals only if w
 | [`docker-compose.yml`](../docker-compose.yml) | 4 (models volume) |
 | `models/person/best.xml` + `.bin` + `labelmap.txt` | 4 (new) |
 | [`camera-substream-report.md`](../camera-substream-report.md) | 3 (re-probe bitrate/res) |
-| [`scripts/deploy_config.sh`](../scripts/deploy_config.sh) | 5 (verify steps) |
+| [`dev_scripts/deploy_config.sh`](../dev_scripts/deploy_config.sh) | 5 (verify steps) |
 | [`plans/animal-motion-detection.md`](animal-motion-detection.md) | reference (model export steps) |

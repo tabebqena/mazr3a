@@ -51,6 +51,6 @@ runs/
 
 # Curated fire/smoke dataset material - all large + derived and excluded from
 # training as appropriate. Includes the ready_fire_smoke export, the no-label
-# images staged by scripts/find_unlabelled_images.py (dataset/unlabelled-images-dir),
+# images staged by dev_scripts/find_unlabelled_images.py (dataset/unlabelled-images-dir),
 # the curated negatives (dataset/default-other) and eval artifacts.
 dataset/*

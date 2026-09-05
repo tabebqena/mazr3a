@@ -13,7 +13,7 @@ Layout expected (each split dir contains images/ and labels/):
       test/{images,labels}/
 
 Usage:
-    python scripts/analyze_fire_dataset.py <dataset_root> [--out DIR] [--preview N]
+    python dev_scripts/analyze_fire_dataset.py <dataset_root> [--out DIR] [--preview N]
 
 Writes into --out (default: dataset_root/../<name>_eval):
     dataset_summary.txt   human-readable audit

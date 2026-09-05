@@ -7,10 +7,10 @@
 # (local, or free Google Colab - see models/fire/README.md).
 #
 # Usage:
-#   ./scripts/prep_fire_model.sh /path/to/best.pt [imgsz] [classes]
+#   ./dev_scripts/prep_fire_model.sh /path/to/best.pt [imgsz] [classes]
 # Examples:
-#   ./scripts/prep_fire_model.sh ~/Downloads/best.pt 640 "fire,smoke"
-#   ./scripts/prep_fire_model.sh ~/Downloads/best.pt 640 "fire"     # fire-only model
+#   ./dev_scripts/prep_fire_model.sh ~/Downloads/best.pt 640 "fire,smoke"
+#   ./dev_scripts/prep_fire_model.sh ~/Downloads/best.pt 640 "fire"     # fire-only model
 #
 # The input must be a YOLO checkpoint whose classes are fire/smoke
 # (a COCO model will NOT detect fire). Default class order is
@@ -86,6 +86,6 @@ echo "IMPORTANT:"
 echo "  - labelmap.txt was written as: $(tr '\n' ',' < "$DEST_DIR/labelmap.txt")"
 echo "    Its line order MUST equal the checkpoint's class index order,"
 echo "    otherwise fire/smoke labels/box colors are swapped."
-echo "  - Deploy to the host with: scripts/deploy_firewatch.sh"
+echo "  - Deploy to the host with: dev_scripts/deploy_firewatch.sh"
 echo "  - Sanity-check model load + one live frame:"
 echo "      docker compose exec firewatch python /scripts/firewatch.py --dry-run"

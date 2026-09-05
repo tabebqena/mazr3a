@@ -56,7 +56,7 @@ dedup prevents alert spam.
 | Stack | Frigate 0.17 + Mosquitto (Docker Compose), see [`docker-compose.yml`](../docker-compose.yml) |
 | Active config | [`config/config.yaml`](../config/config.yaml) — **NOT modified by this task** |
 | Host | Debian, Intel i7-9700 (8 cores), 7.5 GiB RAM — CPU/RAM constrained |
-| Deploy path | Remote `/home/dr/frigate` via SSH user `ai` at `ssh.mazr3a.garden` (see `scripts/deploy_config.sh` + `.roo/rules/sshuser.md`) |
+| Deploy path | Remote `/home/dr/frigate` via SSH user `ai` at `ssh.mazr3a.garden` (see `dev_scripts/deploy_config.sh` + `.roo/rules/sshuser.md`) |
 | Cameras | 10 detect substreams (UNV 640x360, cam08 Hikvision), detect `fps: 1` |
 | Frigate API | `http://<host>:5000`; per-camera frame endpoint `GET /api/<cam>/latest.jpg` |
 | Telegram creds | [`config/telegram.conf`](../config/telegram.conf) (git-ignored); real `BOT_TOKEN`/`CHAT_ID` must exist on the host |
@@ -134,7 +134,7 @@ The bundled COCO model has no fire class, so a dedicated model is required. Step
 > The standalone watcher does its own NMS, so the export does **not** need Frigate's
 > NMS-free `[1,N,6]` tensor constraint — a standard YOLOv8 export is fine.
 >
-> **Run [`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)`** to automate the
+> **Run [`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)`** to automate the
 > `.pt` -> ONNX -> OpenVINO IR export and install `best.xml` / `best.bin` / `labelmap.txt`
 > here. Concrete download sources (Roboflow Universe, GitHub Releases) and a train-your-own
 > Colab fallback are documented in [`models/fire/README.md`](../models/fire/README.md).
@@ -231,9 +231,9 @@ Notes:
 - Same default compose network, so `firewatch` reaches Frigate at `frigate:5000`.
 - No new host ports; the image is built on the host with `docker compose up -d --build`.
 
-### 5.7 Create [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh)
+### 5.7 Create [`dev_scripts/deploy_firewatch.sh`](../dev_scripts/deploy_firewatch.sh)
 
-Mirror the SSH_ASKPASS pattern of [`scripts/deploy_config.sh`](../scripts/deploy_config.sh)
+Mirror the SSH_ASKPASS pattern of [`dev_scripts/deploy_config.sh`](../dev_scripts/deploy_config.sh)
 (user `ai`, host `ssh.mazr3a.garden`, remote `/home/dr/frigate`):
 1. `scp` `docker-compose.yml`, `firewatch/`, `scripts/`, `config/firewatch.conf`,
    `config/telegram.conf.example`, and `models/` to the remote deploy dir.
@@ -261,7 +261,7 @@ Before implementation completes, confirm on the host (via SSH `ai@ssh.mazr3a.gar
 
 ```bash
 # from this workspace
-scripts/deploy_firewatch.sh
+dev_scripts/deploy_firewatch.sh
 
 # then watch it come up (or run manually on the host)
 cd /home/dr/frigate
@@ -310,5 +310,5 @@ ssh ai@ssh.mazr3a.garden "cd /home/dr/frigate && docker compose restart firewatc
   (1) `monitor_lib` photo helper, (2) `firewatch.py` + `firewatch.conf` + Dockerfile +
   compose service, (3) deploy script, (4) this plan.
 - After local changes are committed, hand off to the remote host via
-  `scripts/deploy_firewatch.sh` and run the verification checklist there (per
+  `dev_scripts/deploy_firewatch.sh` and run the verification checklist there (per
   `.roo/rules/sshuser.md`).

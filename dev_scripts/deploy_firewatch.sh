@@ -146,7 +146,7 @@ if [ "$LOCAL_IR_OK" -eq 1 ]; then
 else
   echo "   WARNING: local ACTIVE OpenVINO IR INCOMPLETE (need best.xml+best.bin+"
   echo "   labelmap.txt under models/fire/). If the host runs a model it is left"
-  echo "   untouched. Generate IR first: ./scripts/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
+  echo "   untouched. Generate IR first: ./dev_scripts/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
 fi
 
 # --- install.sh (runs as root inside the bind-mounted alpine) ------------

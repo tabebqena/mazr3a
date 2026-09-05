@@ -12,9 +12,9 @@
 # (.venv/) already has ultralytics 8.4.140; `onnx` is added if missing.
 #
 # Usage:
-#   ./scripts/prep_coco_model.sh [imgsz]
+#   ./dev_scripts/prep_coco_model.sh [imgsz]
 # Example:
-#   ./scripts/prep_coco_model.sh 640
+#   ./dev_scripts/prep_coco_model.sh 640
 # ============================================================
 set -euo pipefail
 

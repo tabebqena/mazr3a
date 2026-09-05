@@ -12,11 +12,11 @@ Output layout (git-ignored under dataset/*):
       data.yaml    <- names fire/other/smoke, val -> images dir
 
 Usage:
-    python scripts/build_fire_negatives_eval.py --src dataset/default-other
+    python dev_scripts/build_fire_negatives_eval.py --src dataset/default-other
         [--eval-dir dataset/eval/negatives] [--names fire,other,smoke]
 
 Then run a pure FP audit:
-    .venv/bin/python scripts/test_fire_model.py models/fire/best.pt \
+    .venv/bin/python dev_scripts/test_fire_model.py models/fire/best.pt \
         dataset/eval/negatives/data.yaml --out dataset/eval/negatives/results
 """
 import argparse

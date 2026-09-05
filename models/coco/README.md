@@ -54,7 +54,7 @@ machine with `ultralytics` + internet:
 # from the workspace root
 . .venv/bin/activate
 python3 -m pip install -q onnx            # only if missing
-bash scripts/prep_coco_model.sh 640       # exports BOTH yolo11n + yolov8s NMS-free ONNX @640
+bash dev_scripts/prep_coco_model.sh 640       # exports BOTH yolo11n + yolov8s NMS-free ONNX @640
 ```
 
 The script runs a class-order sanity check (`person car dog horse sheep cow`).

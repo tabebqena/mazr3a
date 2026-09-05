@@ -191,7 +191,9 @@ class FireModel:
 
         dets = []
         for ci in range(self.nc):
-            if allowed and self.labels[ci] not in allowed:
+            # allowed is a lowercase name set; compare case-insensitively so
+            # models with labels like "Fire" still match the "fire" track.
+            if allowed and self.labels[ci].lower() not in allowed:
                 continue
             idx = np.where(scores[:, ci] >= score_thresh)[0]
             for i in idx:
@@ -252,8 +254,8 @@ def overlay_boxes(jpeg_bytes, dets, model_hw=None):
 # ---------------------------------------------------------------------------
 def build_caption(camera, dets, track_smoke):
     ts = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-    top = "🔥 FIRE ALERT" if any(d["label"] == "fire" for d in dets) else "⚠️ FIRE WATCH"
-    if not track_smoke and all(d["label"] == "smoke" for d in dets):
+    top = "🔥 FIRE ALERT" if any(d["label"].lower() == "fire" for d in dets) else "⚠️ FIRE WATCH"
+    if not track_smoke and all(d["label"].lower() == "smoke" for d in dets):
         top = "💨 SMOKE WATCH"
     lines = [f"<b>{top}</b>", f"<b>Camera:</b> {lib.esc_html(camera)}",
              f"<b>Time:</b> {lib.esc_html(ts)}"]

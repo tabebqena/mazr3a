@@ -52,6 +52,47 @@ Both end with the same converter step that produces `best.xml` / `best.bin` /
 > get taken down; Roboflow Universe and GitHub Releases are the two reliable places to
 > find an actively published fire/smoke `best.pt`.
 
+### Option A2 — use a known pre-trained fire+smoke checkpoint (no training)
+
+[`Abonia1/YOLOv8-Fire-and-Smoke-Detection`](https://github.com/Abonia1/YOLOv8-Fire-and-Smoke-Detection)
+ships a trained **YOLOv8s** checkpoint at `runs/detect/train/weights/best.pt` with classes
+`Fire`, `default`, `smoke`. The `default` class is dataset noise - firewatch ignores it and
+only `fire`/`smoke` can alert. A copy of the checkpoint is already at `models/fire/best.pt`
+in this workspace (git-ignored) if you prefer to convert locally.
+
+Quick **Colab convert** (downloads the checkpoint, exports at 640, converts to OpenVINO IR,
+writes `labelmap.txt` with ALL 3 classes in model order - do not drop `default` or the
+output columns shift):
+
+```python
+!pip install -q ultralytics openvino
+!wget -q -O best.pt "https://raw.githubusercontent.com/Abonia1/YOLOv8-Fire-and-Smoke-Detection/main/runs/detect/train/weights/best.pt"
+
+from ultralytics import YOLO
+YOLO("best.pt").export(format="onnx", imgsz=640)   # export for 640 inference
+!ovc best.onnx --output_model best                 # -> best.xml + best.bin
+
+# 3 classes in model order, lowercased: 0=fire 1=default 2=smoke.
+# firewatch's allowed set {'fire'} / {'fire','smoke'} ignores 'default'.
+open("labelmap.txt", "w").write("fire\ndefault\nsmoke\n")
+import zipfile
+with zipfile.ZipFile("fire_model.zip", "w") as z:
+    for fn in ["best.xml", "best.bin", "labelmap.txt"]:
+        z.write(fn)
+print("Download fire_model.zip -> unzip its 3 files into models/fire/")
+```
+
+Then unzip the three files into `models/fire/`, deploy `bash scripts/deploy_firewatch.sh`,
+and validate with a `--dry-run` pass on live frames.
+
+Notes on this checkpoint:
+- Trained at imgsz 800; exporting at 640 keeps CPU low and matches the 640x360 detect
+  frames. Export at 800 instead for maximum small-flame fidelity (slightly higher CPU).
+- The repo has **no license** (proprietary/default); the underlying dataset declares
+  **CC BY 4.0**. Verify you are comfortable with this before production use.
+- Because `default` was a noisy extra class, sanity-check recall on your own footage
+  before trusting it (a real test fire / the `--dry-run` output).
+
 ### Option B — train your own YOLOv8n (free Google Colab, ~30-60 min)
 
 Most reliable way to get a model whose class order you control. On the Roboflow page:
@@ -126,8 +167,8 @@ files, or place a `best.pt`/`best.onnx` in this workspace and ask to have it con
 
 | Item | Value |
 |---|---|
-| Source | _(to be filled in once a checkpoint is chosen)_ |
-| License | _(to be filled in)_ |
-| Input size | 640x640 (typical YOLOv8n) |
-| Class order | `fire`, `smoke` (verify against `labelmap.txt`) |
-| Acquired by | _(who / when)_ |
+| Source | `github.com/Abonia1/YOLOv8-Fire-and-Smoke-Detection` → `runs/detect/train/weights/best.pt` |
+| License | Repo: none listed; underlying dataset: CC BY 4.0 (verify before production) |
+| Base/input size | YOLOv8s, trained at 800; exported for inference at 640 |
+| Class order | `fire`(0), `default`(1), `smoke`(2) — `default` is ignored by firewatch |
+| Acquired by | AI assistant, 2026-09-05 (`best.pt` downloaded to `models/fire/`) |

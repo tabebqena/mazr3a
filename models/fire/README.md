@@ -54,24 +54,46 @@ Both end with the same converter step that produces `best.xml` / `best.bin` /
 
 ### Option B — train your own YOLOv8n (free Google Colab, ~30-60 min)
 
-Most reliable way to get a model whose class order you control. Grab a "fire and smoke"
-**dataset** from Roboflow Universe (Dataset tab → Download → YOLOv8 → it gives you a
-`roboflow` pip snippet with your dataset's key), then in Colab:
+Most reliable way to get a model whose class order you control. On the Roboflow page:
+**Dataset → Download Dataset → YOLOv8 → Continue** (free account) → copy the generated
+`roboflow` download snippet (it embeds your dataset key + the version you picked). Then
+run this **whole cell** in a Colab notebook - it trains YOLOv8n, converts to OpenVINO IR,
+writes `labelmap.txt` from the dataset's own `data.yaml` (class order always correct), and
+zips the three files:
 
 ```python
-!pip install -q ultralytics roboflow openvino
+!pip install -q ultralytics openvino roboflow
 
 from roboflow import Roboflow
-# Paste the dataset's download snippet here (it writes a data.yaml),
-# e.g. rf = Roboflow(api_key="..."); project = rf.workspace("...").project("...")
-# dataset = project.version(1).download("yolov8")
+rf = Roboflow(api_key="YOUR_API_KEY")                  # free key: app.roboflow.com
+project = rf.workspace("firedetection-sserj").project("fire_detection-uhbdr")
+version = project.version(1)                           # use the version you chose
+dataset = version.download("yolov8")                   # writes data.yaml + images
 
 from ultralytics import YOLO
-model = YOLO("yolov8n.pt")
-model.train(data="/content/datasets/<your-dataset>/data.yaml",
+model = YOLO("yolov8n.pt")                             # nano: CPU-friendly
+model.train(data=dataset.location + "/data.yaml",
             epochs=60, imgsz=640, batch=16, patience=15)
-# best.pt is saved under runs/detect/train/weights/best.pt - download it.
+
+model.export(format="onnx", imgsz=640)                 # NMS-free ONNX
+!ovc best.onnx --output_model best                     # -> best.xml + best.bin
+
+import yaml, zipfile
+names = yaml.safe_load(open(dataset.location + "/data.yaml"))["names"]
+open("labelmap.txt", "w").write("\n".join(names) + "\n")
+print("classes:", names)                               # e.g. ['fire'] or ['fire','smoke']
+with zipfile.ZipFile("fire_model.zip", "w") as z:
+    for fn in ["best.xml", "best.bin", "labelmap.txt"]:
+        z.write(fn)
+print("Download fire_model.zip -> unzip its 3 files into models/fire/")
 ```
+
+After downloading `fire_model.zip`, unzip its three files into this workspace's
+`models/fire/`, then `bash scripts/deploy_firewatch.sh`.
+
+> If the dataset is single-class `fire`, the default `TRACK_SMOKE=false` in
+> `config/firewatch.conf` is already correct. If it also has `smoke` and you want smoke
+> alerts, set `TRACK_SMOKE=true` after deploying.
 
 ---
 

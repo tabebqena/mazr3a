@@ -1,0 +1,26 @@
+# ============================================================
+# Telegram alerting - credentials & tunables (TEMPLATE).
+#
+# Copy to telegram.conf and EDIT THE VALUES, then deploy it to
+# the host alongside the scripts:
+#     cp config/telegram.conf.example config/telegram.conf
+#     nano config/telegram.conf          # set BOT_TOKEN + CHAT_ID
+#     scp config/telegram.conf ai@ssh.mazr3a.garden:/home/dr/frigate/config/
+#
+# Used by (both scripts source config/telegram.conf):
+#     scripts/machine-monitor.sh   high-CPU-temperature alerts
+#     scripts/machine-status.sh    daily machine health report
+#
+# telegram.conf is git-ignored (see .gitignore) - never commit
+# the real bot token. If you edit the values on the host only,
+# keep the local copy in sync so deploys do not clobber it.
+# ============================================================
+
+# Telegram bot token (create a bot with @BotFather on Telegram).
+BOT_TOKEN=CHANGE_ME
+
+# Chat / group ID where messages are posted.
+CHAT_ID=CHANGE_ME
+
+# CPU temperature in °C at/above which machine-monitor.sh alerts.
+MAX_TEMP=70

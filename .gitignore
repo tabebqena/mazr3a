@@ -1,5 +1,6 @@
 # Secrets - never commit camera credentials
 .env
+config/telegram.conf
 
 # Frigate media (recordings, snapshots, cache)
 media/
@@ -15,6 +16,10 @@ frigate.log
 *.db
 *.db-wal
 *.db-shm
+
+# Python bytecode caches
+__pycache__/
+*.pyc
 
 # OS / editor noise
 .DS_Store

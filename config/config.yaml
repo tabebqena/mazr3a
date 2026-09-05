@@ -128,26 +128,26 @@ objects:
     - cow
   filters:
     person:
-      min_score: 0.5
-      threshold: 0.7
+      min_score: 0.7
+      threshold: 0.8
     dog:
-      min_score: 0.45
-      threshold: 0.6
+      min_score: 0.7
+      threshold: 0.8
     cat:
-      min_score: 0.45
-      threshold: 0.6
+      min_score: 0.7
+      threshold: 0.8
     bird:
-      min_score: 0.4
-      threshold: 0.5
+      min_score: 0.7
+      threshold: 0.8
     horse:
-      min_score: 0.45
-      threshold: 0.6
+      min_score: 0.7
+      threshold: 0.8
     sheep:
-      min_score: 0.45
-      threshold: 0.6
+      min_score: 0.7
+      threshold: 0.8
     cow:
-      min_score: 0.45
-      threshold: 0.6
+      min_score: 0.7
+      threshold: 0.8
 
 # ------------------------------------------------------------------
 # Recording - EVENT-ONLY (Phase 0b).
@@ -192,8 +192,8 @@ snapshots:
 # Lower values increase sensitivity -> more motion triggers.
 # ------------------------------------------------------------------
 motion:
-  threshold: 25
-  contour_area: 10
+  threshold: 40
+  contour_area: 20
   delta_alpha: 0.2
   improve_contrast: false
 
@@ -217,7 +217,7 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam02:
     ffmpeg:
@@ -228,7 +228,7 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam03:
     ffmpeg:
@@ -239,51 +239,75 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam04:
     ffmpeg:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
           roles: [detect]
+    # Farm view (cows/sheep normally present): ignore all animal detections,
+    # track only person and car. This overrides the global objects.track list.
+    objects:
+      track:
+        - person
+        - car
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam05:
     ffmpeg:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
           roles: [detect]
+    # Farm view (cows/sheep normally present): ignore all animal detections,
+    # track only person and car. This overrides the global objects.track list.
+    objects:
+      track:
+        - person
+        - car
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam06:
     ffmpeg:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
           roles: [detect]
+    # Farm view (cows/sheep normally present): ignore all animal detections,
+    # track only person and car. This overrides the global objects.track list.
+    objects:
+      track:
+        - person
+        - car
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam07:
     ffmpeg:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
           roles: [detect]
+    # Farm view (cows/sheep normally present): ignore all animal detections,
+    # track only person and car. This overrides the global objects.track list.
+    objects:
+      track:
+        - person
+        - car
     detect:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   # ---- Hikvision camera (192.168.1.207) ----
   # Substream (102) resolution is auto-detected by Frigate.
@@ -298,7 +322,7 @@ cameras:
           roles: [detect]
     detect:
       enabled: true
-      fps: 5
+      fps: 1
 
   cam09:
     ffmpeg:
@@ -309,7 +333,7 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1
 
   cam10:
     ffmpeg:
@@ -320,4 +344,4 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 5
+      fps: 1

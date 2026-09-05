@@ -152,14 +152,17 @@ What it does:
    `./scripts/deploy_firewatch.sh` (push to host) + `--check`/`--dry-run` (per
    `.roo/rules/sshuser.md`).
 
-**⚠️ Deploy hazard:** [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh:102)
-atomically replaces the *whole* remote `models/` with the local `models/`. Today the local
-`models/fire/` has no `best.xml/.bin` (host-only), so **before any deploy**, the active IR
-must exist locally (generate it from the active `model.pt` via
-[`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh), which also writes
-`labelmap.txt` in model order) — otherwise a deploy would erase the host's working model.
-Considered out of scope here (no model switch is requested); flagged for the moment you
-promote v2.
+**Deploy is now conditional-safe:** [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh)
+was hardened (§8 below) to push **only the ACTIVE model files** (`best.xml` + `best.bin` +
+`labelmap.txt` [+ `best.pt`]) into the host's `models/fire/` — never the whole local
+`models/` tree, so the versioned `versions/` archive stays local and a working host model is
+never erased by a directory replace. Each file is pushed only when its md5 differs from the
+host (atomic `.new` → `mv`); if the local ACTIVE OpenVINO IR is incomplete but the host
+already runs one, the host model is left untouched and only code/config deploy. `frigate`/
+`mqtt` are never restarted — only the `firewatch` container, when its model/code/config
+changed. To actually change the served model: generate the IR from the promoted `.pt`
+([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh), which also writes
+`labelmap.txt` in model order), then deploy.
 
 ---
 
@@ -173,6 +176,9 @@ promote v2.
 - [x] Ignore `models/fire/versions/` in `.gitignore`.
 - [x] Write tracked `models/fire/VERSIONS.md` registry.
 - [x] Update `models/fire/README.md` (layout, convention, promote usage, class-order note).
+- [x] Harden `scripts/deploy_firewatch.sh`: conditional ACTIVE-model push (never whole
+      `models/`, never erases a working host model), firewatch-only restart, `--check` +
+      `--dry-run` verification.
 - [x] Commit per logical group.
 
 **No remote deploy for this step:** versioning only *archives* the existing checkpoints
@@ -198,3 +204,10 @@ regenerated or re-promoted). The remote host's running `firewatch` model is unch
   `fire/other/smoke` class-order note.
 - **2026-09-05 — commit:** `ba4954b` — "feat(models): versioned fire checkpoint archive +
   naming convention + promote helper" (implementation).
+- **2026-09-05 — deploy hardening:** rewrote `scripts/deploy_firewatch.sh` per user request —
+  model push is now conditional on an md5 diff and limited to the ACTIVE files (the
+  `versions/` archive stays local; a host model is never erased); only the `firewatch`
+  container is restarted; added `--dry-run` verification. Docs synced
+  (`promote_fire_model.sh`, `models/fire/VERSIONS.md`).
+- **2026-09-05 — commit:** `xxxxxxx` — "fix(deploy): conditional ACTIVE-model push" (filled
+  after commit).

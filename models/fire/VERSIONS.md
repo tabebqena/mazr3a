@@ -71,7 +71,10 @@ docker compose exec firewatch python /scripts/firewatch.py --check
 docker compose exec firewatch python /scripts/firewatch.py --dry-run
 ```
 
-> ⚠️ [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh:102) atomically
-> replaces the **whole** remote `models/` — `best.xml`/`best.bin`/`labelmap.txt` must exist
-> locally (generated from the active `model.pt`) before deploying, or the host's working
-> model is erased.
+> [`scripts/deploy_firewatch.sh`](../scripts/deploy_firewatch.sh) pushes **only the ACTIVE
+> model files** (`best.xml`/`best.bin`/`labelmap.txt`[/`best.pt`]) into the host's
+> `models/fire/`, and only when their md5 differs (atomic swap). It never erases a working
+> host model and never ships the local `versions/` archive; only the `firewatch` container
+> is restarted. To change the served model, first generate its IR from the active `.pt`
+> ([`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)) so the local active set is
+> complete, then deploy.

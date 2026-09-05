@@ -130,17 +130,20 @@ class FireModel:
         self.input_name = self._input.any_name
         self.output_name = self._output.any_name
 
-        # class name -> index from labelmap (e.g. fire=0, smoke=1)
+        # class name -> index from labelmap (e.g. fire=0, other=1, smoke=2).
+        # labelmap_path is optional: when omitted, labelmap.txt inside model_dir
+        # is used (the container passes only MODEL_DIR).
         self.labels = []
-        if labelmap_path and os.path.isfile(labelmap_path):
-            with open(labelmap_path, encoding="utf-8") as fh:
+        labelmap = labelmap_path or os.path.join(model_dir, "labelmap.txt")
+        if labelmap and os.path.isfile(labelmap):
+            with open(labelmap, encoding="utf-8") as fh:
                 self.labels = [ln.strip() for ln in fh if ln.strip()]
         if not self.labels:
-            # guess: first two outputs after xywh are the classes fire/smoke
+            # fallback guess: first two outputs after xywh are fire/smoke
             self.labels = ["fire", "smoke"]
         self.nc = len(self.labels)
         LOG(f"model {xml_path}: input {self.width}x{self.height} ch={self.ch} "
-            f"classes={self.labels}")
+            f"output {list(self._output.shape)} classes={self.labels}")
 
     # -- preprocess ------------------------------------------------------
     @staticmethod
@@ -176,39 +179,67 @@ class FireModel:
         data = np.asarray(out)
         if data.ndim == 3:
             data = data[0]
-        # accept [1, 4+nc, N] and [1, N, 4+nc]
-        if data.shape[0] == 4 + self.nc and data.shape[1] > data.shape[0]:
+        # orient so rows are candidate detections: [N, C]
+        if data.ndim == 2 and data.shape[0] == 4 + self.nc and data.shape[1] > data.shape[0]:
             data = data.T
-        if data.shape[1] < 4 + self.nc:
+        cols = data.shape[1]
+        raw_cols = 4 + self.nc
+        if cols == raw_cols:
+            mode = "raw"   # per-class scores with cxcywh boxes ([1,4+nc,N] or [1,N,4+nc])
+        elif cols == 6:
+            mode = "e2e"   # end-to-end NMS: x1,y1,x2,y2,score,class_id ([1,N,6]) - YOLO26
+        else:
             raise RuntimeError(
-                f"model output has {data.shape[1]} cols; expected >= {4 + self.nc}"
+                f"model output has {cols} cols; expected {raw_cols} (raw per-class) "
+                f"or 6 (end-to-end NMS). See models/fire/README.md"
             )
-        boxes = data[:, :4].astype(np.float32)  # cxcywh in input pixels
-        scores = data[:, 4 : 4 + self.nc].astype(np.float32)
-        # ultralytics exports may leave class logits raw - sigmoid when needed
-        if np.nanmax(scores) > 1.0:
-            scores = 1.0 / (1.0 + np.exp(-scores))
 
         dets = []
-        for ci in range(self.nc):
-            # allowed is a lowercase name set; compare case-insensitively so
-            # models with labels like "Fire" still match the "fire" track.
-            if allowed and self.labels[ci].lower() not in allowed:
-                continue
-            idx = np.where(scores[:, ci] >= score_thresh)[0]
-            for i in idx:
-                cx, cy, bw, bh = boxes[i]
-                x1 = (cx - bw / 2 - pad_x) / scale
-                y1 = (cy - bh / 2 - pad_y) / scale
-                x2 = (cx + bw / 2 - pad_x) / scale
-                y2 = (cy + bh / 2 - pad_y) / scale
+        if mode == "raw":
+            boxes = data[:, :4].astype(np.float32)  # cxcywh in input pixels
+            scores = data[:, 4 : 4 + self.nc].astype(np.float32)
+            # ultralytics exports may leave class logits raw - sigmoid when needed
+            if np.nanmax(scores) > 1.0:
+                scores = 1.0 / (1.0 + np.exp(-scores))
+            for ci in range(self.nc):
+                # allowed is a lowercase name set; compare case-insensitively so
+                # models with labels like "Fire" still match the "fire" track.
+                if allowed and self.labels[ci].lower() not in allowed:
+                    continue
+                idx = np.where(scores[:, ci] >= score_thresh)[0]
+                for i in idx:
+                    cx, cy, bw, bh = boxes[i]
+                    x1 = (cx - bw / 2 - pad_x) / scale
+                    y1 = (cy - bh / 2 - pad_y) / scale
+                    x2 = (cx + bw / 2 - pad_x) / scale
+                    y2 = (cy + bh / 2 - pad_y) / scale
+                    dets.append(
+                        {
+                            "label": self.labels[ci],
+                            "score": float(scores[i, ci]),
+                            "box": (max(0.0, x1), max(0.0, y1), x2, y2),
+                        }
+                    )
+        else:  # e2e: rows are already x1,y1,x2,y2 (input pixels) + score + class id
+            xyxy = data[:, :4].astype(np.float32)
+            confs = data[:, 4].astype(np.float32)
+            cids = np.clip(data[:, 5].astype(np.int64), 0, self.nc - 1)
+            for i in np.where(confs >= score_thresh)[0]:
+                label = self.labels[int(cids[i])]
+                if allowed and label.lower() not in allowed:
+                    continue
+                x1, y1, x2, y2 = xyxy[i]
                 dets.append(
                     {
-                        "label": self.labels[ci],
-                        "score": float(scores[i, ci]),
-                        "box": (max(0.0, x1), max(0.0, y1), x2, y2),
+                        "label": label,
+                        "score": float(confs[i]),
+                        "box": (max(0.0, (x1 - pad_x) / scale),
+                                max(0.0, (y1 - pad_y) / scale),
+                                (x2 - pad_x) / scale,
+                                (y2 - pad_y) / scale),
                     }
                 )
+
         # simple NMS across classes
         dets.sort(key=lambda d: d["score"], reverse=True)
         keep = []

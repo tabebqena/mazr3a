@@ -16,9 +16,9 @@
 #
 # Versioning convention + layout: see models/fire/VERSIONS.md and
 # plans/model-versioning.md. After promoting, update the version's status in
-# its VERSION.json + VERSIONS.md, then deploy & verify on the host
-# (per .roo/rules/sshuser.md):
-#   ./dev_scripts/deploy_firewatch.sh
+# its VERSION.json + VERSIONS.md, commit the ACTIVE set, then deploy & verify
+# on the host (per .roo/rules/sshuser.md):
+#   ./dev_scripts/deploy_all.sh firewatch
 # ============================================================
 set -euo pipefail
 
@@ -97,9 +97,11 @@ echo "=============================================================="
 echo "3) next steps"
 echo "   - record the promotion: set \"status\" in ${VERSION_DIR}/VERSION.json and"
 echo "     update the Active table in models/fire/VERSIONS.md"
-echo "   - deploy + verify on the host (deploy pushes only the ACTIVE model files, and"
-echo "     only when they differ - so generate best.xml/bin/labelmap.txt locally first"
-echo "     to make the ACTIVE set complete):"
-echo "       ./dev_scripts/deploy_firewatch.sh"
+echo "   - commit the ACTIVE set, then deploy + verify on the host (git-based - the"
+echo "     ACTIVE model files ride git pull; generate best.xml/bin/labelmap.txt locally"
+echo "     first so the ACTIVE set is complete):"
+echo "       git add models/fire/best.xml models/fire/best.bin models/fire/labelmap.txt models/fire/best.pt"
+echo "       git commit -m \"fire model: promote ${VERSION_ID} to ACTIVE\""
+echo "       ./dev_scripts/deploy_all.sh firewatch"
 echo "       docker compose exec firewatch python /scripts/firewatch.py --check"
 echo "       docker compose exec firewatch python /scripts/firewatch.py --dry-run"

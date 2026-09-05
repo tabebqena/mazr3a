@@ -15,7 +15,7 @@ Author-reported metrics: mAP@50 **94.9**, mAP@50-95 **68.0**, precision **89.6**
 recall **88.8**.
 
 The checkpoint is already downloaded to **`models/fire/best.pt`** in this workspace
-(git-ignored, 20.3 MB, md5 `2fd972183c2ffec0d327ec534c119086`).
+(git-tracked, 20.3 MB, md5 `2fd972183c2ffec0d327ec534c119086`).
 
 **Deployed + verified (v1, 2026-09-05):** the ACTIVE OpenVINO IR (`best.xml`/`best.bin`/
 `labelmap.txt`) was generated from this `.pt` and `firewatch` is running on
@@ -36,11 +36,12 @@ Abonia `fire-8`, ~877 imgs) which is **not** yet promoted.
 | `best.xml` | OpenVINO IR graph (the container looks for `best.xml`) |
 | `best.bin`  | OpenVINO IR weights (same basename as the `.xml`) |
 | `labelmap.txt` | one class per line, **index order = model class order** |
-| `best.pt`   | source checkpoint (git-ignored; used only to (re)convert) |
+| `best.pt`   | source checkpoint (used only to (re)convert) |
 
-`best.xml`/`best.bin`/`best.pt` are large and **git-ignored**
-(`models/fire/*.xml`, `models/fire/*.bin`, `models/fire/*.pt`) - only this README and
-[`VERSIONS.md`](VERSIONS.md) are tracked.
+The **ACTIVE set** (`best.xml`/`best.bin`/`best.pt`/`labelmap.txt`) is **tracked in
+git** (2026-09-05, git-deploy decision): deploys ride `git pull`, so firewatch on
+the host always matches the repo. Only `models/fire/versions/` (the versioned
+archive) stays git-ignored; this README + [`VERSIONS.md`](VERSIONS.md) document it.
 
 ## Versioned checkpoints — `versions/`
 
@@ -75,8 +76,8 @@ models/fire/
 ```
 It copies `model.pt` → `best.pt` (plus a bundled OpenVINO IR if present), prints the exact
 `prep_fire_model.sh` command to regenerate the IR, and reminds you to deploy
-(`./dev_scripts/deploy_firewatch.sh`) and verify (`firewatch.py --check` / `--dry-run`) on the
-host.
+(`./dev_scripts/deploy_all.sh firewatch`) and verify (`firewatch.py --check` /
+`--dry-run`) on the host.
 
 ## What the watcher expects from the exported model
 
@@ -107,8 +108,13 @@ with zipfile.ZipFile("fire_model.zip", "w") as z:
 print("Download fire_model.zip -> unzip its 3 files into models/fire/")
 ```
 
-Then unzip `best.xml`, `best.bin`, `labelmap.txt` into `models/fire/` and deploy:
-`bash dev_scripts/deploy_firewatch.sh`.
+Then unzip `best.xml`, `best.bin`, `labelmap.txt` into `models/fire/` (the ACTIVE set is
+git-tracked), commit them, and deploy:
+```bash
+git add models/fire/best.xml models/fire/best.bin models/fire/labelmap.txt
+git commit -m "fire model: update ACTIVE OpenVINO IR"
+./dev_scripts/deploy_all.sh firewatch
+```
 
 **YOLO26 decode check:** after deploying, run
 `docker compose exec firewatch python /scripts/firewatch.py --dry-run`. If it logs an

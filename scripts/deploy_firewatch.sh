@@ -119,7 +119,7 @@ cp "${ROOT_DIR}/docker-compose.yml"          "$BUNDLE/docker-compose.yml"
 cp -r "${ROOT_DIR}/firewatch"                "$BUNDLE/firewatch"
 mkdir -p "$BUNDLE/scripts" "$BUNDLE/config"
 cp "${ROOT_DIR}/scripts/firewatch.py"        "$BUNDLE/scripts/firewatch.py"
-cp "${ROOT_DIR}/scripts/monitor_lib.py"      "$BUNDLE/scripts/monitor_lib.py"
+cp "${ROOT_DIR}/scripts/collect_sensors.py"  "$BUNDLE/scripts/collect_sensors.py"
 cp "${ROOT_DIR}/config/firewatch.conf"       "$BUNDLE/config/firewatch.conf"
 RESTART_FIREWATCH=1
 
@@ -171,14 +171,14 @@ if [ -d "$src/firewatch" ]; then
   mv "$src/firewatch" "$root/firewatch"
 fi
 
-# 3) scripts (firewatch.py + monitor_lib.py)
+# 3) scripts (firewatch.py + collect_sensors.py)
 if [ -f "$src/scripts/firewatch.py" ]; then
   mkdir -p "$root/scripts"
   cat "$src/scripts/firewatch.py" > "$root/scripts/firewatch.py"
 fi
-if [ -f "$src/scripts/monitor_lib.py" ]; then
+if [ -f "$src/scripts/collect_sensors.py" ]; then
   mkdir -p "$root/scripts"
-  cat "$src/scripts/monitor_lib.py" > "$root/scripts/monitor_lib.py"
+  cat "$src/scripts/collect_sensors.py" > "$root/scripts/collect_sensors.py"
 fi
 
 # 4) config/firewatch.conf ONLY (telegram.conf is never touched)

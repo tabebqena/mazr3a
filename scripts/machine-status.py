@@ -25,7 +25,7 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import monitor_lib as lib
+import collect_sensors as lib
 
 DRY = "--dry-run" in sys.argv
 

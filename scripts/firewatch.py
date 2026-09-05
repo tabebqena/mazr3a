@@ -14,7 +14,7 @@ Design notes
   touched; this watcher is fully out-of-band (see plans/fire-detection.md).
 - Code/config live on runtime mounts (./scripts, ./config, ./models are
   mounted read-only into the container) so edits need no image rebuild.
-- The watcher is stdlib + openvino + numpy + Pillow only. monitor_lib is
+- The watcher is stdlib + openvino + numpy + Pillow only. collect_sensors is
   imported from the mounted ./scripts directory.
 
 Model assumption (see plans/fire-detection.md section 5.1)
@@ -42,7 +42,7 @@ import urllib.request
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import monitor_lib as lib  # noqa: E402
+import collect_sensors as lib  # noqa: E402
 
 # Pillow is only used to overlay detection boxes on the alert snapshot; it is
 # a hard dependency of the firewatch image (see firewatch/requirements.txt).
@@ -53,7 +53,7 @@ LOG = lambda *a: print(time.strftime("[%Y-%m-%d %H:%M:%S]"), *a, flush=True)  # 
 
 
 # ---------------------------------------------------------------------------
-# tiny KEY=VALUE conf reader with typed defaults (mirrors monitor_lib.load_conf)
+# tiny KEY=VALUE conf reader with typed defaults (mirrors collect_sensors.load_conf)
 # ---------------------------------------------------------------------------
 def _raw_conf(path):
     cfg = {}

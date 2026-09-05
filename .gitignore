@@ -22,6 +22,9 @@ frigate.log
 models/fire/*.xml
 models/fire/*.bin
 models/fire/*.pt
+# Versioned fire-model archive (one dir per version: model.pt + VERSION.json).
+# Large + machine-local - see tracked models/fire/VERSIONS.md for the registry)
+models/fire/versions/
 
 # COCO YOLO replacement model artifacts (large, exported once - see
 # models/coco/README.md for provenance; README.md + labelmap.txt stay tracked)
@@ -43,5 +46,9 @@ runs/
 *.swp
 .roo/rules/sshuser.md
 
+# Images from fire/smoke datasets that have no label (empty/missing annotation)
+# so they are excluded from training - large + derived, see
+# scripts/find_unlabelled_images.py
+unlabelled-images-dir/
 
 dataset/*

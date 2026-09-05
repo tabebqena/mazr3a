@@ -101,6 +101,49 @@ Notes on this checkpoint:
 - The repo has **no license** (proprietary/default); the underlying dataset declares
   **CC BY 4.0**. Verify you are comfortable with this before production use.
 
+### Option A3 (recommended) — SalahALHaismawi/yolov26-fire-detection (Hugging Face)
+
+Reported higher quality than Option A2 (author-reported on the model card, but backed by
+~10x more data and a proper license):
+
+| Metric | This HF YOLO26-S | Abonia GitHub YOLOv8s |
+|---|---|---|
+| mAP@50 | **94.9** | 85.7 |
+| mAP@50-95 | **68.0** | 45.9 |
+| Precision | **89.6** | 82.8 |
+| Recall | **88.8** | 87.8 |
+| Train images | **8,939** | 878 |
+| Epochs | **100** | 25 |
+| Classes | fire, smoke, other | Fire, default, smoke |
+| License | **MIT** (model) / CC BY 4.0 (data) | none (repo) |
+
+`other` is a catch-all class and is ignored by firewatch (only `fire`/`smoke` can alert).
+Weights are already downloaded to `models/fire/best.hf.pt` (git-ignored). Colab convert:
+
+```python
+!pip install -q ultralytics openvino
+!wget -q -O best.pt "https://huggingface.co/SalahALHaismawi/yolov26-fire-detection/resolve/main/best.pt"
+
+from ultralytics import YOLO
+YOLO("best.pt").export(format="onnx", imgsz=640)   # YOLO26 needs a current ultralytics
+!ovc best.onnx --output_model best
+
+# 3 classes in model order: 0=fire 1=smoke 2=other. firewatch ignores 'other'.
+open("labelmap.txt", "w").write("fire\nsmoke\nother\n")
+import zipfile
+with zipfile.ZipFile("fire_model.zip", "w") as z:
+    for fn in ["best.xml", "best.bin", "labelmap.txt"]:
+        z.write(fn)
+print("Download fire_model.zip -> unzip its 3 files into models/fire/")
+```
+
+Then unzip into `models/fire/` (overwriting `best.xml`/`best.bin`/`labelmap.txt`) and deploy
+`bash scripts/deploy_firewatch.sh`.
+
+YOLO26 decode check: after converting, run
+`docker compose exec firewatch python /scripts/firewatch.py --dry-run`. If it reports an
+unexpected output shape, share the logged shape and the decoder will be adapted.
+
 ### Option B — train your own YOLOv8n (free Google Colab, ~30-60 min)
 
 Most reliable way to get a model whose class order you control. On the Roboflow page:
@@ -175,8 +218,9 @@ files, or place a `best.pt`/`best.onnx` in this workspace and ask to have it con
 
 | Item | Value |
 |---|---|
-| Source | `github.com/Abonia1/YOLOv8-Fire-and-Smoke-Detection` → `runs/detect/train/weights/best.pt` |
-| License | Repo: none listed; underlying dataset: CC BY 4.0 (verify before production) |
-| Base/input size | YOLOv8s, trained at 800; exported for inference at 640 |
-| Class order | `fire`(0), `default`(1), `smoke`(2) — `default` is ignored by firewatch |
-| Acquired by | AI assistant, 2026-09-05 (`best.pt` downloaded to `models/fire/`) |
+| Source (A3, preferred) | `huggingface.co/SalahALHaismawi/yolov26-fire-detection` → `best.pt` (file `models/fire/best.hf.pt`) |
+| Source (A2, fallback)  | `github.com/Abonia1/YOLOv8-Fire-and-Smoke-Detection` → `runs/detect/train/weights/best.pt` (file `models/fire/best.pt`) |
+| License | A3: MIT (model) / CC BY 4.0 (data). A2: none (repo) / CC BY 4.0 (data). Verify before production |
+| Base/input size | A3: YOLO26-S, imgsz 640. A2: YOLOv8s, trained 800 / export 640 |
+| Class order | A3: `fire`(0), `smoke`(1), `other`(2). A2: `fire`(0), `default`(1), `smoke`(2) — catch-all classes are ignored |
+| Acquired by | AI assistant, 2026-09-05 (both `.pt` files downloaded to `models/fire/`) |

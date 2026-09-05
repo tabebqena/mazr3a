@@ -209,5 +209,5 @@ regenerated or re-promoted). The remote host's running `firewatch` model is unch
   `versions/` archive stays local; a host model is never erased); only the `firewatch`
   container is restarted; added `--dry-run` verification. Docs synced
   (`promote_fire_model.sh`, `models/fire/VERSIONS.md`).
-- **2026-09-05 — commit:** `xxxxxxx` — "fix(deploy): conditional ACTIVE-model push" (filled
-  after commit).
+- **2026-09-05 — commit:** `e4b5892` — "fix(deploy): conditional ACTIVE-model push keeps
+  running host safe".

@@ -17,41 +17,88 @@ The `.xml`/`.bin` are large binaries and are **git-ignored** (`models/fire/*.xml
 acquired once and deployed to the host via `scripts/deploy_firewatch.sh`; it is **not**
 downloaded by the container at build/start (keeps the image small and the build offline).
 
-## How to acquire (done once, on any machine with internet + Ultralytics + OpenVINO)
+## What the watcher expects from the model
 
-Because Frigate's bundled COCO model has no `fire`/`smoke` class, a dedicated checkpoint
-is required. Recommended source: a **YOLOv8n fine-tuned on a fire + smoke dataset** (e.g.
-a "fire and smoke detection" model on Roboflow Universe, or a maintained GitHub release —
-verify its license and class order before use).
+- A **fire/smoke** detector (a COCO `person/car/...` model will NOT see fire).
+- Any YOLO variant exported from Ultralytics is fine: single output tensor shaped
+  `[1, 4+nc, N]` or `[1, N, 4+nc]`, boxes `cxcywh` in input pixels, per-class scores.
+  The standalone watcher does its own NMS, so a standard `format=onnx` export works —
+  the Frigate-specific NMS-free `[1,N,6]` constraint does **not** apply here.
+- Typical input 640x640; `firewatch.py` letterboxes every frame to the model's real size.
 
-1. Export the checkpoint to ONNX, then convert to OpenVINO IR:
+---
 
-   ```bash
-   # pip install ultralytics openvino openvino-dev
-   yolo export model=best.pt format=onnx            # NMS-free end-to-end export
-   mo --input_model best.onnx --output_dir ./openvino --compress_to_fp16
-   ```
+## Where to download a fire/smoke checkpoint
 
-   The standalone watcher runs its own NMS, so the Frigate-specific NMS-free
-   `[1,N,6]` tensor constraint does **not** apply — a standard YOLO export is fine.
-   The decoder accepts a single output tensor shaped `[1, 4+nc, N]` or `[1, N, 4+nc]`
-   with `cxcywh` boxes in input pixels (Ultralytics' default layout).
+Pick **either** Option A (download ready weights) **or** Option B (train a small one).
+Both end with the same converter step that produces `best.xml` / `best.bin` /
+`labelmap.txt` in this directory.
 
-2. Place the artifacts here:
+### Option A — download pre-trained weights
 
-   ```bash
-   mkdir -p models/fire
-   cp ./openvino/best.xml ./openvino/best.bin models/fire/
-   # write labelmap.txt matching the model's class order, e.g.:
-   printf 'fire\nsmoke\n' > models/fire/labelmap.txt
-   ```
+1. **Roboflow Universe** — https://universe.roboflow.com → search **"fire and smoke
+   detection"** or **"fire detection"**. Prefer a project that shows a **trained model**;
+   use its **Model** tab to download the trained checkpoint (usually `best.pt`), or the
+   **Dataset** tab → "Download Dataset" → **YOLOv8** format if you choose to train it
+   yourself (Option B). Note each project's license and class list (most are
+   `fire`, `smoke`; some are fire-only).
+2. **GitHub** — search **"fire smoke detection best.pt"** / **"yolo fire detection"**.
+   Repos frequently attach a trained `best.pt` under **Releases → Assets**. Verify the
+   model's class set matches what you write into `labelmap.txt`, and check its license.
+3. Whatever you obtain, the checkpoint (`.pt` or `.onnx`) then goes through the
+   converter below.
 
-3. **Record provenance below** (source URL, license, input size, class order) so the
-   model can be reproduced or swapped later. The typical YOLOv8n input is 640x640; the
-   watcher letterboxes every frame to the model's real input size automatically.
+> I can't pin one canonical download URL for you because such public checkpoints move /
+> get taken down; Roboflow Universe and GitHub Releases are the two reliable places to
+> find an actively published fire/smoke `best.pt`.
 
-4. Deploy to the host: `scripts/deploy_firewatch.sh`, then confirm the service starts
-   with `docker compose logs firewatch` showing `input 640x640 ... classes=[...]`.
+### Option B — train your own YOLOv8n (free Google Colab, ~30-60 min)
+
+Most reliable way to get a model whose class order you control. Grab a "fire and smoke"
+**dataset** from Roboflow Universe (Dataset tab → Download → YOLOv8 → it gives you a
+`roboflow` pip snippet with your dataset's key), then in Colab:
+
+```python
+!pip install -q ultralytics roboflow openvino
+
+from roboflow import Roboflow
+# Paste the dataset's download snippet here (it writes a data.yaml),
+# e.g. rf = Roboflow(api_key="..."); project = rf.workspace("...").project("...")
+# dataset = project.version(1).download("yolov8")
+
+from ultralytics import YOLO
+model = YOLO("yolov8n.pt")
+model.train(data="/content/datasets/<your-dataset>/data.yaml",
+            epochs=60, imgsz=640, batch=16, patience=15)
+# best.pt is saved under runs/detect/train/weights/best.pt - download it.
+```
+
+---
+
+## Converter (one command) — then deploy
+
+Run anywhere python + `ultralytics` + `openvino` are installed (locally or in Colab),
+pointing at the checkpoint you downloaded/trained:
+
+```bash
+# fire/smoke two-class model (default class order fire,smoke):
+bash scripts/prep_fire_model.sh ~/Downloads/best.pt 640 fire,smoke
+
+# fire-only model:
+bash scripts/prep_fire_model.sh ~/Downloads/best.pt 640 fire
+```
+
+The script exports `.pt` → ONNX → OpenVINO IR and installs the files here. Then:
+
+```bash
+bash scripts/deploy_firewatch.sh                     # upload + build + start on host
+docker compose exec firewatch python /scripts/firewatch.py --dry-run   # live smoke test
+```
+
+If you cannot run the converter locally, either run it in Colab and download the three
+files, or place a `best.pt`/`best.onnx` in this workspace and ask to have it converted.
+
+---
 
 ## Provenance
 

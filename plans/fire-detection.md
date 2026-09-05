@@ -133,6 +133,11 @@ The bundled COCO model has no fire class, so a dedicated model is required. Step
 
 > The standalone watcher does its own NMS, so the export does **not** need Frigate's
 > NMS-free `[1,N,6]` tensor constraint — a standard YOLOv8 export is fine.
+>
+> **Run [`scripts/prep_fire_model.sh`](../scripts/prep_fire_model.sh)`** to automate the
+> `.pt` -> ONNX -> OpenVINO IR export and install `best.xml` / `best.bin` / `labelmap.txt`
+> here. Concrete download sources (Roboflow Universe, GitHub Releases) and a train-your-own
+> Colab fallback are documented in [`models/fire/README.md`](../models/fire/README.md).
 
 ### 5.2 Extend [`scripts/monitor_lib.py`](../scripts/monitor_lib.py)
 

@@ -1,128 +1,161 @@
-# Replace Bundled SSD with Lightweight COCO YOLO on the iGPU — Frigate NVR
+# Replace Bundled SSD with Lightweight COCO YOLO on CPU — Frigate NVR
 
-> **Status:** PLANNED (not yet implemented)
+> **Status:** IN IMPLEMENTATION (local edits; deploy/host steps pending)
 >
 > Goal: swap Frigate's bundled `ssdlite_mobilenet_v2` (COCO @ 300×300) for a lightweight
-> Ultralytics COCO YOLO (`YOLO11n`, fallback `YOLOv8n`) exported to **OpenVINO IR**, run
-> natively inside Frigate on the existing **Intel UHD 630 iGPU** (`device: GPU`). Detection
-> stays fully native: UI boxes, tracker, MQTT `frigate/events`, and recorded event clips.
+> Ultralytics COCO YOLO, run natively inside Frigate. **Target device: `CPU`** (the i7-9700
+> is a better YOLO target than the weak UHD 630 iGPU — see §1). Detection stays fully native:
+> UI boxes, tracker, MQTT `frigate/events`, recorded clips.
+>
+> **Model decision is gated on a host benchmark** (`YOLO11n @ 640` vs `YOLOv8s @ 640`) —
+> commit to whichever keeps `detection_fps` tracking `process_fps` on the CPU.
 
 ---
 
-## 1. Why this is the right move
+## 1. Why CPU (and not the iGPU) is the target
 
-- The bundled SSD at 300×300 is the accuracy ceiling you already diagnosed: **zero `person`
-  events ever**, animals mislabeled, small/far objects missed
-  ([`plans/improve-person-detection.md`](improve-person-detection.md:108)).
-- A YOLO COCO model is dramatically better on person/animal accuracy at the same or larger
-  input, and is the same integration route your animal Part-2 plan already scoped as the
-  native replacement ([`plans/animal-motion-detection.md`](animal-motion-detection.md:159)).
-- The iGPU is **already deployed and healthy** for inference: OpenVINO `device: GPU`,
-  `inference_speed` ≈ 9.85 ms, container CPU ≈ 23.67% after the switch
-  ([`plans/use-igpu-to-reduce-cpu-load.md`](use-igpu-to-reduce-cpu-load.md:132)). We keep
-  that `device: GPU` and only swap the model.
+Your own measurements already show the **iGPU (UHD 630) is slower than the CPU even for the
+tiny 300×300 SSD**: GPU 7.57 ms vs CPU 5.00 ms, live `inference_speed` ≈ 9.85 ms on GPU
+([`plans/use-igpu-to-reduce-cpu-load.md`](use-igpu-to-reduce-cpu-load.md:54)). For a real YOLO
+at 416–640 the iGPU (24 EU, shares system RAM with 10 decodes) would be the bottleneck, not
+the enabler. The CPU — 8 real cores with AVX2 — is the stronger inference target here.
+
+Why this is affordable now:
+- Current `detect.fps` is **1–2 per camera** (was 5) and detection is **motion-gated**, so
+  CPU inference demand is ~3–5× lower than the old ~456%-CPU baseline
+  ([`config/config.yaml`](../config/config.yaml:229)).
+- RAM (~7.5–8 GiB total) is **not** the binding constraint: an OpenVINO/ONNX YOLO footprint is
+  ~30–150 MB, far below the ~5 GiB headroom. The constraint is CPU seconds when many cameras
+  detect simultaneously, mitigated by fps caps + per-camera `objects.track` scoping.
+- What CPU unlocks over the iGPU: `nano` runs comfortably, and the accuracy-first **`s`
+  variant becomes viable** (optionally INT8-quantized for ~2–3× CPU speedup).
+
+Rule: benchmark on the live host **before** committing. Only fall back to `device: GPU` if
+the CPU cannot keep `detection_fps` tracking `process_fps` when all 10 cameras are online.
 
 ## 2. Current state (facts to preserve)
 
 | Item | Value | Source |
 |---|---|---|
-| Frigate | 0.17.x, active config [`config/config.yaml`](../config/config.yaml:1) | `version: 0.17-0` at [config](../config/config.yaml:43) |
-| Detector | OpenVINO, `device: GPU` (iGPU UHD 630) | [config](../config/config.yaml:105) |
+| Frigate | 0.17.x (0.17.2 container verified), active config [`config/config.yaml`](../config/config.yaml:1) | `version: 0.17-0` at [config](../config/config.yaml:43) |
+| Detector | OpenVINO, currently `device: GPU` (iGPU UHD 630) — **to change to CPU** | [config](../config/config.yaml:105) |
 | Model block | `/openvino-model/ssdlite_mobilenet_v2.xml`, labelmap `/labelmap.txt`, 300×300 | [config](../config/config.yaml:94) |
 | Tracked (global) | person, car, dog, cat, bird, horse, sheep, cow | [config](../config/config.yaml:119) |
 | Per-camera overrides | cam04–07 track person+car only; cam04–09 `fps: 1`, cam01–03 `fps: 2` | [config](../config/config.yaml:271) |
 | Detect input | 640×360 substreams | [config](../config/config.yaml:226) |
-| Compose volumes | frigate mounts `./config`, `./media`, tmpfs; **no `./models`** yet | [docker-compose.yml](../docker-compose.yml:30) |
+| Compose volumes | frigate mounts `./config`, `./media`, tmpfs; **no `./models` yet** | [docker-compose.yml](../docker-compose.yml:30) |
 | Deploy pattern | `scp` to `ai@ssh.mazr3a.garden:/home/dr/frigate`, `mv` over config, `docker compose up -d` | [deploy_config.sh](../scripts/deploy_config.sh:41) |
-| Conversion pattern | `.pt` → ONNX (ultralytics) → OpenVINO IR (`ovc`), install `.xml/.bin/labelmap.txt` | [prep_fire_model.sh](../scripts/prep_fire_model.sh:37) |
 
 ## 3. Architecture
 
 ```mermaid
 flowchart LR
     subgraph Workspace
-        M[models/coco best.xml best.bin labelmap.txt]
-        C[config/config.yaml model block]
+        M[models/coco yolo11n.onnx + yolov8s.onnx + labelmap.txt]
+        C[config/config.yaml model_type yolo-generic device CPU]
         D[docker-compose.yml models volume]
     end
-    subgraph Host iGPU
-        F[Frigate OpenVINO detector device GPU]
-        I[Intel UHD 630]
+    subgraph Host
+        F[Frigate OpenVINO detector device CPU]
+        P[Intel i7-9700 8 cores]
     end
-    M --> C --> F --> I
+    M --> C --> F --> P
     D --> F
     F --> E[UI boxes + MQTT events + clips]
 ```
 
-Constraints that MUST be respected (from verified prior work):
+### Key technical findings (verified against Frigate v0.17.2 source)
+
+Reverse-engineered from the actual 0.17.2 container source (`frigate/config/config.py`,
+`frigate/detectors/plugins/openvino.py`, `frigate/util/model.py`, `frigate/object_detection/base.py`)
+so no assumptions remain:
+
+1. **Config schema (0.17.2):** the detector's model comes from the **top-level `model:`
+   block** (`model_config = self.model.model_dump(...)`); a per-detector `model:` block is
+   discarded (`detector_config.model = None`); the detector's flat `model_path:` overrides
+   only the path. This matches your repo's verified notes.
+2. **YOLO is a first-class model type:** `model_type: yolo-generic` is in the OpenVINO
+   detector's `supported_models`. Frigate runs the raw model and calls
+   `post_process_yolo()`, which handles **NMS-free Ultralytics ONNX output** (`cxcywh` +
+   class scores, either `[1, 4+nc, N]` or `[1, N, 4+nc]`), converts to xyxy, and applies its
+   **own NMS** (`score 0.4`, `nms 0.4`).
+3. **No OpenVINO IR conversion needed:** Frigate's OpenVINO runner loads the `.onnx`
+   directly. The artifact is the standard Ultralytics **NMS-free ONNX export** (`imgsz` =
+   model input, `opset=12`, NMS disabled).
+4. **Input preprocessing is standard Ultralytics:** with `input_tensor: nchw` +
+   `input_dtype: float`, Frigate transposes NHWC→NCHW and **divides by 255** (`/ 255` in
+   `_transform_input`) → 0–1 RGB NCHW, exactly what Ultralytics weights expect. Default
+   `input_pixel_format: rgb` is correct.
+
+Constraints that MUST be respected:
 
 1. **One model per camera** — the new YOLO replaces the SSD for every camera; all labels must
-   come from this one model (no merging a second model's output).
-2. **Top-level `model:` block only** — Frigate 0.17 discards a per-detector `model:` block;
-   set `path`/`labelmap_path`/`width`/`height` at top level, keep the flat `model_path:`
-   on the detector as the override.
-3. **`width`/`height` MUST equal the model's real input tensor** (the 320-vs-300 crash).
-4. **Labelmap order = the model's class-index order**, and every label in `objects.track`
-   must exist in that labelmap (Ultralytics COCO provides all of person/car/dog/cat/bird/
-   horse/sheep/cow, so the current track lists stay valid unchanged).
-5. Keep `version: 0.17-0` so the config migration never rewrites the file.
+   come from this one model.
+2. **`width`/`height` MUST equal the model's real input tensor** (the 320-vs-300 crash).
+3. **Labelmap order = the model's class-index order**, and every label in `objects.track`
+   must exist in it (Ultralytics COCO provides person/car/dog/cat/bird/horse/sheep/cow, so
+   current track lists stay valid unchanged).
+4. Keep `version: 0.17-0` so the config migration never rewrites the file.
 
-## 4. Model choice (decision, verify before commit)
+## 4. Model choice — benchmark-gated (decide, then commit)
 
-| Candidate | Params | Notes |
-|---|---|---|
-| **YOLO11n @ 640** (preferred) | ~2.6M | Best accuracy/speed for the weak UHD 630; smallest of the modern line |
-| YOLO11n @ 416 | ~2.6M | Lower accuracy on small/far objects but ~2× faster — fallback if 640 cannot keep up |
-| YOLOv8n @ 640 | ~3.2M | Equally valid; baseline of all prior plans |
+| Candidate | Params | Accuracy vs SSD | CPU cost @ fps 1–2 (estimate, verify) |
+|---|---|---|---|
+| **YOLO11n @ 640** (safe default) | ~2.6M | Large jump | ~15–25 ms/inf — comfortable |
+| **YOLOv8s @ 640** (accuracy-first) | ~11.2M | Biggest jump (small/far + night/IR) | ~35–70 ms/inf FP32; ~15–30 ms INT8 |
 
-Rules:
-- Use the **`n` (nano)** variant — `s` risks dropped frames when all 10 cameras fire on the
-  iGPU, which is already slower than CPU for small models.
-- Prefer **640** for small/far person & animal accuracy; drop to 416 **only** if the host
-  benchmark shows `detection_fps` falling below `process_fps`.
-- Any future union model (animals Part 2, fire Phase 1b) will replace this same model slot
-  later; this step is the general COCO accuracy fix now.
+Decision rule:
+- Benchmark **both on `device: CPU`** with the live `/api/stats` gate: pick the largest
+  variant whose aggregate `detection_fps` keeps tracking `process_fps` on all online cameras.
+- If `YOLOv8s` FP32 cannot keep up, either (a) drop to `YOLO11n @ 640`, or (b) **INT8-quantize
+  the `s`** and re-benchmark — `s`-INT8 is the best accuracy/perf point on this CPU.
+- If **no** CPU candidate tracks `process_fps` (e.g. all 10 cameras firing at once), fall back
+  to `device: GPU` with `YOLO11n @ 640` as a documented, pre-decided contingency — not a new
+  decision.
+- Any future union model (animals Part 2, fire Phase 1b) replaces this same model slot later.
 
 ## 5. Implementation steps
 
-### Step 1 — Benchmark on the host before committing (data-driven)
+### Step 1 — Baseline on the host (before producing artifacts)
 
-Run on `ai@ssh.mazr3a.garden` per the sshuser rule, using the OpenVINO tooling inside the
-running frigate container (OpenVINO 2025.3.0):
+Run on `ai@ssh.mazr3a.garden` per the sshuser rule:
 
 ```bash
 cd /home/dr/frigate
-# baseline before any change
 curl -s http://localhost:5000/api/stats | python3 -m json.tool   # detection_fps vs process_fps per cam
 docker stats --no-stream frigate                                  # CPU/RAM baseline
-docker exec frigate /openvino/benchmark_app -m /openvino-model/ssdlite_mobilenet_v2.xml -d GPU -api sync
+# confirm running version + detector schema supports model_type yolo-generic:
+curl -s http://localhost:5000/api/config | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('detectors'), d.get('model'))"
+docker compose logs frigate 2>&1 | grep -i "frigate version" | tail -2
 ```
 
-Record: per-camera `detection_fps`/`process_fps`, `detection_fps` aggregate, container CPU,
-baseline `inference_speed`. This decides whether 640 or 416 is safe. **Do not proceed to
-deploy if the host shows dropped detect frames at the current SSD.**
+Record: per-camera and aggregate `detection_fps`/`process_fps`, container CPU, RAM, running
+version, and which cameras are online (cam04–10 were unreachable at last check — full-load
+verification must wait until all 10 are back). This is the reference for the benchmark gate.
 
-### Step 2 — Produce the model artifacts into `models/coco/`
+### Step 2 — Produce candidate ONNX artifacts into `models/coco/`
 
-Create a working venv (`.venv/` is already git-ignored) with `ultralytics` + `openvino`
-(Colab is the documented alternative — same cells as [`models/fire/README.md`](../models/fire/README.md:44)):
+Use the existing workspace venv (`.venv/`, Python 3.11, `ultralytics 8.4.140` already
+installed; add `onnx` only if missing):
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -q ultralytics openvino
+. .venv/bin/activate
+python3 -m pip install -q onnx
 ```
 
-Export + convert (mirrors [`prep_fire_model.sh`](../scripts/prep_fire_model.sh:37), extended for
-the full COCO labelmap and FP16 for the GPU):
+Export **both** candidates as standard Ultralytics **NMS-free ONNX** (this is exactly the
+format Frigate's `post_process_yolo` parses):
 
 ```bash
-# YOLO11n at the input size chosen in Step 1 (640 default)
-yolo export model=yolo11n.pt format=onnx imgsz=640 opset=12   # NMS-free end-to-end export
-# then OpenVINO IR, FP16 for iGPU
-ovc yolo11n.onnx --output_model models/coco/best --compress_to_fp16
+yolo export model=yolo11n.pt format=onnx imgsz=640 opset=12   # -> models/coco/yolo11n.onnx
+yolo export model=yolov8s.pt format=onnx imgsz=640 opset=12   # -> models/coco/yolov8s.onnx
 ```
 
-Write `models/coco/labelmap.txt` — **80 lines, exact Ultralytics COCO index order**:
+(If the `s` wins the benchmark but FP32 is too slow, quantize to INT8 ONNX and add
+`models/coco/yolov8s_int8.onnx`.)
+
+Write `models/coco/labelmap.txt` — **80 lines, exact Ultralytics COCO index order** (identical
+for both candidates):
 
 ```text
 person
@@ -207,47 +240,57 @@ hair drier
 toothbrush
 ```
 
-Sanity-check before deploy (class order is critical — a wrong index swaps every label):
+Sanity-check class order before benchmarking (a wrong index swaps every label):
 
 ```bash
 python3 -c "
 from ultralytics import YOLO
-m = YOLO('yolo11n.pt')
-names = m.names
-print(names[0], names[2], names[16], names[17], names[18], names[19])
-# expect: person car dog horse sheep cow
+for m in ['yolo11n','yolov8s']:
+    names = YOLO(f'{m}.pt').names
+    print(m, names[0], names[2], names[16], names[17], names[18], names[19])
+# expect per model: person car dog horse sheep cow
 "
 ```
 
-Expected artifacts:
+Expected artifacts (only the winner is deployed):
 
 ```text
-models/coco/best.xml
-models/coco/best.bin
+models/coco/yolo11n.onnx
+models/coco/yolov8s.onnx
 models/coco/labelmap.txt
-models/coco/README.md      # provenance + regeneration commands (like models/fire/README.md)
+models/coco/README.md      # provenance, license, regeneration + benchmark result
 ```
 
-**Verify the export format against the running Frigate 0.17 build before full deploy** — the
-OpenVINO detector expects an NMS-free single output tensor `[1, N, 6]`
-(`class_id, confidence, x1, y1, x2, y2`). Ultralytics offers `format=frigate` for the
-matching end-to-end export; confirm the exact accepted format for this container image (same
-caution noted in [`plans/animal-motion-detection.md`](animal-motion-detection.md:167)). If the
-plain end-to-end ONNX→IR shape is not accepted, re-export with `format=frigate` and re-run `ovc`.
+### Step 3 — Host benchmark gate (decides the model + device)
 
-### Step 3 — Extend `.gitignore` and add a README
+Copy `models/coco/*.onnx` to the host under `/home/dr/frigate/models/coco/` and measure pure
+inference on the CPU (and GPU for reference) with the OpenVINO tooling already in the frigate
+container:
 
-- Add `models/coco/*.xml`, `models/coco/*.bin`, `models/coco/*.pt` (large, acquired once —
-  only the README + labelmap stay tracked), mirroring the existing `models/fire/*` block in
-  [`.gitignore`](../.gitignore:20).
-- Add `models/coco/README.md` documenting model choice, provenance, license (YOLO11n is
-  AGPL-3.0; **YOLOv8n is AGPL-3.0** too — confirm whether this is acceptable, otherwise pick
-  a permissively-licensed equivalent) and the regeneration commands above.
+```bash
+docker exec frigate /openvino/benchmark_app -m /models/coco/yolo11n.onnx -d CPU -api sync
+docker exec frigate /openvino/benchmark_app -m /models/coco/yolov8s.onnx -d CPU -api sync
+# reference only, if considering the GPU fallback:
+docker exec frigate /openvino/benchmark_app -m /models/coco/yolo11n.onnx -d GPU -api sync
+```
 
-### Step 4 — Mount the models dir into the frigate container
+Decision (record in §Results): pick the largest candidate that keeps aggregate
+`detection_fps` ≈ `process_fps` on the online cameras under a live trigger test (walk a person
+in front of several cameras). If `yolov8s` FP32 is too slow but the budget fits, benchmark the
+INT8 `s`. Choose `device: CPU` if the winner is affordable; choose `device: GPU` (with
+`yolo11n`) only if no CPU candidate passes — a pre-decided contingency.
 
-[`docker-compose.yml`](../docker-compose.yml:30) — add to the `frigate` service volumes
-(exactly as scoped in the animal plan):
+### Step 4 — Extend `.gitignore` and add a README
+
+- Add `models/coco/*.onnx` (large, acquired once) to [`.gitignore`](../.gitignore:20). Only the
+  README and labelmap stay tracked.
+- Add `models/coco/README.md`: model choice, provenance, license (**YOLO11n and YOLOv8n
+  Ultralytics weights are AGPL-3.0** — fine for self-hosted use; note if a permissive license
+  is required instead), the benchmark-gate result, and regeneration commands.
+
+### Step 5 — Mount the models dir into the frigate container
+
+[`docker-compose.yml`](../docker-compose.yml:30) — add to the `frigate` service volumes:
 
 ```yaml
     volumes:
@@ -256,42 +299,42 @@ plain end-to-end ONNX→IR shape is not accepted, re-export with `format=frigate
       - ./models:/models:ro          # NEW: custom models
 ```
 
-### Step 5 — Point the detector at the new model (config)
+### Step 6 — Point the detector at the chosen model (config)
 
-[`config/config.yaml`](../config/config.yaml:94) — replace the top-level `model:` block and
-keep the detector device on the iGPU:
+[`config/config.yaml`](../config/config.yaml:94) — replace the **top-level** `model:` block
+with the winner from Step 3 (example shown for `yolo11n`; use whichever basename won) and keep
+the flat `model_path:` override on the detector:
 
 ```yaml
 model:
-  path: /models/coco/best.xml
+  model_type: yolo-generic          # Frigate 0.17.2 OpenVINO YOLO path (post_process_yolo)
+  path: /models/coco/<winner>.onnx
   labelmap_path: /models/coco/labelmap.txt
-  width: 640                    # MUST match the model's real input (416 if downgraded)
+  width: 640                        # MUST match the export imgsz
   height: 640
+  input_tensor: nchw                # Frigate transposes NHWC -> NCHW
+  input_dtype: float                # Frigate divides by 255 -> 0..1 RGB (Ultralytics norm)
 
 detectors:
   ov:
     type: openvino
-    device: GPU                 # unchanged - already verified working on the iGPU
-    model_path: /models/coco/best.xml
+    device: CPU                     # target; GPU only if the Step-3 contingency fires
+    model_path: /models/coco/<winner>.onnx
 ```
 
-Leave `objects.track` and per-camera overrides unchanged — all currently tracked labels
-(person, car, dog, cat, bird, horse, sheep, cow) exist in the Ultralytics COCO labelmap.
-Keep the existing per-class filters initially; YOLO confidence distributions differ from SSD,
-so tune `min_score`/`threshold` only after observing the first day/night cycle (see
-Verification, FP/FN comparison).
+Leave `objects.track` and per-camera overrides unchanged — all tracked labels exist in the
+Ultralytics COCO labelmap. Keep existing per-class filters initially; YOLO confidence
+distributions differ from SSD, so tune `min_score`/`threshold` after the first day/night cycle.
 
-### Step 6 — Pre-deploy host facts (before touching the host)
+### Step 7 — Pre-deploy host facts (before touching the host)
 
 Per the sshuser rule, confirm on `ai@ssh.mazr3a.garden`:
-- `config/config.yaml` md5 + `/api/config` shows `detectors.ov.model.width == 300` (baseline
-  to restore on rollback).
-- `models/` dir exists / is creatable under `/home/dr/frigate/` and writable by `ai`.
-- Record baseline `/api/stats` numbers from Step 1.
-- Note which cameras are currently online (cam04–10 were unreachable at last re-verification —
-  full-load verification must wait until all 10 are back).
+- `config/config.yaml` md5 + `/api/config` shows `model.width == 300` (baseline to restore on
+  rollback) and the detector schema/version (Step 1).
+- `models/coco/` is present under `/home/dr/frigate/` and readable by the frigate container.
+- Record baseline `/api/stats` from Step 1 and note which cameras are currently online.
 
-### Step 7 — Deploy to remote host and verify (per the sshuser rule)
+### Step 8 — Deploy to remote host and verify (per the sshuser rule)
 
 Extend/reuse the deploy pattern from [`deploy_config.sh`](../scripts/deploy_config.sh:41):
 
@@ -302,55 +345,61 @@ scp -r docker-compose.yml config models ai@ssh.mazr3a.garden:/home/dr/frigate/
 cd /home/dr/frigate
 docker compose up -d --force-recreate frigate
 sleep 15
-curl -s http://localhost:5000/api/config | python3 -m json.tool   # model path + width/height
+curl -s http://localhost:5000/api/config | python3 -m json.tool   # model_type/path/width/height/device
 curl -s http://localhost:5000/api/stats | python3 -m json.tool     # detection_fps vs process_fps
-docker compose logs --since 3m frigate 2>&1 | grep -iE 'error|invalid|openvino|gpu|shape|labelmap' | tail -30
+docker compose logs --since 3m frigate 2>&1 | grep -iE 'error|invalid|openvino|onnx|shape|labelmap|yolo' | tail -30
+docker stats --no-stream frigate                                   # CPU/RAM after swap
 ```
 
 Accept criteria:
-- `/api/config` shows `model.path == /models/coco/best.xml`, matching `width`/`height`,
-  and detector `device: GPU`.
-- No `ValueError ... broadcast` / `Detection appears to have stopped` in logs (input-size
-  regression check).
-- `sum(detection_fps)` tracks `sum(process_fps)` on all online cameras (no dropped frames).
+- `/api/config` shows `model.model_type == yolo-generic`, `model.path ==
+  /models/coco/<winner>.onnx`, matching `width`/`height`, and detector `device: CPU`.
+- No detector errors in logs (input-size / labelmap / shape regression check).
+- `sum(detection_fps)` tracks `sum(process_fps)` on all online cameras (no dropped frames);
+  container CPU and RAM within budget (~8 GiB total host RAM).
 - `inference_speed` stays comfortably under the frame budget.
 - **Walk-test:** a person walking in front of each online camera produces an event with label
   `person`, a snapshot, and a clip (UI Timeline). Repeat at night for IR.
-- Compare event-label counts before vs after: `person` events should appear (the old system
-  produced zero), and animal mislabels (foliage/animal→person) should fall.
-- Person detection accuracy regression: confirm `car`/animals still fire as before.
+- Event-label comparison vs baseline: `person` events should appear (old system produced
+  zero); animal mislabels (foliage/animal→person) should fall; car/animals still fire.
 
-### Step 8 — Rollback path (documented, one command if needed)
+### Step 9 — Rollback path
 
 ```bash
 # restore the known-good baseline on the host
 cd /home/dr/frigate
-# restore previous config.yaml (md5 from Step 6) and remove models/coco from use
+# restore previous config.yaml (md5 from Step 7) -> device: GPU + ssdlite 300x300 (model_type ssd default)
 docker compose up -d --force-recreate frigate
 ```
-Config restore is a single `mv` over `config/config.yaml` (the file is md5-backed in Step 6);
-no compose change is required to roll back since `./models` mounting is harmless when unused.
+Config restore is a single `mv` over `config/config.yaml` (md5-backed in Step 7); the
+`./models` mount is harmless when unused.
 
-### Step 9 — Record results + git commit (per the Agents rule)
+### Step 10 — Record results + git commit (per the Agents rule)
 
-- After implementation and host verification, record the outcome (benchmark numbers, chosen
-  model/input, observed FP/FN deltas, host facts) in **this file** under a "Results" section,
-  matching how [`plans/use-igpu-to-reduce-cpu-load.md`](use-igpu-to-reduce-cpu-load.md:132)
+- After implementation and host verification, record the outcome (baseline + benchmark
+  numbers, chosen model/device, observed FP/FN deltas, host facts) in **this file** under a
+  "Results" section, matching how [`plans/use-igpu-to-reduce-cpu-load.md`](use-igpu-to-reduce-cpu-load.md:132)
   records verified results.
-- Commit in logical groups: (1) plan file, (2) `models/coco/README.md` + `.gitignore`,
-  (3) `config/config.yaml` + `docker-compose.yml`.
+- Commit in logical groups: (1) plan file, (2) `models/coco/README.md` + labelmap +
+  `.gitignore`, (3) `scripts/prep_coco_model.sh`, (4) `config/config.yaml` +
+  `docker-compose.yml`.
 
 ## 6. Verification checklist
 
-- [ ] Step 1 benchmark recorded; decision 640 vs 416 justified
-- [ ] `models/coco/` present with `best.xml`, `best.bin`, `labelmap.txt` (80 lines, COCO order)
-- [ ] Model-load sanity check: class names resolve correctly (person/car/dog/horse/sheep/cow)
-- [ ] Export format confirmed against the running Frigate 0.17 build (`[1, N, 6]` NMS-free)
-- [ ] `.gitignore` covers `models/coco/*.xml|bin|pt`; README.md with provenance tracked
+- [ ] Step 1 host baseline + version + schema recorded (detection_fps/process_fps, CPU, RAM)
+- [ ] Both candidates exported: `models/coco/yolo11n.onnx`, `models/coco/yolov8s.onnx`
+- [ ] `labelmap.txt` present with 80 lines in exact COCO order; class sanity-check passed
+- [ ] Step 3 benchmark run on CPU (GPU reference optional); winner + device recorded
+- [ ] `.gitignore` covers `models/coco/*.onnx`; README.md with provenance tracked
 - [ ] [`docker-compose.yml`](../docker-compose.yml:30) mounts `./models:/models:ro`
-- [ ] [`config/config.yaml`](../config/config.yaml:94) model block points to `/models/coco/`
-      with matching width/height; `device: GPU` kept
+- [ ] [`config/config.yaml`](../config/config.yaml:94) top-level `model:` uses
+      `model_type: yolo-generic`, points to the winner, matching width/height,
+      `input_tensor: nchw`, `input_dtype: float`; `device: CPU` (unless contingency fired)
 - [ ] Deployed to host; `/api/config` and `/api/stats` meet accept criteria
 - [ ] Walk-test person event + snapshot + clip (day and night/IR)
 - [ ] Event-label comparison shows person events and fewer mislabels vs baseline
 - [ ] Results recorded in this file; git commits made
+
+## 7. Results (recorded after implementation)
+
+> To be filled after deploy + verification on `ai@ssh.mazr3a.garden` — per the Agents rule.

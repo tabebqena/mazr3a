@@ -23,6 +23,11 @@ models/fire/*.xml
 models/fire/*.bin
 models/fire/*.pt
 
+# COCO YOLO replacement model artifacts (large, exported once - see
+# models/coco/README.md for provenance; README.md + labelmap.txt stay tracked)
+models/coco/*.onnx
+models/coco/*.pt
+
 # Python bytecode caches
 __pycache__/
 *.pyc

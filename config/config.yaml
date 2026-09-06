@@ -93,8 +93,8 @@ ffmpeg:
 # 255 (0..1 RGB), exactly the preprocessing Ultralytics weights expect
 # (input_pixel_format defaults to rgb - correct).
 #
-# Model files live on the host in config/coco/ (world-writable config
-# dir) which is mounted at /config in the container.
+# Model files live in config/coco/ (git-tracked since 2026-09-06 - this dir is
+# mounted at /config in the container => /config/coco). Self-contained git deploy.
 # ------------------------------------------------------------------
 model:
   model_type: yolo-generic

@@ -1,5 +1,12 @@
 # Replace Bundled SSD with Lightweight COCO YOLO on CPU — Frigate NVR
 
+> **UPDATE (2026-09-06, git-deploy):** the COCO ONNX artifacts now live **tracked in git at
+> [`config/coco/`](../config/coco/README.md)** (`yolo11n.onnx` ACTIVE, `yolov8s.onnx`
+> alternative, `labelmap.txt`) and ship via `deploy_all.sh` `git pull` — **no scp** of model
+> files, and a `config/coco/*` change restarts the frigate service. The `models/coco/` staging
+> dir referenced in the old Steps below no longer holds binaries (kept as a pointer README).
+> Historical scp instructions below apply to the pre-git-deploy process only.
+
 > **Status:** IN IMPLEMENTATION (local edits done + committed; host baseline/benchmark in progress)
 >
 > Goal: swap Frigate's bundled `ssdlite_mobilenet_v2` (COCO @ 300×300) for a lightweight

@@ -155,6 +155,7 @@ deploy() {
     case "$f" in
       docker-compose.yml)                            COMPOSE_CHANGED=1 ;;
       config/config.yaml)                            FRIGATE_CFG_CHANGED=1 ;;
+      config/coco/*)                                 FRIGATE_CFG_CHANGED=1 ;;
       mosquitto/config/mosquitto.conf)               MQTT_CFG_CHANGED=1 ;;
       scripts/firewatch.py|scripts/collect_sensors.py|config/firewatch.conf) FW_CODE_CHANGED=1 ;;
       firewatch/Dockerfile|firewatch/requirements.txt) FW_BUILD_CHANGED=1 ;;

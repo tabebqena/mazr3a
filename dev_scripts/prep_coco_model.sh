@@ -2,7 +2,7 @@
 # ============================================================
 # Export Ultralytics COCO YOLO candidates to the NMS-free ONNX
 # files Frigate's OpenVINO detector (model_type: yolo-generic)
-# expects at models/coco/ (yolo11n.onnx + yolov8s.onnx).
+# expects at config/coco/ (yolo11n.onnx + yolov8s.onnx).
 #
 # No OpenVINO IR conversion is needed: Frigate 0.17.2 loads the
 # .onnx directly and post-processes it (verified vs v0.17.2 source).
@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEST_DIR="${ROOT_DIR}/models/coco"
+DEST_DIR="${ROOT_DIR}/config/coco"
 
 IMGSZ="${1:-640}"
 
@@ -55,7 +55,7 @@ for name in ["yolo11n", "yolov8s"]:
     names = model.names
     chk = [names[0], names[2], names[16], names[17], names[18], names[19]]
     out = model.export(format="onnx", imgsz=imgsz, opset=12)  # NMS-free by default
-    # work dir may be on a different filesystem than models/coco -> use shutil.move
+    # work dir may be on a different filesystem than config/coco -> use shutil.move
     shutil.move(out, os.path.join(dest, f"{name}.onnx"))
     print(f"{name}: exported; class check: {' '.join(chk)}")
 PY
@@ -64,7 +64,7 @@ echo "=============================================================="
 echo "2) verify labelmap (must be 80 lines, Ultralytics COCO order)"
 LABELMAP="$DEST_DIR/labelmap.txt"
 if [ ! -f "$LABELMAP" ]; then
-  echo "ERROR: $LABELMAP missing - restore it from git (models/coco/labelmap.txt)." >&2
+  echo "ERROR: $LABELMAP missing - restore it from git (config/coco/labelmap.txt)." >&2
   exit 1
 fi
 N=$(wc -l < "$LABELMAP")
@@ -80,10 +80,9 @@ echo "DONE. Files in ${DEST_DIR}:"
 ls -la "$DEST_DIR"
 echo
 echo "IMPORTANT:"
-echo "  - Both ONNX files are git-ignored (models/coco/*.onnx)."
-echo "  - Deploy by scp'ing the ONNX + labelmap into the host config dir:"
-echo "      scp models/coco/*.onnx models/coco/labelmap.txt ai@ssh.mazr3a.garden:/home/dr/frigate/config/coco/"
-echo "    (container path /config/coco/ - models are kept under the writable config dir)."
-echo "  - Host benchmark:"
+echo "  - Files in ${DEST_DIR} are git-TRACKED (self-contained git deploy, 2026-09-06)."
+echo "  - Commit any new export + push, then deploy_all.sh ships it (host git pull)."
+echo "  - A config/coco/* change restarts the frigate service in deploy_all.sh."
+echo "  - Host benchmark (container path /config/coco/):"
 echo "      docker exec frigate /openvino/benchmark_app -m /config/coco/yolo11n.onnx -d CPU -api sync"
 echo "      docker exec frigate /openvino/benchmark_app -m /config/coco/yolov8s.onnx -d CPU -api sync"

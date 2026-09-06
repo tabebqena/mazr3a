@@ -196,20 +196,24 @@ snapshots:
   bounding_box: true
 
 # ------------------------------------------------------------------
-# Motion detection sensitivity (Frigate defaults - standard sensitivity)
-#   threshold: 25     higher = fewer pixels count as motion (LESS sensitive)
-#   contour_area: 10  higher = motion must be a bigger blob (LESS sensitive)
+# Motion detection sensitivity (Phase 1 2026-09-06 - slightly LESS sensitive
+# to cut spurious triggers from wind/grass/insects on the busy farm scenes,
+# which was firing detection on ~every frame. Baseline was stock Frigate:
+# threshold 25 / contour_area 10. Per-camera motion.mask polygons can be added
+# from the Frigate UI once always-busy regions are identified; none set yet.)
+#   threshold: 30     higher = fewer pixels count as motion (LESS sensitive)
+#   contour_area: 15  higher = motion must be a bigger blob (LESS sensitive)
 #   delta_alpha: 0.2  higher = background adapts faster (LESS sensitive)
 # Lower values increase sensitivity -> more motion triggers.
 # ------------------------------------------------------------------
 motion:
-  threshold: 25
-  contour_area: 10
+  threshold: 30
+  contour_area: 15
   delta_alpha: 0.2
   improve_contrast: false
 
 # ------------------------------------------------------------------
-# Cameras - 9 total (detect-only in Phase 0)
+# Cameras - 10 total (detect-only; cam10 added 2026-09-06)
 # UNV:       detect substream /media/video2 (640x360@12)
 # Hikvision: detect substream /Streaming/Channels/102
 # RTSP user/pass come from .env -> container env -> the {FRIGATE_...}
@@ -237,7 +241,7 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 2
+      fps: 1
 
   cam02:
     ffmpeg:
@@ -257,7 +261,7 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 2
+      fps: 1
 
   cam03:
     ffmpeg:
@@ -277,7 +281,7 @@ cameras:
       enabled: true
       width: 640
       height: 360
-      fps: 2
+      fps: 1
 
   cam04:
     ffmpeg:

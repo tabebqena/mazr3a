@@ -18,6 +18,16 @@ no regression risk to current detection.
 > (`HITS_WINDOW > MIN_HITS` tolerates misses; `== MIN_HITS` = old strict behavior).
 > Defaults `MIN_HITS=3 / HITS_WINDOW=5` in [`config/firewatch.conf`](../config/firewatch.conf);
 > logic in [`scripts/firewatch.py`](../scripts/firewatch.py) `run_forever()`.
+>
+> **Cross-check from the old host backup (`~/frigate_bck/config/frigate.db`, cam01):** 179
+> Frigate events, none fire-labelled (fire is not a Frigate class — only firewatch tracks it).
+> Fire-test windows show person/cow/dog around the fire: 09-05 19:46–20:03 UTC (matches the
+> firewatch fire-hit logs — detected but never 3-in-a-row, hence no alert), and 09-06
+> 11:57–12:04 UTC (19 near-continuous person events + per-10 s recordings = the "fires on
+> cam1" test at the host reboot/recovery window; the 11:54 UTC reboot left firewatch fetching
+> HTTP 500 until cameras warmed up, and old-firewatch logs after 12:04 were not captured before
+> the 12:27 redeploy). Clip/snapshot media files were already deleted from the host (0 files in
+> `frigate_bck`; cleanup cron + RAM tmpfs), so only DB metadata survives.
 
 ---
 

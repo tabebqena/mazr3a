@@ -137,6 +137,9 @@ objects:
     - horse
     - sheep
     - cow
+    - motorcycle
+    - knife
+    - truck
   filters:
     person:
       min_score: 0.5
@@ -159,6 +162,15 @@ objects:
     cow:
       min_score: 0.5
       threshold: 0.65
+    motorcycle:
+      min_score: 0.5
+      threshold: 0.65
+    knife:
+      min_score: 0.5
+      threshold: 0.65
+    truck:
+      min_score: 0.5
+      threshold: 0.65   
 
 # ------------------------------------------------------------------
 # Recording - EVENT-ONLY (Phase 0b).
@@ -222,7 +234,6 @@ motion:
 # Main streams are NOT pulled in Phase 0 (recording disabled).
 # ------------------------------------------------------------------
 cameras:
-
   cam01:
     ffmpeg:
       inputs:
@@ -232,11 +243,14 @@ cameras:
       track:
         - person
         - car
-        - dog
-        - cat
-        - horse
-        - sheep
-        - cow
+        - motorcycle
+        - truck
+        - knife
+        # - dog
+        # - cat
+        # - horse
+        # - sheep
+        # - cow
     detect:
       enabled: true
       width: 640
@@ -252,11 +266,14 @@ cameras:
       track:
         - person
         - car
-        - dog
-        - cat
-        - horse
-        - sheep
-        - cow
+        - motorcycle
+        - truck
+        - knife
+        # - dog
+        # - cat
+        # - horse
+        # - sheep
+        # - cow
     detect:
       enabled: true
       width: 640
@@ -272,11 +289,14 @@ cameras:
       track:
         - person
         - car
-        - dog
-        - cat
-        - horse
-        - sheep
-        - cow
+        - motorcycle
+        - truck
+        - knife
+        # - dog
+        # - cat
+        # - horse
+        # - sheep
+        # - cow
     detect:
       enabled: true
       width: 640
@@ -362,6 +382,14 @@ cameras:
       inputs:
         - path: rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
           roles: [detect]
+    objects:
+      track:
+        - person
+        - car
+        - motorcycle
+        - knife
+        - truck
+        # - dog
     detect:
       enabled: true
       fps: 1
@@ -371,6 +399,12 @@ cameras:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
           roles: [detect]
+    objects:
+      track:
+        - person
+        - car
+        - motorcycle
+        - truck
     detect:
       enabled: true
       width: 640
@@ -382,6 +416,12 @@ cameras:
       inputs:
         - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
           roles: [detect]
+    objects:
+      track:
+        - person
+        - car
+        - motorcycle
+        - truck
     detect:
       enabled: true
       width: 640

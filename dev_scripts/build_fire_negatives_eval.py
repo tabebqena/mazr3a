@@ -2,22 +2,22 @@
 """build_fire_negatives_eval.py - stage curated negative images as an empty-label eval split.
 
 User-curated "background" images (no fire/smoke, e.g. the organised
-dataset/default-other/ set) are copied into a self-contained eval split so a
+fire-model-training/default-other/ set) are copied into a self-contained eval split so a
 detector can be audited purely for fire/smoke false positives.
 
-Output layout (git-ignored under dataset/*):
+Output layout (git-ignored under fire-model-training/*):
     <eval-dir>/
       images/      <- copied image files
       labels/      <- one EMPTY .txt per image (background => no GT boxes)
       data.yaml    <- names fire/other/smoke, val -> images dir
 
 Usage:
-    python dev_scripts/build_fire_negatives_eval.py --src dataset/default-other
-        [--eval-dir dataset/eval/negatives] [--names fire,other,smoke]
+    python dev_scripts/build_fire_negatives_eval.py --src fire-model-training/default-other
+        [--eval-dir fire-model-training/eval/negatives] [--names fire,other,smoke]
 
 Then run a pure FP audit:
     .venv/bin/python dev_scripts/test_fire_model.py models/fire/best.pt \
-        dataset/eval/negatives/data.yaml --out dataset/eval/negatives/results
+        fire-model-training/eval/negatives/data.yaml --out fire-model-training/eval/negatives/results
 """
 import argparse
 import os
@@ -30,8 +30,8 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True,
-                    help="dir of curated negative images (e.g. dataset/default-other)")
-    ap.add_argument("--eval-dir", default="dataset/eval/negatives")
+                    help="dir of curated negative images (e.g. fire-model-training/default-other)")
+    ap.add_argument("--eval-dir", default="fire-model-training/eval/negatives")
     ap.add_argument("--names", default="fire,other,smoke",
                     help="comma class names (dataset/model order 0=fire 1=other 2=smoke)")
     args = ap.parse_args()

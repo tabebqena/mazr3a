@@ -2,13 +2,13 @@
 """prep_fire_large_dataset.py - build a self-contained train/val layout for fine-tuning the
 fire model on the LARGE local datasets.
 
-Inputs (all under the git-ignored dataset/):
-    --ready      Roboflow export root, e.g. dataset/ready_fire_smoke_dataset.yolov8
+Inputs (all under the git-ignored fire-model-training/):
+    --ready      Roboflow export root, e.g. fire-model-training/ready_fire_smoke_dataset.yolov8
                  (uses its train/{images,labels}; 12,799 imgs, fire/other/smoke at idx 0/1/2)
-    --negatives  curated pure-background dir, e.g. dataset/default-other (430 imgs, no labels)
+    --negatives  curated pure-background dir, e.g. fire-model-training/default-other (430 imgs, no labels)
                  -> added to TRAIN as empty-label background samples (FP reduction)
 
-Output (default dataset/large_finetune/):
+Output (default fire-model-training/large_finetune/):
     train/images/ train/labels/   # labeled ready split + empty-label ready + negatives
     val/images/   val/labels/     # held-out labeled subset (mAP / early stopping)
     data.yaml                     # names fire/other/smoke, relative train/val, abs path
@@ -25,9 +25,9 @@ train.
 
 Usage:
     .venv/bin/python dev_scripts/prep_fire_large_dataset.py \
-        --ready dataset/ready_fire_smoke_dataset.yolov8 \
-        --negatives dataset/default-other \
-        --out dataset/large_finetune \
+        --ready fire-model-training/ready_fire_smoke_dataset.yolov8 \
+        --negatives fire-model-training/default-other \
+        --out fire-model-training/large_finetune \
         --val-frac 0.05 --seed 0 --zip
 """
 import argparse
@@ -81,9 +81,9 @@ def copy_if_missing(src, dst):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ready", required=True, help="ready_fire_smoke_dataset export root")
-    ap.add_argument("--negatives", default="dataset/default-other",
+    ap.add_argument("--negatives", default="fire-model-training/default-other",
                     help="curated background dir (default-other); pass '' or --no-negatives to skip")
-    ap.add_argument("--out", default="dataset/large_finetune")
+    ap.add_argument("--out", default="fire-model-training/large_finetune")
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-negatives", action="store_true", help="do not add --negatives images")

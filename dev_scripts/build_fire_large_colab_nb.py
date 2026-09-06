@@ -3,7 +3,7 @@
 
 A ready-to-import Google Colab notebook that fine-tunes models/fire/best.pt (YOLO26-S,
 classes fire/other/smoke) on the large local fire/smoke dataset built by
-dev_scripts/prep_fire_large_dataset.py (dataset/large_finetune_colab.zip).
+dev_scripts/prep_fire_large_dataset.py (fire-model-training/large_finetune_colab.zip).
 
 Data entry supports either (a) Google Drive (recommended for the ~600 MB zip) or
 (b) files.upload(). Set the DRIVE_* variables to "" to trigger an upload dialog instead.
@@ -45,9 +45,9 @@ C_TITLE = md(
         "\n",
         "- Plan: [`plans/fire-model-large-finetune-colab.md`](../plans/fire-model-large-finetune-colab.md)\n",
         "- Dataset prep (run once, locally): "
-        "`python dev_scripts/prep_fire_large_dataset.py --ready dataset/ready_fire_smoke_dataset.yolov8 "
-        "--negatives dataset/default-other --out dataset/large_finetune --val-frac 0.05 --seed 0 --zip`\n",
-        "  → produces `dataset/large_finetune_colab.zip` (train 12,170 / val 629, all 640×640).\n",
+        "`python dev_scripts/prep_fire_large_dataset.py --ready fire-model-training/ready_fire_smoke_dataset.yolov8 "
+        "--negatives fire-model-training/default-other --out fire-model-training/large_finetune --val-frac 0.05 --seed 0 --zip`\n",
+        "  → produces `fire-model-training/large_finetune_colab.zip` (train 12,170 / val 629, all 640×640).\n",
         "- **Class contract:** fire=0 / other=1 / smoke=2. The export is already index-aligned, "
         "so labels are **not** remapped; only the `data.yaml` names are set. `other` is trained but "
         "ignored in production.\n",
@@ -243,7 +243,7 @@ C_NEXT = md(
         "## Next steps after the run\n",
         "\n",
         "1. Save `best_finetuned_large.pt` back into this repo as "
-        "`dataset/large_finetune/best_finetuned_large.pt` (git-ignored).\n",
+        "`fire-model-training/large_finetune/best_finetuned_large.pt` (git-ignored).\n",
         "2. Run the local eval + class-order check in [`plans/fire-model-large-finetune-colab.md`]"
         "(../plans/fire-model-large-finetune-colab.md) §5.\n",
         "3. If metrics justify it, archive as a versioned candidate (`models/fire/versions/`, per "

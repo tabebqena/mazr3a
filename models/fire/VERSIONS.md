@@ -34,7 +34,7 @@ survive even where the `.pt` files are not present).
 
 **v2 provenance/md5 (see its `VERSION.json`):** `model.pt`, md5 `ddc0cd6c3089c0da140017f881673327`,
 20,309,061 B — copy of
-`dataset/abonia_eval/finetune/best_finetuned_abonia.pt`; results recorded in
+`fire-model-training/2_Abonia/abonia_eval/finetune/best_finetuned_abonia.pt`; results recorded in
 [`plans/fire-model-abonia-finetune.md`](../plans/fire-model-abonia-finetune.md:182).
 **v1 md5:** `2fd972183c2ffec0d327ec534c119086`, 20,301,317 B.
 

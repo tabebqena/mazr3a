@@ -41,30 +41,71 @@
 #
 # TRANSPORT
 # ---------
-# SSH to ai@ssh.mazr3a.garden (password via SSH_ASKPASS, .roo/rules/sshuser.md)
-# through a flaky cloudflared tunnel - every ssh retries with keep-alives.
-# ai is in group dr, so it can write /home/dr/frigate.
+# SSH to the deploy host (default ssh.mazr3a.garden, override with
+# DEPLOY_SSH_HOST) through a flaky cloudflared tunnel - every ssh retries with
+# keep-alives. Credentials come from the environment (DEPLOY_SSH_USER /
+# DEPLOY_SSH_PASS) or are asked interactively; nothing is hard-coded anymore.
+#
+# OWNERSHIP: the SSH user MUST own the host clone (/home/dr/frigate). git >= 2.35.2
+# refuses to run in a repo owned by another user ("detected dubious ownership")
+# and group write access is NOT enough. This deploy deliberately does NOT add a
+# git safe.directory for the clone - instead it runs git as the clone owner. On
+# this host the clone is owned by dr, so deploy as dr (not ai).
 #
 # RESTARTS are driven by the changed set (old host HEAD..new HEAD) so an
 # unchanged deploy restarts nothing. Verification runs at the end.
 # ============================================================
 set -euo pipefail
 
-SSH_USER="ai"
-SSH_HOST="ssh.mazr3a.garden"
-SSH_PASS="123456"
+SSH_HOST="${DEPLOY_SSH_HOST:-ssh.mazr3a.garden}"
 REMOTE_DIR="/home/dr/frigate"
 GIT_REMOTE="https://github.com/tabebqena/mazr3a"
 GIT_BRANCH="master"
+
+# --- SSH credentials: environment first, else interactive prompt ---------
+# Read from the environment (DEPLOY_SSH_USER / DEPLOY_SSH_PASS; the plain
+# SSH_USER / SSH_PASSWORD names are honoured too) or ask interactively.
+# The SSH user must OWN the host clone (see TRANSPORT header above): git >= 2.35.2
+# otherwise aborts with "dubious ownership". We deliberately do NOT mark the
+# clone as a git safe.directory - run as the clone owner instead (here: dr).
+SSH_USER="${DEPLOY_SSH_USER:-${SSH_USER:-}}"
+SSH_PASS="${DEPLOY_SSH_PASS:-${SSH_PASSWORD:-}}"
+resolve_ssh_credentials() {
+  if [ -z "$SSH_USER" ] || [ -z "$SSH_PASS" ]; then
+    if [ ! -t 0 ]; then
+      echo "ERROR: SSH credentials not set. Export DEPLOY_SSH_USER and DEPLOY_SSH_PASS" >&2
+      echo "  (DEPLOY_SSH_USER must own ${REMOTE_DIR} on the host, e.g. dr) or run" >&2
+      echo "  in an interactive terminal to be asked. Aborting." >&2
+      exit 1
+    fi
+  fi
+  if [ -z "$SSH_USER" ]; then
+    printf 'SSH user for %s: ' "$SSH_HOST" >&2
+    IFS= read -r SSH_USER || { echo >&2; exit 1; }
+    export SSH_USER
+  fi
+  if [ -z "$SSH_PASS" ]; then
+    printf 'SSH password for %s@%s: ' "$SSH_USER" "$SSH_HOST" >&2
+    IFS= read -r -s SSH_PASS || { echo >&2; exit 1; }
+    echo >&2
+    export SSH_PASS
+  fi
+}
+resolve_ssh_credentials
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # --- non-interactive password via SSH_ASKPASS ---------------------------
+# The askpass helper cats a password file (chmod 600) so whatever was typed or
+# exported is passed to ssh verbatim - no shell re-interpretation of the value.
+PASSFILE="$(mktemp)"
+printf '%s\n' "$SSH_PASS" > "$PASSFILE"
+chmod 600 "$PASSFILE"
 ASKPASS="$(mktemp)"
-printf '#!/usr/bin/env bash\necho "%s"\n' "$SSH_PASS" > "$ASKPASS"
+printf '#!/usr/bin/env bash\ncat "%s"\n' "$PASSFILE" > "$ASKPASS"
 chmod 700 "$ASKPASS"
-trap 'rm -f "$ASKPASS"' EXIT
+trap 'rm -f "$ASKPASS" "$PASSFILE"' EXIT
 
 export SSH_ASKPASS="$ASKPASS"
 export SSH_ASKPASS_REQUIRE=force   # use askpass even without a tty

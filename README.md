@@ -49,6 +49,7 @@ fire model) stay deferred to later phases.
 │   ├── Dockerfile              # firewatch runtime image (deps only)
 │   └── requirements.txt        # openvino + numpy + Pillow
 ├── models/
+│   ├── coco/                   # Frigate COCO detector ONNX (git-tracked; ACTIVE yolo11n)
 │   └── fire/                   # Fire/smoke ACTIVE OpenVINO IR model (git-tracked; versions/ ignored)
 ├── mosquitto/
 │   └── config/mosquitto.conf   # MQTT broker config

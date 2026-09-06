@@ -30,6 +30,9 @@ services:
     volumes:
       - ./config:/config
       - ./media:/media/frigate
+      # Detector model (COCO ONNX under models/coco/) - read-only. config.yaml
+      # model.path/labelmap_path + detector model_path point at /models/coco/.
+      - ./models:/models:ro
       - type: tmpfs
         target: /tmp/cache
         tmpfs:

@@ -93,13 +93,14 @@ ffmpeg:
 # 255 (0..1 RGB), exactly the preprocessing Ultralytics weights expect
 # (input_pixel_format defaults to rgb - correct).
 #
-# Model files live in config/coco/ (git-tracked since 2026-09-06 - this dir is
-# mounted at /config in the container => /config/coco). Self-contained git deploy.
+# Model files live in models/coco/ (git-tracked since 2026-09-06 - this dir is
+# mounted read-only at /models in the container => /models/coco). Self-contained
+# git deploy. config/ holds only config.
 # ------------------------------------------------------------------
 model:
   model_type: yolo-generic
-  path: /config/coco/yolo11n.onnx
-  labelmap_path: /config/coco/labelmap.txt
+  path: /models/coco/yolo11n.onnx
+  labelmap_path: /models/coco/labelmap.txt
   width: 640
   height: 640
   input_tensor: nchw
@@ -116,7 +117,7 @@ detectors:
   ov:
     type: openvino
     device: CPU
-    model_path: /config/coco/yolo11n.onnx
+    model_path: /models/coco/yolo11n.onnx
 
 # ------------------------------------------------------------------
 # Objects to track and detection thresholds

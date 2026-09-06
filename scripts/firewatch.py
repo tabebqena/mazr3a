@@ -31,6 +31,7 @@ Usage
   python firewatch.py --dry-run  # like --once but print instead of sending
   python firewatch.py --check    # validate config + load model, then exit
 """
+import collections
 import io
 import json
 import os
@@ -337,20 +338,28 @@ def run_forever(cfg, model):
     cameras = [c.strip() for c in _get(cfg, "CAMERAS", "").split(",") if c.strip()]
     interval = _getf(cfg, "POLL_INTERVAL_S", 15)
     threshold = _getf(cfg, "SCORE_THRESHOLD", 0.5)
-    min_hits = _geti(cfg, "MIN_HITS", 3)
+    min_hits = max(1, _geti(cfg, "MIN_HITS", 3))
     cooldown = _getf(cfg, "COOLDOWN_S", 300)
     track_smoke = _getb(cfg, "TRACK_SMOKE", False)
     allowed = {"fire"} if not track_smoke else {"fire", "smoke"}
     enabled = _getb(cfg, "ENABLED", True)
+    # Sliding-window gate (2026-09-06 fix, see plans/fire-detection.md): alert
+    # when the last `window` polls contain >= MIN_HITS fire/smoke hits.
+    # window == MIN_HITS means strictly-consecutive (old behavior); window >
+    # MIN_HITS tolerates the intermittent single-frame misses a close-up fire
+    # causes (auto-exposure/white-balance swings dip the conf below threshold on
+    # some polls), so a real fire still alerts instead of resetting forever.
+    window = max(min_hits, _geti(cfg, "HITS_WINDOW", 0))
     if not cameras:
         LOG("ERROR: CAMERAS list empty - exiting")
         sys.exit(2)
 
-    state = {c: {"hits": 0, "last_alert": 0.0, "down": False}
+    state = {c: {"recent": collections.deque(maxlen=window),
+                 "last_alert": 0.0, "down": False}
              for c in cameras}
     LOG(f"started: {len(cameras)} cameras, sweep every {interval}s, "
-        f"min_hits={min_hits}, cooldown={cooldown}s, smoke={track_smoke}, "
-        f"enabled={enabled}")
+        f"min_hits={min_hits} in window {window}, cooldown={cooldown}s, "
+        f"smoke={track_smoke}, enabled={enabled}")
     while True:
         if not enabled:
             LOG("disabled (ENABLED=false) - sleeping 60s")
@@ -365,30 +374,33 @@ def run_forever(cfg, model):
                 if st["down"]:
                     LOG(f"{cam}: back online")
                     st["down"] = False
+                prev_hits = sum(st["recent"])
+                st["recent"].append(1 if dets else 0)
+                hits = sum(st["recent"])
+                now = time.monotonic()
+                in_cooldown = now - st["last_alert"] < cooldown
                 if dets:
-                    st["hits"] += 1
                     best = max(d["score"] for d in dets)
-                    now = time.monotonic()
-                    in_cooldown = now - st["last_alert"] < cooldown
-                    if st["hits"] >= min_hits and not in_cooldown:
+                    if hits >= min_hits and not in_cooldown:
                         st["last_alert"] = now
-                        st["hits"] = 0
-                        LOG(f"{cam}: ALERT ({min_hits} hits, conf {best:.2f})")
+                        st["recent"].clear()
+                        LOG(f"{cam}: ALERT ({hits} fire in last {window} "
+                            f"polls, conf {best:.2f})")
                         jpg = overlay_boxes(raw, dets)
                         send_alert(cfg, cam, jpg, dets, track_smoke)
                     else:
-                        LOG(f"{cam}: fire-hit {st['hits']}/{min_hits} "
-                            f"(conf {best:.2f})" + (" [cooldown]" if in_cooldown else ""))
-                else:
-                    if st["hits"]:
-                        LOG(f"{cam}: cleared after {st['hits']} hits")
-                    st["hits"] = 0
+                        LOG(f"{cam}: fire-hit {hits}/{min_hits} in last "
+                            f"{window} polls (conf {best:.2f})"
+                            + (" [cooldown]" if in_cooldown else ""))
+                elif hits == 0 and prev_hits:
+                    # window drained to zero: the fire has been gone long enough
+                    LOG(f"{cam}: cleared after {prev_hits} recent hits")
             except urllib.error.HTTPError as exc:
-                st["hits"] = 0
+                st["recent"].clear()
                 if not st["down"]:
                     LOG(f"{cam}: HTTP {exc.code}")
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
-                st["hits"] = 0
+                st["recent"].clear()
                 if not st["down"]:
                     LOG(f"{cam}: error: {exc}")
                     st["down"] = True

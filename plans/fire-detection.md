@@ -9,6 +9,16 @@ reuses Frigate's already-decoded detect frames via the REST API and runs a dedic
 fire/smoke model. [`config/config.yaml`](../config/config.yaml) is **left untouched** —
 no regression risk to current detection.
 
+> **UPDATE (2026-09-06, alert-gate fix):** live camera tests (fires in front of cam01,
+> 2026-09-05 evening) showed the model detecting fire on many polls (conf 0.51–0.77) but
+> **zero Telegram alerts**, because `MIN_HITS` required *strictly consecutive* hits and a
+> single intermittent miss (auto-exposure/white-balance swings on a close-up fire dip the
+> confidence below threshold on some frames) reset the counter each time. The gate is now a
+> **sliding window**: alert when the last `HITS_WINDOW` polls contain `>= MIN_HITS` hits
+> (`HITS_WINDOW > MIN_HITS` tolerates misses; `== MIN_HITS` = old strict behavior).
+> Defaults `MIN_HITS=3 / HITS_WINDOW=5` in [`config/firewatch.conf`](../config/firewatch.conf);
+> logic in [`scripts/firewatch.py`](../scripts/firewatch.py) `run_forever()`.
+
 ---
 
 ## 1. Answers to the original questions

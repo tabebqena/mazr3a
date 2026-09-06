@@ -5,13 +5,14 @@
 # Replaces the old dev_scripts/deploy_config.sh +
 # dev_scripts/deploy_firewatch.sh shims with ONE script that ALWAYS
 # runs every deploy step on the host (configs + firewatch + model).
-# Deploy = confirm the local repo is already PUSHED to origin (this script
-# does NOT push - you run `git push origin master` yourself first), then SSH
-# to the Frigate host and `git pull --ff-only`. Git natively handles adds,
-# edits, moves and deletes - no md5, no file-diff upload scripts.
+# Deploy = SSH to the Frigate host and `git pull --ff-only`, i.e. SYNC THE HOST
+# to the latest REMOTE (origin/master). This script does NOT push - you run
+# `git push origin master` yourself first. If there are local changes
+# (uncommitted files or unpushed commits) it warns, lists them, and asks you to
+# confirm (complete the deploy / abort) before touching the host.
 #
-#   git push origin master && deploy_all.sh   # full deploy (all steps)
-#   deploy_all.sh                             # same - stops if unpushed
+#   git push origin master && deploy_all.sh   # deploy the remote state
+#   deploy_all.sh                             # same - prompts if local changes
 #
 # There are NO `config` / `firewatch` / `bootstrap` options anymore
 # (2026-09-05): config and firewatch are always both deployed, and the
@@ -29,8 +30,9 @@
 # ----------
 #   origin = https://github.com/tabebqena/mazr3a   (branch: master)
 # The local repo is pushed to origin by YOU (not this script - GitHub auth is
-# interactive); the host clone pulls from it. The script verifies there are 0
-# unpushed local commits (and a clean tree) before it touches the host.
+# interactive); the host clone pulls from it. If local has uncommitted changes
+# or unpushed commits the script warns + asks to continue (host syncs to remote,
+# so such local state would NOT be deployed) or abort.
 #
 # WHY GIT (decision 2026-09-05): hand-rolled file sync is abandoned; git
 # already solves move/delete/rename natively and carries the ACTIVE fire
@@ -93,47 +95,71 @@ remote_git() { # <git-args...>
   run_ssh "cd ${REMOTE_DIR} && git $*"
 }
 
-check_local_pushed() {
-  # Never pushes: GitHub auth is interactive (token/ksshaskpass). Verify the
-  # local tree is clean AND fully pushed (0 commits ahead of origin), stopping
-  # so the user can `git push origin master` and re-run if it is not.
+confirm_proceed() { # asks once; DEPLOY_ASSUME_YES=1 skips (non-interactive use)
+  if [ "${DEPLOY_ASSUME_YES:-0}" = "1" ]; then return 0; fi
+  if [ ! -t 0 ]; then
+    echo "ERROR: cannot prompt (stdin is not a TTY). Run in an interactive" >&2
+    echo "  terminal, or set DEPLOY_ASSUME_YES=1 to auto-confirm and re-run." >&2
+    exit 1
+  fi
+  local ans
+  read -r -p "Complete the deploy (sync the HOST to origin/${GIT_BRANCH})? [y/N] " ans
+  case "$ans" in
+    y|Y|yes|Yes|YES) return 0 ;;
+    *) echo "aborted - host not changed."; exit 1 ;;
+  esac
+}
+
+check_local_and_confirm() {
+  # Never pushes: GitHub auth is interactive (token/ksshaskpass). This deploy
+  # SYNCS THE HOST to the latest REMOTE (origin/master). If there are local
+  # changes that would NOT reach the host, warn and ask the user to complete
+  # the deploy or abort.
   echo "=============================================================="
-  echo "preflight: local repo clean + fully pushed to origin (no push here)"
+  echo "preflight: local repo vs origin/${GIT_BRANCH}"
+  echo "  (this deploy syncs the HOST to origin/${GIT_BRANCH}, not to local HEAD)"
   if ! git -C "$ROOT_DIR" remote | grep -qx origin; then
     git -C "$ROOT_DIR" remote add origin "$GIT_REMOTE"
     echo "   added local origin ${GIT_REMOTE}"
   else
     git -C "$ROOT_DIR" remote set-url origin "$GIT_REMOTE"
   fi
-  # refuse uncommitted work: Agents.md rule = commit after each change
+
+  # 1) uncommitted working-tree changes
   if [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
-    echo "ERROR: local working tree has uncommitted changes - commit first" >&2
-    echo "  (git add -A && git commit -m '...' && $0)" >&2
-    exit 1
+    echo "WARNING: local working tree has uncommitted changes - these will NOT be deployed." >&2
+    git -C "$ROOT_DIR" status --short | sed 's/^/    /' >&2
+    confirm_proceed || exit 1
   fi
+
+  # 2) local commits not yet pushed to origin (they would be left out of the host sync)
   local ahead
   ahead="$(git -C "$ROOT_DIR" rev-list --count "origin/${GIT_BRANCH}..HEAD" 2>/dev/null || echo ERR)"
   if [ "$ahead" = "ERR" ]; then
-    echo "ERROR: cannot compare HEAD with origin/${GIT_BRANCH} (origin ref unknown?)" >&2
-    echo "  Run: git fetch origin && git push origin ${GIT_BRANCH} && $0" >&2
+    echo "ERROR: cannot compare HEAD with origin/${GIT_BRANCH} (origin ref unknown?)." >&2
+    echo "  Run: git fetch origin && git push origin ${GIT_BRANCH}" >&2
     exit 1
   fi
   if [ "$ahead" -ne 0 ]; then
-    echo "ERROR: ${ahead} local commit(s) not yet on origin/${GIT_BRANCH} - push first." >&2
+    echo "WARNING: ${ahead} local commit(s) are NOT on origin/${GIT_BRANCH} yet and" >&2
+    echo "  will NOT be on the host after this deploy (host syncs to origin/${GIT_BRANCH})." >&2
     git -C "$ROOT_DIR" log "origin/${GIT_BRANCH}..HEAD" --oneline | sed 's/^/    /' >&2
-    echo "  Run: git push origin ${GIT_BRANCH} && $0" >&2
-    exit 1
+    echo "  origin/${GIT_BRANCH} is at $(git -C "$ROOT_DIR" rev-parse --short "origin/${GIT_BRANCH}")." >&2
+    echo "  To include them: git push origin ${GIT_BRANCH} first, then re-run." >&2
+    confirm_proceed || exit 1
+  else
+    echo "   ok: local HEAD $(git -C "$ROOT_DIR" rev-parse --short HEAD) == origin/${GIT_BRANCH}"
   fi
-  echo "   ok: local HEAD $(git -C "$ROOT_DIR" rev-parse --short HEAD) == origin/${GIT_BRANCH}"
 }
 
 deploy() {
   echo "=============================================================="
-  echo "0) preflight: reachability + host repo state"
-  run_ssh "mkdir -p ${REMOTE_DIR}" || exit 1
+  echo "0) preflight: local changes check (host syncs to origin/${GIT_BRANCH})"
+  check_local_and_confirm
 
-  # local must already be pushed; the host clone then pulls origin's HEAD.
-  check_local_pushed
+  echo "=============================================================="
+  echo "0b) reachability + host repo state"
+  run_ssh "mkdir -p ${REMOTE_DIR}" || exit 1
 
   # NOTE: make the probe always exit 0 so run_ssh does not retry a "no .git"
   host_clone="$(run_ssh "cd ${REMOTE_DIR} && if [ -d .git ]; then echo yes; else echo no; fi")"

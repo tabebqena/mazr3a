@@ -373,13 +373,13 @@ cameras:
       height: 360
       fps: 1
 
-  # cam10:
-  #   ffmpeg:
-  #     inputs:
-  #       - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
-  #         roles: [detect]
-  #   detect:
-  #     enabled: true
-  #     width: 640
-  #     height: 360
-  #     fps: 1
+  cam10:
+    ffmpeg:
+      inputs:
+        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
+          roles: [detect]
+    detect:
+      enabled: true
+      width: 640
+      height: 360
+      fps: 1

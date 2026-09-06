@@ -22,6 +22,14 @@ Removed reasons (same contract as dedup_images.py):
   ref-phash  candidate dHash within --hamming of a reference image
   int-md5 / int-phash   only when --internal is given (candidate's own dups)
 
+SAFETY / READ-ONLY CONTRACT
+---------------------------
+This script is report-only: it NEVER deletes, moves or overwrites any source
+image or label file. It only WRITES new files (CSV/lists/summary/sample_pairs)
+into --out, which must live OUTSIDE the candidate tree and outside any directory
+reference tree (enforced by ensure_outside from dedup_images.py). The original
+dataset is always left byte-for-byte untouched.
+
 USAGE
 -----
   # how much of Abonia fire-8 is inside the 8,939 training pool?
@@ -52,6 +60,14 @@ def _ref_specs(args):
             os.path.splitext(os.path.basename(path.rstrip("/\\")))[0]
         specs.append((os.path.abspath(path), lab))
     return specs
+
+
+def _cache_label(path):
+    """Readable reference label from a cache filename (e.g. _index_8939.json)."""
+    if not path:
+        return "ref"
+    b = os.path.splitext(os.path.basename(path))[0].lstrip("_")
+    return b or "ref"
 
 
 def _sample_pairs(rows, specs, out, n):
@@ -143,9 +159,17 @@ def main():
     print("reference pool: %d images" % ref.count)
 
     rows = di.classify(cands, ref, args.internal, args.hamming)
-    ref_label = "+".join(lab for _, lab in specs) or os.path.basename(args.cache)
+    if specs:
+        ref_label = "+".join(lab for _, lab in specs)
+    else:  # reference came from --cache
+        ref_label = _cache_label(args.cache)
     out = os.path.abspath(args.out or di._default_report_dir())
     out = os.path.join(out, "%s_vs_%s" % (tag, ref_label))
+    # READ-ONLY SAFETY: never write the report into the source trees.
+    readonly = [cand_root] + [p for p, _ in specs if os.path.isdir(p)]
+    di.ensure_outside(readonly, out, "--out")
+    print("read-only sources (never modified): %s"
+          % ", ".join(os.path.basename(r) or r for r in readonly))
     os.makedirs(out, exist_ok=True)
 
     # standard per-image CSV / kept / removed / summary artifacts

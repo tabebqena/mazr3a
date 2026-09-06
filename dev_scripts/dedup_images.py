@@ -41,6 +41,19 @@ DECISION (per candidate image, in scan order)
 Reference matches take precedence over internal ones; an image removed because
 it collides with the training pool never counts as the "keeper" of a cluster.
 
+SAFETY / READ-ONLY CONTRACT
+---------------------------
+This tool NEVER deletes, moves or overwrites any source image or label file,
+whether from the candidate or from a reference set. Sources are opened read-only
+for fingerprinting. The only writes that happen are NEW files in NEW locations:
+the report CSVs/lists/summary (--report-dir), the clean copy (--out), the
+optional reference-index cache (--cache) and analyze_overlap's sample_pairs.
+To make that a hard guarantee, the script refuses to run when a write target
+(--report-dir / --out / --cache) resolves INSIDE the candidate source tree or
+inside a directory reference source - the original dataset is always left
+byte-for-byte untouched, and a deduplicated version is produced elsewhere
+(e.g. fire-model-training/dedup/<name>_dedup).
+
 OUTPUTS
 -------
 Reports (always written to --report-dir, default fire-model-training/dedup/
@@ -177,6 +190,31 @@ def fingerprint(data, hash_size=8):
 
 def hamming(a, b):
     return (int(a) ^ int(b)).bit_count()
+
+
+def ensure_outside(readonly_roots, dst, flag):
+    """Refuse any WRITE target that lives inside a read-only source tree.
+
+    readonly_roots: candidate/reference directory paths that the tool must never
+    write into. dst is an absolute write target. Exits with an error if dst is
+    inside any source dir (or equals it), so the originals stay untouched and a
+    cleaned copy/report can never corrupt them.
+    """
+    dst = os.path.abspath(dst)
+    for root in readonly_roots:
+        root = os.path.abspath(root)
+        if not os.path.isdir(root):
+            continue
+        try:
+            if os.path.commonpath([root, dst]) == root:
+                sys.exit(
+                    "%s (%s) is inside the read-only source %s - refusing.\n"
+                    "This tool NEVER deletes/overwrites source images; it only WRITES "
+                    "new report/clean-copy files, and those must live OUTSIDE every "
+                    "source dataset directory. Pick a separate output path, e.g. "
+                    "fire-model-training/dedup/." % (flag, dst, root))
+        except ValueError:
+            pass  # different drive/prefix (e.g. Windows)
 
 
 # --------------------------------------------------------------------------- #
@@ -692,17 +730,32 @@ def main():
         sys.exit("no images found under candidate: %s" % cand_root)
     tag = args.tag or os.path.basename(cand_root.rstrip("/\\"))
 
-    # reference index (built from --ref specs, or reused from --cache)
-    ref = None
-    if args.cache and os.path.isfile(args.cache):
-        ref, _ = build_ref_index([], args.cache)
-    elif args.ref:
+    specs = []
+    if args.ref:
         labels = list(args.ref_label)
-        specs = []
         for i, path in enumerate(args.ref):
             lab = labels[i] if i < len(labels) else \
                 os.path.splitext(os.path.basename(path.rstrip("/\\")))[0]
             specs.append((os.path.abspath(path), lab))
+
+    # READ-ONLY SAFETY: candidate + directory reference trees are NEVER written
+    # into. All outputs (reports / clean copy / new cache) must live elsewhere,
+    # so the original dataset stays byte-for-byte untouched.
+    readonly_roots = [cand_root] + [p for p, _ in specs if os.path.isdir(p)]
+    print("read-only sources (never modified): %s"
+          % ", ".join(os.path.basename(r) or r for r in readonly_roots))
+    if args.report_dir:
+        ensure_outside(readonly_roots, args.report_dir, "--report-dir")
+    if args.out:
+        ensure_outside(readonly_roots, args.out, "--out")
+    if args.cache and not os.path.isfile(args.cache):
+        ensure_outside(readonly_roots, args.cache, "--cache")
+
+    # reference index (built from --ref specs, or reused from --cache)
+    ref = None
+    if args.cache and os.path.isfile(args.cache):
+        ref, _ = build_ref_index([], args.cache)
+    elif specs:
         ref, _ = build_ref_index(specs, args.cache)
     else:
         print("no reference set given (--ref/--cache); only --internal or plain keep")

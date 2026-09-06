@@ -29,10 +29,26 @@ models/fire/versions/
 # Frigate COCO detector model (person/car/animal) is TRACKED in git at
 # models/coco/ (2026-09-06): yolo11n.onnx ACTIVE + yolov8s.onnx alternative +
 # labelmap.txt ride the git deploy; frigate loads them from /models/coco via the
-# ./models:/models:ro mount. config/ holds ONLY config (no models) - and host
-# runtime junk Frigate writes into config/ (frigate.db, backup.db, model_cache)
-# stays ignored, never committed.
+# ./models:/models:ro mount. config/ holds ONLY config (no models).
+
+# ------------------------------------------------------------------
+# Host Frigate runtime files that Frigate ITSELF writes into config/ on the
+# host (verified on ssh.mazr3a.garden 2026-09-06) - auto-generated, never
+# authored or committed. Ignoring them keeps the config/ dir = only the config
+# files we version, and the host clone's `git status` clean. frigate.db /
+# backup.db are already covered by `*.db` above.
+# ------------------------------------------------------------------
 config/model_cache/
+config/.exports/
+config/.jwt_secret
+config/.search_stats.json
+config/.timeline/
+config/.vacuum
+config/go2rtc_homekit.yml
+
+# media-cleanup.log is written to the deploy root by the host cleanup cron
+# (scripts/cleanup_media.sh -> cleanup_media.conf LOG_FILE). Host-only runtime log.
+media-cleanup.log
 
 # Python bytecode caches
 __pycache__/

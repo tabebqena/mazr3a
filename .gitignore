@@ -26,9 +26,13 @@ frigate.log
 # The versions/ archive stays git-ignored and never ships to the host.
 models/fire/versions/
 
-# COCO ONNX detector artifacts are TRACKED in git at config/coco/ (2026-09-06)
-# so the git-based deploy (deploy_all.sh) is self-contained - do NOT re-ignore.
-# The old models/coco/ staging dir now holds only a pointer README (no binaries).
+# Frigate COCO detector model (person/car/animal) is TRACKED in git at
+# models/coco/ (2026-09-06): yolo11n.onnx ACTIVE + yolov8s.onnx alternative +
+# labelmap.txt ride the git deploy; frigate loads them from /models/coco via the
+# ./models:/models:ro mount. config/ holds ONLY config (no models) - and host
+# runtime junk Frigate writes into config/ (frigate.db, backup.db, model_cache)
+# stays ignored, never committed.
+config/model_cache/
 
 # Python bytecode caches
 __pycache__/
@@ -50,3 +54,13 @@ runs/
 # images staged by dev_scripts/find_unlabelled_images.py (dataset/unlabelled-images-dir),
 # the curated negatives (dataset/default-other) and eval artifacts.
 dataset/*
+
+# ------------------------------------------------------------------
+# Local working docs (not versioned): all plan files (plans/), the master
+# prompt (prompt.txt) and Colab notebooks (notebooks/, regenerable from
+# dev_scripts/build_fire_large_colab_nb.py). They live on this machine only;
+# the git remote + deploy tree do not need them.
+# ------------------------------------------------------------------
+plans/
+prompt.txt
+notebooks/

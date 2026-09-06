@@ -5,11 +5,13 @@
 # Replaces the old dev_scripts/deploy_config.sh +
 # dev_scripts/deploy_firewatch.sh shims with ONE script that ALWAYS
 # runs every deploy step on the host (configs + firewatch + model).
-# Deploy = push the local repo to origin, then SSH to the Frigate
-# host and `git pull --ff-only`. Git natively handles adds, edits,
-# moves and deletes - no md5, no file-diff upload scripts.
+# Deploy = confirm the local repo is already PUSHED to origin (this script
+# does NOT push - you run `git push origin master` yourself first), then SSH
+# to the Frigate host and `git pull --ff-only`. Git natively handles adds,
+# edits, moves and deletes - no md5, no file-diff upload scripts.
 #
-#   deploy_all.sh                # full deploy (all steps, no subcommands)
+#   git push origin master && deploy_all.sh   # full deploy (all steps)
+#   deploy_all.sh                             # same - stops if unpushed
 #
 # There are NO `config` / `firewatch` / `bootstrap` options anymore
 # (2026-09-05): config and firewatch are always both deployed, and the
@@ -26,7 +28,9 @@
 # REMOTE GIT
 # ----------
 #   origin = https://github.com/tabebqena/mazr3a   (branch: master)
-# The local repo commits/pushes to origin; the host clone pulls from it.
+# The local repo is pushed to origin by YOU (not this script - GitHub auth is
+# interactive); the host clone pulls from it. The script verifies there are 0
+# unpushed local commits (and a clean tree) before it touches the host.
 #
 # WHY GIT (decision 2026-09-05): hand-rolled file sync is abandoned; git
 # already solves move/delete/rename natively and carries the ACTIVE fire
@@ -89,24 +93,38 @@ remote_git() { # <git-args...>
   run_ssh "cd ${REMOTE_DIR} && git $*"
 }
 
-push_local() {
+check_local_pushed() {
+  # Never pushes: GitHub auth is interactive (token/ksshaskpass). Verify the
+  # local tree is clean AND fully pushed (0 commits ahead of origin), stopping
+  # so the user can `git push origin master` and re-run if it is not.
   echo "=============================================================="
-  echo "push local ${GIT_BRANCH} -> origin"
-  # ensure origin is configured locally too
+  echo "preflight: local repo clean + fully pushed to origin (no push here)"
   if ! git -C "$ROOT_DIR" remote | grep -qx origin; then
     git -C "$ROOT_DIR" remote add origin "$GIT_REMOTE"
     echo "   added local origin ${GIT_REMOTE}"
   else
     git -C "$ROOT_DIR" remote set-url origin "$GIT_REMOTE"
   fi
-  # refuse to push uncommitted work: Agents.md rule = commit after each change
+  # refuse uncommitted work: Agents.md rule = commit after each change
   if [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
     echo "ERROR: local working tree has uncommitted changes - commit first" >&2
     echo "  (git add -A && git commit -m '...' && $0)" >&2
     exit 1
   fi
-  git -C "$ROOT_DIR" push -u origin "$GIT_BRANCH"
-  echo "   pushed $(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+  local ahead
+  ahead="$(git -C "$ROOT_DIR" rev-list --count "origin/${GIT_BRANCH}..HEAD" 2>/dev/null || echo ERR)"
+  if [ "$ahead" = "ERR" ]; then
+    echo "ERROR: cannot compare HEAD with origin/${GIT_BRANCH} (origin ref unknown?)" >&2
+    echo "  Run: git fetch origin && git push origin ${GIT_BRANCH} && $0" >&2
+    exit 1
+  fi
+  if [ "$ahead" -ne 0 ]; then
+    echo "ERROR: ${ahead} local commit(s) not yet on origin/${GIT_BRANCH} - push first." >&2
+    git -C "$ROOT_DIR" log "origin/${GIT_BRANCH}..HEAD" --oneline | sed 's/^/    /' >&2
+    echo "  Run: git push origin ${GIT_BRANCH} && $0" >&2
+    exit 1
+  fi
+  echo "   ok: local HEAD $(git -C "$ROOT_DIR" rev-parse --short HEAD) == origin/${GIT_BRANCH}"
 }
 
 deploy() {
@@ -114,8 +132,8 @@ deploy() {
   echo "0) preflight: reachability + host repo state"
   run_ssh "mkdir -p ${REMOTE_DIR}" || exit 1
 
-  # push FIRST so the host clone always pulls exactly our pushed HEAD.
-  push_local
+  # local must already be pushed; the host clone then pulls origin's HEAD.
+  check_local_pushed
 
   # NOTE: make the probe always exit 0 so run_ssh does not retry a "no .git"
   host_clone="$(run_ssh "cd ${REMOTE_DIR} && if [ -d .git ]; then echo yes; else echo no; fi")"

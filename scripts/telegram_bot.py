@@ -52,6 +52,15 @@ HOST_HWMON = os.environ.get("HOST_HWMON", "/host/hwmon")
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "/media")
 ROOT_STAT = os.environ.get("ROOT_STAT", "/config")
 
+# getUpdates long-poll timing. The Bot API documents `timeout` as
+# "0..50" seconds - 50 is therefore the MAXIMUM the server will hold a
+# poll open. There is no higher value that reduces reconnects further;
+# raising it above 50 is ignored by Telegram. The local socket timeout
+# must EXCEED the server timeout so urllib never cuts a poll short -
+# keep ~25 s of headroom for the TCP/TLS handshake + server reply.
+LONG_POLL_TIMEOUT_S = 50              # max Telegram accepts for getUpdates
+POLL_SOCKET_TIMEOUT_S = LONG_POLL_TIMEOUT_S + 25
+
 
 # ---------------------------------------------------------------------------
 # host health probes (best-effort; every failure degrades to n/a)
@@ -283,14 +292,14 @@ def handle(cfg, token, msg):
 def get_updates(token, offset):
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     params = {
-        "timeout": "50",  # long-poll: keep the connection open up to 50 s
+        "timeout": str(LONG_POLL_TIMEOUT_S),  # 50 s = Telegram's documented max
         "allowed_updates": json.dumps(["message"]),
     }
     if offset:
         params["offset"] = str(offset)
     data = urllib.parse.urlencode(params).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
-    with urllib.request.urlopen(request, timeout=75) as response:
+    with urllib.request.urlopen(request, timeout=POLL_SOCKET_TIMEOUT_S) as response:
         body = json.load(response)
     if not body.get("ok"):
         raise RuntimeError(f"Telegram API error: {body.get('description')}")

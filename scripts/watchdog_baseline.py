@@ -1,41 +1,59 @@
 #!/usr/bin/env python3
-"""watchdog_baseline.py - long-run machine + Frigate state sampler for
-before/after comparisons (e.g. a camera substream-quality change).
+"""watchdog_baseline.py - machine + Frigate state sampler for before/after
+comparisons (e.g. a camera substream-quality change) AND as a cron-driven
+rolling recorder.
 
-Runs on the Frigate HOST for a fixed duration (default 24 h) and appends one
-CSV row every INTERVAL seconds (default 30). Captures exactly what is needed to
-compare machine cost before/after a change:
+TWO run modes:
 
+1) CRON mode (--cron) - the standard way to keep it running unattended.
+   Each cron invocation samples ONCE, appends one row to a PERSISTENT CSV
+   (one file per tag, e.g. watchdog_baseline_pre.csv) and exits. Host CPU% is
+   computed against the previous invocation via a small sidecar file, so the
+   metric stays meaningful across separate processes. The CSV is bounded by
+   --max-rows (oldest rows pruned), i.e. the stored log has a size limit.
+
+   crontab example (every minute, quiet - data lives in the CSV):
+       * * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py \
+                   --cron --tag baseline_pre >> /dev/null 2>&1
+
+2) LONG-RUN mode (--hours, default 24) - one process that samples every
+   --interval seconds for the duration, then writes a summary JSON (this is
+   the original 24 h one-shot experiment). SIGINT/SIGTERM still writes the
+   summary.
+
+Metrics per row:
   host      - load average 1/5/15 (/proc/loadavg)
-            - host CPU % over the sample interval (/proc/stat delta)
+            - host CPU % (cron: delta vs previous invocation via sidecar;
+              long-run: delta between samples via /proc/stat)
             - memory used/available MB + % (/proc/meminfo)
-            - hottest CPU temp (reuses scripts/collect_sensors.py)
+            - hottest CPU temp (scripts/collect_sensors.py)
   frigate   - container CPU % (docker stats --no-stream, best-effort)
             - global detection fps + detector inference ms (/api/stats)
             - cameras total / cameras online (camera_fps >= ONLINE_FPS_MIN)
-            - events started in the last interval + running cumulative total
+            - events started in the recent window + running cumulative total
               (/api/events?after=<prev>&before=<now>)
 
-Output (git-ignored host files - never written into the tracked tree):
-  CSV          <out>/watchdog_baseline_<tag>_<start>.csv     (one row/sample)
-  Summary JSON <out>/watchdog_baseline_<tag>_<start>.summary.json
-               (mean/max/p95 aggregates, written at end and on SIGINT/SIGTERM)
+Storage (git-ignored host files - never written into the tracked tree):
+  cron mode   <out>/watchdog_baseline_<tag>.csv  (persistent, capped rows)
+  long-run    <out>/watchdog_baseline_<tag>_<start>.csv + .summary.json
+  out dir     default <deploy>/media/watchdog, falling back to ~/watchdog when
+              the deploy dir is not writable (e.g. cron running as a non-owner).
 
-Tunables come from CLI args or WATCHDOG_* env vars, each with a baked-in
-default, so the script is safe to run with no arguments:
+Tunables: CLI args or WATCHDOG_* env vars, each with a baked-in default.
+  --cron / WATCHDOG_CRON=1       one-shot cron sampling mode
+  --tag NAME / WATCHDOG_TAG      run/file tag (default: hostname in cron mode)
+  --max-rows N / WATCHDOG_MAX_ROWS  keep at most N CSV rows (cron retention)
+  --hours H / WATCHDOG_HOURS     long-run duration in hours     (default 24)
+  --minutes M / WATCHDOG_MINUTES long-run duration in minutes   (overrides h)
+  --interval S / WATCHDOG_INTERVAL seconds between long-run samples (30)
+  --out DIR / WATCHDOG_OUT       output directory
+  --once                          print a single sample and exit (sanity)
+  --frames N                      stop after N long-run samples
 
-  --hours H / WATCHDOG_HOURS      run duration in hours            (default 24)
-  --minutes M / WATCHDOG_MINUTES  run duration in minutes (overrides hours)
-  --interval S / WATCHDOG_INTERVAL  seconds between samples        (default 30)
-  --tag NAME / WATCHDOG_TAG       run tag in file names (default host-start)
-  --out DIR / WATCHDOG_OUT        output dir (default <deploy>/media/watchdog)
-  --once                           print a single sample and exit (sanity)
-  --frames N                       stop after N samples (sanity / short runs)
-
-Usage examples:
+Examples:
   python3 watchdog_baseline.py --once
-  python3 watchdog_baseline.py --minutes 2 --interval 10     # smoke test
-  nohup python3 watchdog_baseline.py --hours 24 > media/watchdog/run.log 2>&1 &
+  python3 watchdog_baseline.py --cron --tag baseline_pre     # cron tick
+  python3 watchdog_baseline.py --hours 24                    # 24 h one-shot
 
 Every probe is best-effort: if Frigate/sensors/docker are unavailable the row
 still records (blank numeric fields) and sampling continues.
@@ -59,8 +77,10 @@ import collect_sensors as sensors  # noqa: E402
 # ---------------------------------------------------------------------------
 DEFAULT_HOURS = 24
 DEFAULT_INTERVAL = 30
+DEFAULT_MAX_ROWS = 20000        # cron CSV retention cap (~14 days @ 1/min)
+CRON_EVENT_WINDOW_S = 70        # events window covering a 1-minute cron tick
 DEFAULT_FRIGATE_API = os.environ.get("FRIGATE_API", "http://127.0.0.1:5000")
-ONLINE_FPS_MIN = 0.5  # a camera counts as online when camera_fps >= this
+ONLINE_FPS_MIN = 0.5            # a camera counts as online when camera_fps >= this
 
 
 def _env_int(name, default):
@@ -122,7 +142,7 @@ def _proc_stat_cpu():
 
 
 def host_cpu_pct(prev_stat, cur_stat):
-    """Host CPU% between two /proc/stat snapshots (None for first sample)."""
+    """Host CPU% between two /proc/stat snapshots (None if any missing)."""
     if prev_stat is None or cur_stat is None:
         return None
     prev_total = sum(prev_stat.values())
@@ -134,6 +154,29 @@ def host_cpu_pct(prev_stat, cur_stat):
     if delta_total <= 0:
         return None
     return round(100.0 * (delta_total - delta_idle) / delta_total, 2)
+
+
+def _load_cpu_stat_file(path):
+    """Load the persisted /proc/stat snapshot for cross-run CPU% (best-effort)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {
+            key: int(value)
+            for key, value in data.items()
+            if key in ("user", "nice", "system", "idle", "iowait", "irq",
+                       "softirq", "steal")
+        }
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _save_cpu_stat_file(path, stat):
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(stat, fh)
+    except OSError:
+        pass  # best-effort: losing the sidecar only blanks one CPU% sample
 
 
 def mem_info():
@@ -185,12 +228,7 @@ def _api(path):
 
 
 def frigate_stats():
-    """Return dict with frigate-level detection stats + per-camera fps.
-
-    Returns:
-      {"detection_fps": float|None, "inference_ms": float|None,
-       "cameras_total": int|None, "cameras_online": int|None}
-    """
+    """Return dict with frigate-level detection stats + per-camera fps."""
     data = _api("/api/stats")
     if not isinstance(data, dict):
         return {
@@ -244,7 +282,7 @@ def frigate_event_count(after_ts, before_ts):
 
 
 # ---------------------------------------------------------------------------
-# CSV + summary
+# CSV helpers (append + bounded retention)
 # ---------------------------------------------------------------------------
 CSV_HEADER = (
     "run,epoch,iso,load1,load5,load15,host_cpu_pct,"
@@ -252,6 +290,8 @@ CSV_HEADER = (
     "frigate_cpu_pct,detection_fps,inference_ms,"
     "cameras_total,cameras_online,events_interval,events_cum"
 )
+# column index of events_cum (for cross-run cumulative reads)
+_EVENTS_CUM_COL = len(CSV_HEADER.split(",")) - 1
 
 
 def _f(value):
@@ -279,20 +319,78 @@ def row_values(run, sample):
     ]
 
 
-def write_csv_header(csv_path):
-    with open(csv_path, "w", encoding="utf-8") as fh:
-        fh.write(CSV_HEADER + "\n")
+def ensure_csv(csv_path, run, sample):
+    """Create the CSV with a header when it does not exist yet."""
+    if not os.path.isfile(csv_path) or os.path.getsize(csv_path) == 0:
+        try:
+            with open(csv_path, "w", encoding="utf-8") as fh:
+                fh.write(CSV_HEADER + "\n")
+                fh.flush()
+        except OSError:
+            return False
+    return True
 
 
 def append_csv(csv_path, run, sample):
-    with open(csv_path, "a", encoding="utf-8") as fh:
-        fh.write(",".join(str(v) for v in row_values(run, sample)) + "\n")
-        fh.flush()
+    """Append one row and flush (caller ensures the header exists)."""
+    try:
+        with open(csv_path, "a", encoding="utf-8") as fh:
+            fh.write(",".join(str(v) for v in row_values(run, sample)) + "\n")
+            fh.flush()
+        return True
+    except OSError:
+        return False
 
 
+def read_last_events_cum(csv_path):
+    """Read the cumulative event count from the last CSV row (or 0)."""
+    try:
+        with open(csv_path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        for line in reversed(lines):
+            if not line or line.startswith("run,"):
+                continue
+            fields = line.split(",")
+            if len(fields) > _EVENTS_CUM_COL and fields[_EVENTS_CUM_COL]:
+                return int(float(fields[_EVENTS_CUM_COL]))
+            return 0
+    except (OSError, ValueError, IndexError):
+        return 0
+    return 0
+
+
+def prune_csv(csv_path, max_rows):
+    """Trim a persistent CSV to keep the header + the newest max_rows rows.
+
+    Prunes only once the file exceeds max_rows (not on every append) and keeps
+    a headroom of 10% (min 500) so rewrites stay infrequent. This is the
+    "log size limit" for the cron CSV.
+    """
+    try:
+        with open(csv_path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return
+    if len(lines) - 1 <= max_rows:
+        return
+    headroom = max(1, int(max_rows * 0.10))
+    keep = max(1, max_rows - headroom)
+    kept = [lines[0]] + lines[-(keep):] if lines else []
+    tmp = csv_path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(kept) + "\n")
+            fh.flush()
+        os.replace(tmp, csv_path)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# summary (long-run mode)
+# ---------------------------------------------------------------------------
 def _pct(values):
-    clean = [v for v in values if v is not None]
-    return clean
+    return [v for v in values if v is not None]
 
 
 def _agg(clean_values):
@@ -306,7 +404,6 @@ def _agg(clean_values):
 
 
 def build_summary(samples, run_start, run_end, tag):
-    """Aggregate the collected samples into a comparable summary dict."""
     summary = {
         "tag": tag,
         "run_start_iso": datetime.datetime.fromtimestamp(
@@ -391,34 +488,118 @@ def collect_sample(prev_stat, prev_epoch, events_cum):
     return sample, cur_stat
 
 
+def _acquire_lock(lock_path):
+    """Simple exclusive lock so two cron ticks never append at once."""
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return lock_path
+    except OSError:
+        return None
+
+
+def _release_lock(lock_path):
+    try:
+        os.unlink(lock_path)
+    except OSError:
+        pass
+
+
+def run_cron(args):
+    """One-shot cron sampling: append one row to a persistent capped CSV."""
+    tag = args.tag or (os.uname().nodename if hasattr(os, "uname") else "host")
+    max_rows = max(2, args.max_rows)
+    out_dir = args.out or default_out_dir()
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as exc:
+        print(f"[watchdog] cannot create out dir {out_dir}: {exc}",
+              file=sys.stderr)
+        return 1
+
+    csv_path = os.path.join(out_dir, f"watchdog_baseline_{tag}.csv")
+    stat_path = os.path.join(out_dir, f"watchdog_baseline_{tag}.stat")
+    lock_path = os.path.join(out_dir, f"watchdog_baseline_{tag}.lock")
+
+    lock = _acquire_lock(lock_path)
+    if lock is None:
+        return 0  # previous tick still running - skip silently
+    try:
+        if not ensure_csv(csv_path, tag, {}):
+            print(f"[watchdog] cannot create {csv_path}", file=sys.stderr)
+            return 1
+
+        # cross-run CPU%: delta vs the previous cron invocation's stat snapshot
+        prev_stat = _load_cpu_stat_file(stat_path)
+        prev_cum = read_last_events_cum(csv_path)
+        now = time.time()
+        # events counted in the last CRON_EVENT_WINDOW_S (covers a 1-min tick)
+        prev_epoch = now - CRON_EVENT_WINDOW_S
+        sample, cur_stat = collect_sample(prev_stat, prev_epoch, prev_cum)
+        _save_cpu_stat_file(stat_path, cur_stat)
+
+        if not append_csv(csv_path, tag, sample):
+            print(f"[watchdog] cannot append to {csv_path}", file=sys.stderr)
+            return 1
+        prune_csv(csv_path, max_rows)
+        return 0
+    finally:
+        _release_lock(lock_path)
+
+
+# ---------------------------------------------------------------------------
+# CLI + long-run mode
+# ---------------------------------------------------------------------------
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Machine + Frigate state sampler (baseline recorder)."
     )
+    parser.add_argument("--cron", action="store_true",
+                        default=os.environ.get("WATCHDOG_CRON") == "1",
+                        help="one-shot cron sampling mode (append one row)")
+    parser.add_argument("--tag",
+                        default=_env_str("WATCHDOG_TAG", ""),
+                        help="run/file tag (default: hostname in cron mode)")
+    parser.add_argument("--max-rows", type=int,
+                        default=_env_int("WATCHDOG_MAX_ROWS", DEFAULT_MAX_ROWS),
+                        help="keep at most N CSV rows in cron mode "
+                             "(default %(default)s)")
     parser.add_argument("--hours", type=int,
                         default=_env_int("WATCHDOG_HOURS", DEFAULT_HOURS),
-                        help="run duration in hours (default %(default)s)")
+                        help="long-run duration in hours (default %(default)s)")
     parser.add_argument("--minutes", type=int,
                         default=_env_int("WATCHDOG_MINUTES", 0),
-                        help="run duration in minutes (overrides --hours)")
+                        help="long-run duration in minutes (overrides --hours)")
     parser.add_argument("--interval", type=int,
                         default=_env_int("WATCHDOG_INTERVAL", DEFAULT_INTERVAL),
-                        help="seconds between samples (default %(default)s)")
-    parser.add_argument("--tag", default=_env_str("WATCHDOG_TAG", ""),
-                        help="run tag used in output file names")
+                        help="seconds between long-run samples "
+                             "(default %(default)s)")
     parser.add_argument("--out", default=_env_str("WATCHDOG_OUT", ""),
-                        help="output directory (default <deploy>/media/watchdog)")
+                        help="output directory (default deploy media/watchdog "
+                             "or ~/watchdog fallback)")
     parser.add_argument("--once", action="store_true",
                         help="print a single sample and exit (sanity check)")
     parser.add_argument("--frames", type=int, default=0,
-                        help="stop after N samples (short runs; 0 = until duration)")
+                        help="stop after N long-run samples (0 = until duration)")
     return parser.parse_args(argv)
 
 
 def default_out_dir():
     script_dir = os.path.dirname(os.path.realpath(__file__))
     deploy_root = os.path.abspath(os.path.join(script_dir, ".."))
-    return os.path.join(deploy_root, "media", "watchdog")
+    candidates = [
+        os.path.join(deploy_root, "media", "watchdog"),
+        os.path.join(os.path.expanduser("~"), "watchdog"),
+    ]
+    for candidate in candidates:
+        try:
+            os.makedirs(candidate, exist_ok=True)
+        except OSError:
+            continue
+        if os.access(candidate, os.W_OK):
+            return candidate
+    return candidates[0]
 
 
 def make_run_tag():
@@ -429,6 +610,10 @@ def make_run_tag():
 
 def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    # cron mode: one sample per invocation, persistent capped CSV, exit.
+    if args.cron:
+        return run_cron(args)
 
     if args.minutes:
         run_seconds = max(1, args.minutes * 60)
@@ -467,7 +652,6 @@ def main(argv=None):
     events_cum = 0
     prev_stat = None
     prev_epoch = None
-    frigate_down = False
     stop = {"flag": False}
 
     def _handler(_signum, _frame):
@@ -480,21 +664,15 @@ def main(argv=None):
             sample, prev_stat = collect_sample(
                 prev_stat, prev_epoch, events_cum
             )
-            # Frigate reachability for the event counter: only advance the
-            # counting baseline when /api/stats answered (frigate_stats fills
-            # cameras_total). Keeps the window free of huge catch-up gaps.
+            # Only advance the event baseline when /api/stats answered
+            # (cameras_total is filled) - keeps the window free of huge gaps.
             if sample["cameras_total"] is not None:
-                frigate_down = False
                 events_cum = sample["events_cum"]
                 prev_epoch = sample["epoch"]
-            else:
-                frigate_down = True
 
             samples.append(sample)
             append_csv(csv_path, tag, sample)
 
-            elapsed = time.time() - run_start
-            # one short progress line per sample (visible in a nohup log)
             print(
                 f"[watchdog] {datetime.datetime.fromtimestamp(sample['epoch'], datetime.timezone.utc).strftime('%H:%M:%SZ')} "
                 f"load={_f(sample['load1'])} cpu%={_f(sample['host_cpu_pct'])} "
@@ -520,6 +698,11 @@ def main(argv=None):
           f"{run_end - run_start:.0f}s -> {csv_path}")
     print(f"[watchdog] summary -> {summary_path}")
     return 0
+
+
+def write_csv_header(csv_path):
+    with open(csv_path, "w", encoding="utf-8") as fh:
+        fh.write(CSV_HEADER + "\n")
 
 
 if __name__ == "__main__":

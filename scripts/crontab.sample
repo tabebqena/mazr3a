@@ -24,3 +24,12 @@
 # Daily machine health report (python) - 08:00 every day
 # (Telegram summary of host + Frigate state, per-camera online/offline)
 0 8 * * * /usr/bin/python3 /home/dr/frigate/scripts/machine-status.py >> /dev/null 2>&1
+
+# Machine+Frigate state watchdog (python) - every minute
+# Cron mode (scripts/watchdog_baseline.py --cron): appends one sample per tick
+# to a persistent, size-capped CSV (default <deploy>/media/watchdog/; falls back
+# to ~/watchdog when the deploy dir isn't writable by the cron owner). Use a
+# distinct --tag per comparison window - e.g. "baseline_pre" before a stream
+# quality change, then "after_bump" once it's applied. CSV rows are bounded by
+# --max-rows (default 20000).
+* * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre >> /dev/null 2>&1

@@ -105,6 +105,9 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--out", default=None)
     ap.add_argument("--annotate", action="store_true")
+    ap.add_argument("--skip-val", action="store_true",
+                    help="skip ultralytics model.val() (FP-only suite has no GT); only the "
+                         "deploy-oriented per-image pass runs")
     args = ap.parse_args()
 
     from ultralytics import YOLO  # imported here so --help stays light
@@ -126,47 +129,51 @@ def main():
         os.makedirs(os.path.join(out, "annotated"), exist_ok=True)
 
     # ---- (a) ultralytics val metrics ----
-    print("\n[1/2] model.val() over", images_dir)
-    t0 = time.time()
-    res = model.val(data=args.data_yaml, imgsz=args.imgsz, device="cpu",
-                    verbose=False, conf=0.001,
-                    project=os.path.join(out, "runs"), name="val")
-    box = res.box
-    nc = len(m_names)
-    metrics = {
-        "mAP50": float(box.map50) if hasattr(box, "map50") else None,
-        "mAP50_95": float(box.map) if hasattr(box, "map") else None,
-        "precision": float(box.mp) if hasattr(box, "mp") else None,
-        "recall": float(box.mr) if hasattr(box, "mr") else None,
-        "per_class": {},
-    }
-    print("val time %.1fs" % (time.time() - t0))
-    print("Overall: mAP@50=%.4f mAP@50-95=%.4f P=%.4f R=%.4f"
-          % (metrics["mAP50"], metrics["mAP50_95"], metrics["precision"], metrics["recall"]))
-    # ap50/ap/p/r are per-CLASS arrays aligned to box.ap_class_index (classes that had GT),
-    # NOT to 0..nc-1 - map them back to model class indices and names.
-    apci = [int(v) for v in box.ap_class_index] if hasattr(box, "ap_class_index") else list(range(nc))
-    seq = {k: [] for k in ("ap50", "ap", "p", "r")}
-    for attr in seq:
-        v = getattr(box, attr, None)
-        seq[attr] = [float(x) for x in v] if v is not None else []
-    for k, ci in enumerate(apci):
-        nm = m_names.get(ci, str(ci))
-        p50 = seq["ap50"][k] if k < len(seq["ap50"]) else None
-        p = seq["ap"][k] if k < len(seq["ap"]) else None
-        pr = seq["p"][k] if k < len(seq["p"]) else None
-        rc = seq["r"][k] if k < len(seq["r"]) else None
-        metrics["per_class"][nm] = {"index": ci, "mAP50": p50, "mAP50_95": p,
-                                    "precision": pr, "recall": rc}
-        print("  class %d %-10s mAP@50=%.4f mAP@50-95=%.4f P=%.4f R=%.4f"
-              % (ci, nm, p50 if p50 is not None else -1, p if p is not None else -1,
-                 pr if pr is not None else -1, rc if rc is not None else -1))
-    for ci in range(nc):
-        if ci not in apci:
+    metrics = {}
+    if args.skip_val:
+        print("\n[1/2] model.val() SKIPPED (--skip-val: FP-only suite has no GT)")
+    else:
+        print("\n[1/2] model.val() over", images_dir)
+        t0 = time.time()
+        res = model.val(data=args.data_yaml, imgsz=args.imgsz, device="cpu",
+                        verbose=False, conf=0.001,
+                        project=os.path.join(out, "runs"), name="val")
+        box = res.box
+        nc = len(m_names)
+        metrics = {
+            "mAP50": float(box.map50) if hasattr(box, "map50") else None,
+            "mAP50_95": float(box.map) if hasattr(box, "map") else None,
+            "precision": float(box.mp) if hasattr(box, "mp") else None,
+            "recall": float(box.mr) if hasattr(box, "mr") else None,
+            "per_class": {},
+        }
+        print("val time %.1fs" % (time.time() - t0))
+        print("Overall: mAP@50=%.4f mAP@50-95=%.4f P=%.4f R=%.4f"
+              % (metrics["mAP50"], metrics["mAP50_95"], metrics["precision"], metrics["recall"]))
+        # ap50/ap/p/r are per-CLASS arrays aligned to box.ap_class_index (classes that had GT),
+        # NOT to 0..nc-1 - map them back to model class indices and names.
+        apci = [int(v) for v in box.ap_class_index] if hasattr(box, "ap_class_index") else list(range(nc))
+        seq = {k: [] for k in ("ap50", "ap", "p", "r")}
+        for attr in seq:
+            v = getattr(box, attr, None)
+            seq[attr] = [float(x) for x in v] if v is not None else []
+        for k, ci in enumerate(apci):
             nm = m_names.get(ci, str(ci))
-            metrics["per_class"].setdefault(nm, {"index": ci, "mAP50": None, "mAP50_95": None,
-                                                 "precision": None, "recall": None})
-            print("  class %d %-10s (no ground truth in split)" % (ci, nm))
+            p50 = seq["ap50"][k] if k < len(seq["ap50"]) else None
+            p = seq["ap"][k] if k < len(seq["ap"]) else None
+            pr = seq["p"][k] if k < len(seq["p"]) else None
+            rc = seq["r"][k] if k < len(seq["r"]) else None
+            metrics["per_class"][nm] = {"index": ci, "mAP50": p50, "mAP50_95": p,
+                                        "precision": pr, "recall": rc}
+            print("  class %d %-10s mAP@50=%.4f mAP@50-95=%.4f P=%.4f R=%.4f"
+                  % (ci, nm, p50 if p50 is not None else -1, p if p is not None else -1,
+                     pr if pr is not None else -1, rc if rc is not None else -1))
+        for ci in range(nc):
+            if ci not in apci:
+                nm = m_names.get(ci, str(ci))
+                metrics["per_class"].setdefault(nm, {"index": ci, "mAP50": None, "mAP50_95": None,
+                                                     "precision": None, "recall": None})
+                print("  class %d %-10s (no ground truth in split)" % (ci, nm))
 
     # ---- (b) deploy-oriented per-image pass ----
     print("\n[2/2] per-image predict (conf=%.2f)" % args.conf)

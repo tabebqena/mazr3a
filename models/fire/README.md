@@ -6,28 +6,28 @@ read-only at `/models/fire` in the `firewatch` container.
 
 ## CHOSEN model (active)
 
-[`SalahALHaismawi/yolov26-fire-detection`](https://huggingface.co/SalahALHaismawi/yolov26-fire-detection)
-— **YOLO26-S**, trained on 8,939 images / 100 epochs at 640 (Ultralytics), MIT license.
-Classes (index order): `fire`(0), `other`(1), `smoke`(2) — `other` is a catch-all and is
-**ignored** by firewatch; only `fire`/`smoke` can alert.
+**ACTIVE = v4 (2026-09-07)** — a fine-tune of the HF YOLO26-S baseline on the **clean
+(deduplicated) D-Fire + clean Abonia** mix. Still YOLO26-S, classes (index order)
+`fire`(0), `other`(1), `smoke`(2) — `other` is a catch-all and is **ignored** by firewatch;
+only `fire`/`smoke` can alert.
 
-Author-reported metrics: mAP@50 **94.9**, mAP@50-95 **68.0**, precision **89.6**,
-recall **88.8**.
+On the **held-out clean D-Fire test (2,164 imgs)** vs the previous active v1:
+all mAP@50 **0.704** (v1 0.182), fire mAP@50 0.643 (v1 0.192), image-level fire recall
+@conf0.5 **83.8 %** (v1 73.5 %), smoke 78.8 % (v1 32.4 %), fire FP 11/1440 (v1 51/1440),
+predictions on clean/empty frames 19 (v1 193). Full write-up:
+[`fire-model-training/dedup/dfire_finetune/report.md`](../../fire-model-training/dedup/dfire_finetune/report.md).
 
-The checkpoint is already downloaded to **`models/fire/best.pt`** in this workspace
-(git-tracked, 20.3 MB, md5 `2fd972183c2ffec0d327ec534c119086`).
+The checkpoint is **`models/fire/best.pt`** (git-tracked, 20.3 MB, md5
+`4a4ef19540518e27f886c2894ec168f8`); OpenVINO IR (`best.xml`/`best.bin`/`labelmap.txt`)
+regenerated from it. **v1 is superseded but retained** in the git-ignored archive
+`models/fire/versions/v1-2026-09-05-hf-yolo26s-8939img/` (md5
+`2fd972183c2ffec0d327ec534c119086`) — see [`VERSIONS.md`](VERSIONS.md).
 
-**Deployed + verified (v1, 2026-09-05):** the ACTIVE OpenVINO IR (`best.xml`/`best.bin`/
-`labelmap.txt`) was generated from this `.pt` and `firewatch` is running on
-`ssh.mazr3a.garden` — `--check` OK (output `[1,300,6]`, classes fire/other/smoke), `--dry-run`
-polls all 9 cameras. Model is an **end-to-end YOLO26** (the decoder handles `[1,N,6]`); this
-checkpoint is the ACTIVE **v1** — see [`VERSIONS.md`](VERSIONS.md) for v2 (fine-tuned on
-Abonia `fire-8`, ~877 imgs) which is **not** yet promoted.
-
-> **Still not proven on your cameras** - those are benchmark numbers on the author's own
-> validation. Pilot with `--dry-run` on your day/night/IR, near/distance views and a test
-> flame before trusting it as an alarm. If recall is weak on your scenes, fine-tune this
-> checkpoint on ~100-200 frames captured from your cameras (transfer learning).
+> **Deploy caveat (2026-09-07):** v4's numbers are on the uncontaminated clean D-Fire test,
+> NOT yet on your cameras. It was promoted by user decision with the on-camera
+> `firewatch.py --dry-run` pilot (day/night/IR, near/distance views, a test flame) still the
+> real acceptance test. Revert is easy: promote `v1` again via
+> `./dev_scripts/promote_fire_model.sh v1-2026-09-05-hf-yolo26s-8939img`.
 
 ## Required files (after conversion)
 

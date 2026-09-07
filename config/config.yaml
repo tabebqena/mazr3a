@@ -320,6 +320,20 @@ cameras:
       width: 640
       height: 360
       fps: 1
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-07): continuously-moving roof/overhang object on
+    # the RIGHT edge of the cam03 scene kept motion active -> detector burn
+    # (same issue as cam01). This polygon makes motion inside it IGNORED.
+    # Drawn in the Frigate UI (cam03 -> Edit -> Mask -> Motion) and synced here
+    # verbatim from the host config on 2026-09-07. Coordinates are normalized
+    # 0..1 of the 640x360 detect frame. A frame-diff check confirmed the
+    # heaviest persistent-motion cluster (x 0.78-1.0) sits under this mask;
+    # other busy areas (top band y<0.11, mid-frame y~0.44-0.72) are left
+    # unmasked deliberately until confirmed as nuisance vs real activity.
+    # ------------------------------------------------------------------
+    motion:
+      mask:
+        - 0.997,0.302,0.955,0.35,0.896,0.388,0.853,0.43,0.769,0.475,0.742,0.475,0.721,0.528,0.719,0.585,0.725,0.624,0.737,0.665,0.763,0.691,0.792,0.691,0.828,0.647,0.868,0.593,0.919,0.561,0.952,0.511,0.976,0.436,0.997,0.356
 
   cam04:
     ffmpeg:

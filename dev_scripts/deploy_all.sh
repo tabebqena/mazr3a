@@ -242,7 +242,7 @@ deploy() {
       config/config.yaml)                            FRIGATE_CFG_CHANGED=1 ;;
       models/coco/*)                                 FRIGATE_CFG_CHANGED=1 ;;
       mosquitto/config/mosquitto.conf)               MQTT_CFG_CHANGED=1 ;;
-      scripts/firewatch.py|scripts/collect_sensors.py|scripts/telegram_notify.py|config/firewatch.conf) FW_CODE_CHANGED=1 ;;
+      firewatch/firewatch.py|scripts/collect_sensors.py|scripts/telegram_notify.py|config/firewatch.conf) FW_CODE_CHANGED=1 ;;
       firewatch/Dockerfile|firewatch/requirements.txt) FW_BUILD_CHANGED=1 ;;
       models/fire/*)                                 MODEL_CHANGED=1 ;;
     esac
@@ -308,9 +308,9 @@ deploy() {
   run_ssh "cd ${REMOTE_DIR} && docker compose logs --since 3m frigate 2>&1 | grep -iE 'invalid|error|safe mode|config' | tail -25 || true" || true
 
   echo "6) confirm the new model"
-  run_ssh "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /scripts/firewatch.py --check" || true
+  run_ssh "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /firewatch/firewatch.py --check" || true
   echo "7) confirm the new scripts + one live pass"
-  run_ssh "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /scripts/firewatch.py --dry-run" || true
+  run_ssh "cd ${REMOTE_DIR} && docker compose exec -T firewatch python /firewatch/firewatch.py --dry-run" || true
   echo "   -- recent firewatch logs --"
   run_ssh "cd ${REMOTE_DIR} && docker compose logs --since 5m firewatch 2>&1 | tail -20" || true
 

@@ -15,6 +15,12 @@ kept in a small JSON state file. Default: <scripts>/../machine-monitor.state
 (override the path with the MONITOR_STATE env var). The state file is
 git-ignored host runtime state and is never deployed.
 
+If the state file cannot be used (e.g. it does not exist and cannot be created,
+or its directory is read-only), the script does not silently lose the debounce:
+it falls back to keeping the state in memory and completing the MIN_HITS
+consecutive samples within the SAME run (sleeping MIN_INTERVAL between them),
+so a sustained over-temp still alerts even without a usable state file.
+
 Credentials and tunables (MAX_TEMP, MIN_HITS, MIN_INTERVAL) come from
 config/telegram.conf (git-ignored; template config/telegram.conf.example). Each
 key falls back to a baked-in default here, so the script is safe to run before
@@ -92,6 +98,29 @@ def save_state(path, state):
         return False
 
 
+def state_file_usable(path=STATE_FILE):
+    """True when the state file can be read (if present) and written/created.
+
+    Best-effort probe (never raises). False means cross-run persistence is
+    impossible (missing/read-only parent dir, unwritable file), so ``main()``
+    runs the debounce in memory instead of silently resetting it every cron run.
+    """
+    try:
+        parent = os.path.dirname(path) or "."
+        if os.path.exists(path):
+            # open("r+") requires both read and write permission on the file.
+            with open(path, "r+", encoding="utf-8"):
+                pass
+        else:
+            if not os.path.isdir(parent):
+                return False
+            if not os.access(parent, os.W_OK):
+                return False
+        return True
+    except OSError:
+        return False
+
+
 def evaluate(current, max_temp, min_hits, min_interval_min, state, now=None):
     """Apply one temperature sample to the debounce state.
 
@@ -163,6 +192,70 @@ def alert_text(host, current, max_temp, min_hits, min_interval_min):
     )
 
 
+def send_alert(cfg, host, current, max_temp, min_hits, min_interval_min):
+    """Send the high-temp alert text; prints and returns the exit code."""
+    text = alert_text(host, current, max_temp, min_hits, min_interval_min)
+    try:
+        tg.send_telegram(cfg, text)
+    except Exception as exc:  # noqa: BLE001 - report and fail loudly under cron
+        print(f"[machine-monitor] failed to send alert: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"[machine-monitor] ALERT sent: {current}°C ≥ {max_temp}°C "
+        f"after {min_hits} spaced samples"
+    )
+    return 0
+
+
+def run_in_memory(current, max_temp, min_hits, min_interval_min, cfg):
+    """Self-contained debounce when the state file cannot be used.
+
+    Runs when STATE_FILE is unavailable (missing read-only dir, unwritable file):
+    the debounce would otherwise be lost between cron runs (each run would start
+    from zero hits and never reach MIN_HITS). Instead, keep the hits in memory
+    and complete the consecutive MIN_HITS samples in THIS single process, sleeping
+    MIN_INTERVAL between samples, until an alert is sent or the temp drops below
+    MAX_TEMP. Returns the process exit code.
+    """
+    host = socket.gethostname() or "unknown"
+    state = {"hits": 0, "last_hit_ts": 0.0}
+    interval_s = max(0, int(min_interval_min)) * 60
+    print(
+        "[machine-monitor] WARNING: state file unusable - "
+        f"running consecutive samples in memory (every ~{min_interval_min} min)",
+        file=sys.stderr,
+    )
+    while True:
+        if current is None:
+            print(
+                "[machine-monitor] ERROR: no temperature reading "
+                "(is lm-sensors installed?)",
+                file=sys.stderr,
+            )
+            return 1
+        result = evaluate(current, max_temp, min_hits, min_interval_min, state)
+        state = result["state"]
+        if result["alert"]:
+            return send_alert(cfg, host, current, max_temp, min_hits, min_interval_min)
+        if current < max_temp:
+            print(f"[machine-monitor] {current}°C < {max_temp}°C - normal")
+            return 0
+        # still hot but not yet MIN_HITS -> wait for the next eligible sample
+        if result["waited"] and result.get("next_ts"):
+            wait_s = max(1, int(result["next_ts"] - time.time()))
+        else:
+            wait_s = interval_s
+        if wait_s <= 0:
+            wait_s = interval_s
+        print(
+            f"[machine-monitor] {current}°C ≥ {max_temp}°C - "
+            f"high-temp sample {result['hits']}/{min_hits} "
+            f"(in-memory, spacing {min_interval_min} min); no alert yet"
+        )
+        time.sleep(wait_s)
+        current = sensors.get_cpu_temp_max()
+
+
 def main():
     cfg = tg.load_conf()
     try:
@@ -183,6 +276,12 @@ def main():
             file=sys.stderr,
         )
         return 1
+
+    # STATE_FILE cannot be read/written (e.g. missing dir, read-only): the normal
+    # cron-per-sample path would start from zero every run and never confirm an
+    # alert, so fall back to an in-memory debounce done in this one process run.
+    if not DRY and not state_file_usable(STATE_FILE):
+        return run_in_memory(current, max_temp, min_hits, min_interval_min, cfg)
 
     result = evaluate(current, max_temp, min_hits, min_interval_min, load_state())
     if not DRY:
@@ -211,20 +310,11 @@ def main():
         return 0
 
     host = socket.gethostname() or "unknown"
-    text = alert_text(host, current, max_temp, min_hits, min_interval_min)
     if DRY:
+        text = alert_text(host, current, max_temp, min_hits, min_interval_min)
         print(text)
         return 0
-    try:
-        tg.send_telegram(cfg, text)
-    except Exception as exc:  # noqa: BLE001 - report and fail loudly under cron
-        print(f"[machine-monitor] failed to send alert: {exc}", file=sys.stderr)
-        return 1
-    print(
-        f"[machine-monitor] ALERT sent: {current}°C ≥ {max_temp}°C "
-        f"after {min_hits} spaced samples"
-    )
-    return 0
+    return send_alert(cfg, host, current, max_temp, min_hits, min_interval_min)
 
 
 if __name__ == "__main__":

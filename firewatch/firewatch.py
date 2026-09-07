@@ -12,10 +12,12 @@ Design notes
 ------------
 - Frigate's own person/car/animal detection (config/config.yaml) is NOT
   touched; this watcher is fully out-of-band (see plans/fire-detection.md).
-- Code/config live on runtime mounts (./scripts, ./config, ./models are
+- firewatch.py lives in ./firewatch (the service folder); code/config/model
+  live on runtime mounts (./firewatch, ./scripts, ./config, ./models are
   mounted read-only into the container) so edits need no image rebuild.
 - The watcher is stdlib + openvino + numpy + Pillow only. telegram_notify is
-  imported from the mounted ./scripts directory.
+  imported from the shared ./scripts directory (mounted at /scripts), which
+  still ships alongside because firewatch.py and scripts/ are siblings.
 
 Model assumption (see plans/fire-detection.md section 5.1)
 ----------------------------------------------------------
@@ -42,7 +44,13 @@ import urllib.request
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+# firewatch.py now lives in firewatch/, while the shared helpers (telegram_notify.py)
+# stay in the sibling scripts/ dir. Make both importable: in the container firewatch.py
+# is mounted at /firewatch and scripts/ at /scripts (repo-root siblings), so the same
+# relative walk works here and locally.
+_FW_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, _FW_DIR)
+sys.path.insert(0, os.path.join(os.path.dirname(_FW_DIR), "scripts"))
 import telegram_notify as tg  # noqa: E402
 
 # Pillow is only used to overlay detection boxes on the alert snapshot; it is

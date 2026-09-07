@@ -67,8 +67,8 @@ promoting, flip that version's `status` to `active` (and the old one to `superse
 
 ```bash
 ./dev_scripts/deploy_all.sh          # full deploy (no subcommands - runs every step on the host)
-docker compose exec firewatch python /scripts/firewatch.py --check
-docker compose exec firewatch python /scripts/firewatch.py --dry-run
+docker compose exec firewatch python /firewatch/firewatch.py --check
+docker compose exec firewatch python /firewatch/firewatch.py --dry-run
 ```
 
 > Deploys are **git-based** (2026-09-05): the ACTIVE model files

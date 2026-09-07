@@ -3,9 +3,10 @@
 #
 # Dependency-only image: NO application code is baked in. At runtime the
 # compose service mounts read-only:
-#   ./scripts -> /scripts   (firewatch.py + collect_sensors.py)
-#   ./config  -> /config    (firewatch.conf, telegram.conf)
-#   ./models  -> /models    (fire/smoke OpenVINO IR model)
+#   ./firewatch -> /firewatch  (firewatch.py, the watcher itself)
+#   ./scripts   -> /scripts    (shared telegram_notify.py helper)
+#   ./config    -> /config     (firewatch.conf, telegram.conf)
+#   ./models    -> /models     (fire/smoke OpenVINO IR model)
 # so editing code or config needs only `docker compose restart firewatch`,
 # never an image rebuild.
 # ============================================================
@@ -24,4 +25,4 @@ USER firewatch
 
 # firewatch.py reads FIREWATCH_CONF (default /config/firewatch.conf) and the
 # Telegram creds from /config/telegram.conf (mounted read-only, git-ignored).
-ENTRYPOINT ["python", "/scripts/firewatch.py"]
+ENTRYPOINT ["python", "/firewatch/firewatch.py"]

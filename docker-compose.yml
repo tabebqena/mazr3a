@@ -62,7 +62,9 @@ services:
   # API (/api/<cam>/latest.jpg) and alerts on Telegram with a snapshot.
   # Dependency-only image (./firewatch); code/config/model are mounted
   # read-only so edits need only `docker compose restart firewatch`.
-  # The fire/smoke OpenVINO IR model must exist at ./models/fire/ (see
+  # firewatch.py lives in ./firewatch (mounted at /firewatch); the shared
+  # helper telegram_notify.py stays in ./scripts (mounted at /scripts). The
+  # fire/smoke OpenVINO IR model must exist at ./models/fire/ (see
   # models/fire/README.md); the Telegram bot lives in config/telegram.conf
   # (git-ignored). First build needs network for pip.
   # ------------------------------------------------------------------
@@ -71,6 +73,7 @@ services:
     build: ./firewatch
     restart: unless-stopped
     volumes:
+      - ./firewatch:/firewatch:ro
       - ./scripts:/scripts:ro
       - ./config:/config:ro
       - ./models:/models:ro

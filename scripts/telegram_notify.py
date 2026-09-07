@@ -18,7 +18,7 @@ re-implement it:
 Consumers (all stdlib-only, no third-party deps):
   - scripts/machine-monitor.py   debounced high-CPU-temperature alert
   - scripts/machine-status.py    daily machine health report
-  - scripts/firewatch.py         fire/smoke alert photos (firewatch container
+  - firewatch/firewatch.py       fire/smoke alert photos (the firewatch container
                                  mounts ./scripts read-only at /scripts:ro, so
                                  this module ships with the script)
 """
@@ -85,7 +85,7 @@ def send_telegram_photo(cfg, photo_bytes, caption="", parse_mode="html"):
     """Post a photo (JPEG bytes) with an optional caption to the configured
     chat via the Bot API sendPhoto method (multipart/form-data, stdlib only).
 
-    Used by the fire-watch watcher (scripts/firewatch.py) to send the alert
+    Used by the fire-watch watcher (firewatch/firewatch.py) to send the alert
     snapshot together with the detection caption.
     """
     token, chat = ensure_creds(cfg)

@@ -32,9 +32,9 @@ fire model) stay deferred to later phases.
 │   └── telegram.conf           # Telegram bot creds (git-ignored; example in repo)
 ├── scripts/                    # HOST scripts - deployed to & run on the Frigate host
 │   ├── cleanup_media.sh        # Deletes oldest media when over the disk cap (host cron)
-│   ├── collect_sensors.py      # Shared lm-sensors/Telegram helpers (host + firewatch)
+│   ├── collect_sensors.py      # lm-sensors reading helpers (host scripts)
+│   ├── telegram_notify.py      # Shared Telegram helpers (host scripts + firewatch)
 │   ├── crontab.sample          # Sample cron lines to install on the host
-│   ├── firewatch.py            # Fire-watch watcher (runs in the firewatch container)
 │   ├── machine-monitor.py      # CPU-temp watchdog (host cron)
 │   ├── machine-status.py       # Daily health report (host cron)
 │   ├── diagnose_detection.py   # On-host detection diagnosis (read-only)
@@ -47,7 +47,8 @@ fire model) stay deferred to later phases.
 │   └── ...                     # dataset/build/analyze helpers (see plans)
 ├── firewatch/
 │   ├── Dockerfile              # firewatch runtime image (deps only)
-│   └── requirements.txt        # openvino + numpy + Pillow
+│   ├── requirements.txt        # openvino + numpy + Pillow
+│   └── firewatch.py            # Fire-watch watcher (runs in the firewatch container)
 ├── models/
 │   ├── coco/                   # Frigate COCO detector ONNX (git-tracked; ACTIVE yolo11n)
 │   └── fire/                   # Fire/smoke ACTIVE OpenVINO IR model (git-tracked; versions/ ignored)
@@ -323,11 +324,10 @@ How it works:
   so the 640x360 substream is sufficient for detection.
 - It runs a dedicated **fire/smoke YOLOv8n** model (OpenVINO IR in
   [`models/fire/`](models/fire/README.md)) and sends a **Telegram photo alert** (via
-  `send_telegram_photo()` in [`scripts/collect_sensors.py`](scripts/collect_sensors.py),
-  imported as `lib`) after `MIN_HITS` consecutive frames above `SCORE_THRESHOLD`, then cools
-  down per camera.
-- Tunables (cameras, cadence, thresholds, fire-only vs fire+smoke) live in
-  [`config/firewatch.conf`](config/firewatch.conf); Telegram creds are shared with the
+  `send_telegram_photo()` in [`scripts/telegram_notify.py`](scripts/telegram_notify.py))
+  after `MIN_HITS` consecutive frames above `SCORE_THRESHOLD`, then cools down per camera.
+- The watcher script lives with its image in
+  [`firewatch/firewatch.py`](firewatch/firewatch.py); Telegram creds are shared with the
   host-monitoring scripts via the git-ignored [`config/telegram.conf`](config/telegram.conf).
 
 Operate:
@@ -335,7 +335,7 @@ Operate:
 # build + start (first build downloads pip deps)
 docker compose up -d --build firewatch
 docker compose logs -f firewatch          # watch polls / alerts
-docker compose exec firewatch python /scripts/firewatch.py --dry-run   # one live pass
+docker compose exec firewatch python /firewatch/firewatch.py --dry-run   # one live pass
 docker compose restart firewatch          # apply firewatch.conf / code edits
 ```
 

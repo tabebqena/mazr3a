@@ -1,6 +1,6 @@
 # Fire/smoke detection model — `models/fire/`
 
-Holds the model used by the `firewatch` service (`scripts/firewatch.py`, see
+Holds the model used by the `firewatch` service (`firewatch/firewatch.py`, see
 [`plans/fire-detection.md`](../../plans/fire-detection.md)). The directory is mounted
 read-only at `/models/fire` in the `firewatch` container.
 
@@ -117,8 +117,8 @@ git commit -m "fire model: update ACTIVE OpenVINO IR"
 ```
 
 **YOLO26 decode check:** after deploying, run
-`docker compose exec firewatch python /scripts/firewatch.py --dry-run`. If it logs an
-unexpected output shape, share the logged shape and the decoder in `scripts/firewatch.py`
+`docker compose exec firewatch python /firewatch/firewatch.py --dry-run`. If it logs an
+unexpected output shape, share the logged shape and the decoder in `firewatch/firewatch.py`
 will be adapted.
 
 ## Alternative (superseded)

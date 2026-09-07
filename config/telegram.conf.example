@@ -20,7 +20,22 @@
 # Telegram bot token (create a bot with @BotFather on Telegram).
 BOT_TOKEN=CHANGE_ME
 
-# Chat / group ID where messages are posted.
+# Recipient chat id(s) - where notifications are posted. ONE bot can post to
+# MANY chats: put every destination here, comma-separated (a single id works
+# too). Each id may be a private user id, a group id, or a channel id, e.g.
+#     CHAT_ID=7844679766,-5402647496
+# To add a recipient:
+#   * Private user  - they must open the bot and press Start first (a bot cannot
+#                     message someone who never started it).
+#   * Group         - add the bot to the group as a member, then post a message
+#                     there so the group id shows up in getUpdates.
+#   * Channel       - add the bot to the channel as an ADMINISTRATOR (otherwise
+#                     it cannot post).
+#   * Reading an id - from the target chat, forward one of the bot's messages to
+#                     @RawDataBot (it replies with the chat.id), or call
+#                     https://api.telegram.org/bot<TOKEN>/getUpdates and read
+#                     message.chat.id. Group/channel ids are negative (supergroups
+#                     and channels start with -100).
 CHAT_ID=CHANGE_ME
 
 # ------------------------------------------------------------------

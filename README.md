@@ -329,6 +329,9 @@ How it works:
 - The watcher script lives with its image in
   [`firewatch/firewatch.py`](firewatch/firewatch.py); Telegram creds are shared with the
   host-monitoring scripts via the git-ignored [`config/telegram.conf`](config/telegram.conf).
+  `CHAT_ID` accepts a **comma-separated list** of recipients (private user ids, group ids,
+  channel ids), so every alert/report/photo goes to all of them (see the template
+  [`config/telegram.conf.example`](config/telegram.conf.example)).
 
 Operate:
 ```bash

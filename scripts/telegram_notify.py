@@ -5,15 +5,24 @@ Consolidated home for everything that talks to the Telegram Bot API or reads the
 shared git-ignored credentials config, so the other host scripts do not each
 re-implement it:
 
-  - load_conf():         read a KEY=VALUE config file (default config/telegram.conf)
-                         holding the Telegram credentials + tunables (git-ignored;
-                         template config/telegram.conf.example). Override the path
-                         with the TELEGRAM_CONF environment variable.
-  - ensure_creds():      validate Telegram credentials are present; return
-                         (token, chat_id) or raise RuntimeError.
-  - esc_html():          HTML-escape a dynamic value for parse_mode=html.
-  - send_telegram():     post a message to the configured chat/group.
-  - send_telegram_photo(): post a photo (JPEG) with an optional caption.
+  - load_conf():          read a KEY=VALUE config file (default config/telegram.conf)
+                          holding the Telegram credentials + tunables (git-ignored;
+                          template config/telegram.conf.example). Override the path
+                          with the TELEGRAM_CONF environment variable.
+  - ensure_creds():       validate Telegram credentials are present; return
+                          (token, chat_ids) or raise RuntimeError. chat_ids is the
+                          list of recipient chats parsed from CHAT_ID.
+  - esc_html():           HTML-escape a dynamic value for parse_mode=html.
+  - send_telegram():      post a message to EVERY configured chat/group.
+  - send_telegram_photo(): post a photo (JPEG) with an optional caption to EVERY
+                          configured chat/group.
+
+Every notification is delivered to ALL recipients in CHAT_ID (comma/whitespace-
+separated - a single id is also accepted). One bot can post to many chats; each
+destination just needs its chat_id listed. A private user must have started the
+bot first, the bot must be a member of a group, and an admin of a channel. All
+recipients are always attempted: if one cannot be reached the others still get
+the message, and a summary error is raised afterwards so cron runs fail loudly.
 
 Consumers (all stdlib-only, no third-party deps):
   - scripts/machine-monitor.py   debounced high-CPU-temperature alert
@@ -25,6 +34,7 @@ Consumers (all stdlib-only, no third-party deps):
 import html
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -50,16 +60,41 @@ def load_conf(path=None):
     return cfg
 
 
+def parse_recipients(raw):
+    """Split a raw CHAT_ID value into an ordered list of unique chat ids.
+
+    Accepts a single id (legacy) or several separated by commas and/or
+    whitespace, e.g. '7844679766,-5402647496' - a mix of private user ids,
+    group ids, channel ids and @usernames. Duplicates are dropped.
+    """
+    return list(
+        dict.fromkeys(
+            part.strip()
+            for part in re.split(r"[,\s]+", raw.strip())
+            if part.strip()
+        )
+    )
+
+
 def ensure_creds(cfg):
-    """Return (token, chat_id) or raise RuntimeError with a clear message."""
+    """Return (token, chat_ids) or raise RuntimeError with a clear message.
+
+    chat_ids is the ordered list of recipients parsed from the (comma/whitespace-
+    separated) CHAT_ID value. At least one recipient is required.
+    """
     token = cfg.get("BOT_TOKEN", "").strip()
-    chat = cfg.get("CHAT_ID", "").strip()
-    if not token or not chat or token == "CHANGE_ME":
+    chat_ids = parse_recipients(cfg.get("CHAT_ID", ""))
+    if not token or token == "CHANGE_ME":
         raise RuntimeError(
             f"Telegram not configured - check {DEFAULT_CONF} "
             "(create it from telegram.conf.example)"
         )
-    return token, chat
+    if not chat_ids:
+        raise RuntimeError(
+            f"Telegram not configured - no chat id in {DEFAULT_CONF} "
+            "(CHAT_ID may hold several comma-separated ids)"
+        )
+    return token, chat_ids
 
 
 def esc_html(text):
@@ -67,12 +102,11 @@ def esc_html(text):
     return html.escape(str(text), quote=False)
 
 
-def send_telegram(cfg, text, parse_mode="html"):
-    """Post `text` to the configured chat. Raises on transport/API errors."""
-    token, chat = ensure_creds(cfg)
+def _post_message(token, chat_id, text, parse_mode):
+    """Post `text` to ONE chat via sendMessage. Raises on transport/API errors."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = urllib.parse.urlencode(
-        {"chat_id": chat, "text": text, "parse_mode": parse_mode}
+        {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     ).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
     with urllib.request.urlopen(request, timeout=20) as response:
@@ -81,18 +115,35 @@ def send_telegram(cfg, text, parse_mode="html"):
         raise RuntimeError(f"Telegram API error: {body.get('description')}")
 
 
-def send_telegram_photo(cfg, photo_bytes, caption="", parse_mode="html"):
-    """Post a photo (JPEG bytes) with an optional caption to the configured
-    chat via the Bot API sendPhoto method (multipart/form-data, stdlib only).
+def send_telegram(cfg, text, parse_mode="html"):
+    """Post `text` to every configured chat/group.
 
-    Used by the fire-watch watcher (firewatch/firewatch.py) to send the alert
-    snapshot together with the detection caption.
+    All recipients are always attempted; if any fail, a summary RuntimeError
+    naming the failed recipient(s) is raised after the loop.
     """
-    token, chat = ensure_creds(cfg)
+    token, chat_ids = ensure_creds(cfg)
+    failures = []
+    for chat_id in chat_ids:
+        try:
+            _post_message(token, chat_id, text, parse_mode)
+        except Exception as exc:  # noqa: BLE001 - collect per-recipient errors
+            failures.append(f"{chat_id}: {exc}")
+    if failures:
+        raise RuntimeError(
+            "Telegram send failed for recipient(s): " + "; ".join(failures)
+        )
+
+
+def _post_photo(token, chat_id, photo_bytes, caption, parse_mode):
+    """Post a photo (JPEG bytes) with an optional caption to ONE chat via the
+    Bot API sendPhoto method (multipart/form-data, stdlib only).
+
+    Per-recipient worker used by send_telegram_photo().
+    """
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     boundary = f"----firewatch{int(__import__('time').time() * 1000)}"
     fields = [
-        ("chat_id", str(chat)),
+        ("chat_id", str(chat_id)),
         ("caption", caption),
         ("parse_mode", parse_mode),
     ]
@@ -121,3 +172,26 @@ def send_telegram_photo(cfg, photo_bytes, caption="", parse_mode="html"):
         result = json.load(response)
     if not result.get("ok"):
         raise RuntimeError(f"Telegram API error: {result.get('description')}")
+
+
+def send_telegram_photo(cfg, photo_bytes, caption="", parse_mode="html"):
+    """Post a photo (JPEG bytes) with an optional caption to EVERY configured
+    chat via the Bot API sendPhoto method.
+
+    Used by the fire-watch watcher (firewatch/firewatch.py) to send the alert
+    snapshot together with the detection caption. All recipients are always
+    attempted; if any fail, a summary RuntimeError naming the failed
+    recipient(s) is raised after the loop.
+    """
+    token, chat_ids = ensure_creds(cfg)
+    failures = []
+    for chat_id in chat_ids:
+        try:
+            _post_photo(token, chat_id, photo_bytes, caption, parse_mode)
+        except Exception as exc:  # noqa: BLE001 - collect per-recipient errors
+            failures.append(f"{chat_id}: {exc}")
+    if failures:
+        raise RuntimeError(
+            "Telegram photo send failed for recipient(s): "
+            + "; ".join(failures)
+        )

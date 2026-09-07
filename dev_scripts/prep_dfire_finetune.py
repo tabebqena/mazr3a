@@ -61,6 +61,7 @@ AOF_BLOCK = 1000  # treat AoF frames in 1000-frame blocks as one source clip
 
 
 def read_classes(label_path):
+    """Return sorted set of class ids present (empty file/missing -> ())."""
     if not os.path.isfile(label_path):
         return ()
     cls = []
@@ -73,6 +74,22 @@ def read_classes(label_path):
                 except ValueError:
                     pass
     return tuple(sorted(set(cls)))
+
+
+def read_box_hist(label_path):
+    """Return Counter {class_id: box_count} (real per-box tally)."""
+    c = Counter()
+    if not os.path.isfile(label_path):
+        return c
+    with open(label_path, encoding="utf-8") as fh:
+        for line in fh:
+            parts = line.split()
+            if parts:
+                try:
+                    c[int(float(parts[0]))] += 1
+                except ValueError:
+                    pass
+    return c
 
 
 def source_key(name):
@@ -191,17 +208,16 @@ def main():
         is_val = n in val_set
         dst_img = os.path.join(vi, n) if is_val else os.path.join(ti, n)
         dst_lbl = os.path.join(vl, stem + ".txt") if is_val else os.path.join(tl, stem + ".txt")
-        nb = copy_pair(os.path.join(d_img, n),
-                       os.path.join(d_lbl, stem + ".txt") if os.path.isfile(os.path.join(d_lbl, stem + ".txt")) else None,
-                       dst_img, dst_lbl, force_empty=(not is_val and not d_train[n]))
+        lbl_src = os.path.join(d_lbl, stem + ".txt")
+        copy_pair(os.path.join(d_img, n),
+                  lbl_src if os.path.isfile(lbl_src) else None,
+                  dst_img, dst_lbl, force_empty=(not is_val and not d_train[n]))
         if is_val:
-            for c in d_train[n]:
-                val_cls[c] += 1
+            val_cls.update(read_box_hist(lbl_src))
         else:
             if d_train[n]:
                 n_train_lab += 1
-                for c in d_train[n]:
-                    train_cls[c] += 1
+                train_cls.update(read_box_hist(lbl_src))
             else:
                 n_train_bg += 1
 
@@ -212,11 +228,10 @@ def main():
         a_lbl = os.path.join(a_bonia, "train", "labels")
         for n in sorted(a_train):
             stem = os.path.splitext(n)[0]
-            nb = copy_pair(os.path.join(a_img, n),
-                           os.path.join(a_lbl, stem + ".txt"),
-                           os.path.join(ti, n), os.path.join(tl, stem + ".txt"))
-            for c in a_train[n]:
-                train_cls[c] += 1
+            a_lbl_path = os.path.join(a_lbl, stem + ".txt")
+            copy_pair(os.path.join(a_img, n), a_lbl_path,
+                      os.path.join(ti, n), os.path.join(tl, stem + ".txt"))
+            train_cls.update(read_box_hist(a_lbl_path))
             n_abonia += 1
 
     # ---- data.yaml ----

@@ -55,6 +55,19 @@ SUITES = [
         "skip_val": False,
     },
     {
+        "key": "rfs2000",
+        "yaml": "fire-model-training/eval/ready_fire_smoke_r2000/data.yaml",
+        "title": "Ready fire/smoke random-2000 regression suite (1,899 imgs, internal-dedup)",
+        "caveat": ("Uniform random 2,000-image subset of the same Roboflow internet-fire "
+                   "pool as generic200, INTERNAL-dedup ONLY (2,000 -> 1,899: near-dup "
+                   "video frames removed, md5 + 64-bit dHash @ hamming<=10). NOT "
+                   "ref-deduped against v1's 8,939 base -> still overlaps training, so "
+                   "use as a recall/regression sanity suite (the generic200 idea at "
+                   "N~1900, with same-video frame near-dups removed). Labels already in "
+                   "model order fire(0)/other(1)/smoke(2); source images untouched."),
+        "skip_val": False,
+    },
+    {
         "key": "negatives430",
         "yaml": "fire-model-training/eval/negatives/data.yaml",
         "title": "Pure-background FP suite (430 no-fire images)",

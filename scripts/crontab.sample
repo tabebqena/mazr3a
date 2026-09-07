@@ -16,7 +16,9 @@
 */30 * * * * /home/dr/frigate/scripts/cleanup_media.sh >> /dev/null 2>&1
 
 # CPU temperature watchdog (python) - every 10 minutes
-# (Telegram alert when temp >= MAX_TEMP from config/telegram.conf)
+# Debounced Telegram alert: only when the CPU stays >= MAX_TEMP for MIN_HITS
+# samples >= MIN_INTERVAL minutes apart (tunables in config/telegram.conf;
+# debounce state persists in machine-monitor.state).
 */10 * * * * /usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py >> /dev/null 2>&1
 
 # Daily machine health report (python) - 08:00 every day

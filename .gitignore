@@ -50,6 +50,10 @@ config/go2rtc_homekit.yml
 # (scripts/cleanup_media.sh -> cleanup_media.conf LOG_FILE). Host-only runtime log.
 media-cleanup.log
 
+# machine-monitor.state is written to the deploy root by the host watchdog cron
+# (scripts/machine-monitor.py -> MONITOR_STATE). Host-only debounce state.
+machine-monitor.state
+
 # Python bytecode caches
 __pycache__/
 *.pyc

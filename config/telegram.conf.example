@@ -7,9 +7,10 @@
 #     nano config/telegram.conf          # set BOT_TOKEN + CHAT_ID
 #     scp config/telegram.conf ai@ssh.mazr3a.garden:/home/dr/frigate/config/
 #
-# Used by (both scripts source config/telegram.conf):
-#     scripts/machine-monitor.sh   high-CPU-temperature alerts
-#     scripts/machine-status.sh    daily machine health report
+# Used by (the host scripts read this same config/telegram.conf):
+#     scripts/machine-monitor.py   debounced high-CPU-temperature alerts
+#     scripts/machine-status.py    daily machine health report
+#     scripts/firewatch.py         fire/smoke alert photos (container mount)
 #
 # telegram.conf is git-ignored (see .gitignore) - never commit
 # the real bot token. If you edit the values on the host only,
@@ -22,5 +23,19 @@ BOT_TOKEN=CHANGE_ME
 # Chat / group ID where messages are posted.
 CHAT_ID=CHANGE_ME
 
-# CPU temperature in °C at/above which machine-monitor.sh alerts.
-MAX_TEMP=70
+# ------------------------------------------------------------------
+# machine-monitor.py tunables (CPU-temperature watchdog).
+#
+#   MAX_TEMP      CPU temp in °C at/above which the watchdog starts counting.
+#   MIN_HITS      number of samples that must all be at/above MAX_TEMP...
+#   MIN_INTERVAL  ...with at least this many MINUTES between samples, before
+#                 an alert is sent.
+#
+# Defaults if a key is unset: MAX_TEMP=75, MIN_HITS=3, MIN_INTERVAL=30 ->
+# the script collects sensors 3 times with 30 minutes in between; only when
+# the max sensor temperature is still above MAX_TEMP does it send (a single
+# transient spike is ignored).
+# ------------------------------------------------------------------
+MAX_TEMP=75
+MIN_HITS=3
+MIN_INTERVAL=30

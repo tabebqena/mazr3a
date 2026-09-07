@@ -61,6 +61,28 @@ ROOT_STAT = os.environ.get("ROOT_STAT", "/config")
 LONG_POLL_TIMEOUT_S = 50              # max Telegram accepts for getUpdates
 POLL_SOCKET_TIMEOUT_S = LONG_POLL_TIMEOUT_S + 25
 
+# Adaptive polling / "quiet" back-off. Each empty long-poll already waits
+# LONG_POLL_TIMEOUT_S (50 s) server-side; after a QUIET poll we also sleep an
+# extra, exponentially growing amount before opening the next connection, so
+# an idle bot stops churning fresh connections:
+#   extra_sleep = min(BOT_BACKOFF_BASE_S * BOT_BACKOFF_FACTOR ** streak, CAP)
+# As soon as ANY update arrives the streak resets and the next poll starts
+# immediately ("a new connection as soon as the old one closed"). Trade-off: a
+# /status sent during a long quiet sleep is only noticed at the next poll, so
+# the growth is capped. Tunable per deploy in config/telegram.conf.
+BACKOFF_BASE_DEFAULT = 2      # extra sleep (s) after the 1st quiet poll
+BACKOFF_MAX_DEFAULT = 120     # cap on that extra sleep (s)
+BACKOFF_FACTOR_DEFAULT = 2    # growth multiplier per further quiet poll
+
+
+def _cfg_int(cfg, key, default):
+    """Read an integer knob from the KEY=VALUE config, else return default."""
+    raw = (cfg.get(key) or "").strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
 
 # ---------------------------------------------------------------------------
 # host health probes (best-effort; every failure degrades to n/a)
@@ -307,9 +329,18 @@ def get_updates(token, offset):
 
 
 def run(cfg, token):
-    print("[telegram-bot] listening for commands ...", flush=True)
+    base = max(0, _cfg_int(cfg, "BOT_BACKOFF_BASE_S", BACKOFF_BASE_DEFAULT))
+    cap = max(base, _cfg_int(cfg, "BOT_BACKOFF_MAX_S", BACKOFF_MAX_DEFAULT))
+    factor = max(1, _cfg_int(cfg, "BOT_BACKOFF_FACTOR", BACKOFF_FACTOR_DEFAULT))
+    print(
+        f"[telegram-bot] listening ... (quiet backoff: base {base}s, "
+        f"cap {cap}s, factor {factor})",
+        flush=True,
+    )
     offset = None
+    quiet_streak = 0
     while True:
+        updates = []
         try:
             updates = get_updates(token, offset)
             for update in updates:
@@ -326,9 +357,33 @@ def run(cfg, token):
             # 409 = another getUpdates consumer (manual curl? second instance?)
             print(f"[telegram-bot] HTTP {exc.code} - backing off", flush=True)
             time.sleep(10)
+            continue
         except Exception as exc:  # noqa: BLE001 - network hiccups; retry
             print(f"[telegram-bot] poll error: {exc}", flush=True)
             time.sleep(5)
+            continue
+
+        if updates:
+            # Activity: reset the quiet streak and open a fresh connection right
+            # away - no extra sleep once the previous one has closed.
+            if quiet_streak:
+                print("[telegram-bot] activity resumed - polling immediately",
+                      flush=True)
+                quiet_streak = 0
+            continue
+
+        # Quiet poll (no updates within the long-poll window): grow the extra
+        # sleep so the idle bot does not churn connections: base, base*factor,
+        # base*factor^2, ... capped. base=0 disables the back-off entirely.
+        quiet_streak += 1
+        extra = min(base * factor ** (quiet_streak - 1), cap) if base else 0
+        if extra:
+            print(
+                f"[telegram-bot] quiet poll #{quiet_streak} - sleeping {extra}s "
+                "before reconnecting",
+                flush=True,
+            )
+            time.sleep(extra)
 
 
 def main():

@@ -76,5 +76,16 @@ MIN_INTERVAL=30
 #
 # The bot long-polls getUpdates as the telegram-bot service - do NOT run
 # manual getUpdates/curl while it is up (that would cause HTTP 409 conflicts).
+#
+#   Quiet back-off (adaptive polling). Each empty long-poll already waits the
+#   full 50 s server-side; after a QUIET poll the bot additionally sleeps an
+#   exponentially growing amount before reconnecting, so an idle bot stops
+#   churning connections: extra = min(BASE * FACTOR ^ streak, MAX). Any update
+#   resets the streak and polling resumes immediately. Trade-off: a /status
+#   sent during a long quiet sleep is only seen at the next poll, hence MAX.
+#   Defaults: base 2 s, max 120 s, factor 2 (set BASE=0 to disable back-off).
+#   BOT_BACKOFF_BASE_S=2
+#   BOT_BACKOFF_MAX_S=120
+#   BOT_BACKOFF_FACTOR=2
 # ------------------------------------------------------------------
 # ALLOWED_USER_IDS=7844679766

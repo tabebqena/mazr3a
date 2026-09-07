@@ -71,7 +71,7 @@ POLL_SOCKET_TIMEOUT_S = LONG_POLL_TIMEOUT_S + 25
 # /status sent during a long quiet sleep is only noticed at the next poll, so
 # the growth is capped. Tunable per deploy in config/telegram.conf.
 BACKOFF_BASE_DEFAULT = 2      # extra sleep (s) after the 1st quiet poll
-BACKOFF_MAX_DEFAULT = 120     # cap on that extra sleep (s)
+BACKOFF_MAX_DEFAULT = 60     # cap on that extra sleep (s)
 BACKOFF_FACTOR_DEFAULT = 2    # growth multiplier per further quiet poll
 
 

@@ -52,8 +52,10 @@
 # git safe.directory for the clone - instead it runs git as the clone owner. On
 # this host the clone is owned by dr, so deploy as dr (not ai).
 #
-# RESTARTS are driven by the changed set (old host HEAD..new HEAD) so an
-# unchanged deploy restarts nothing. Verification runs at the end.
+# RESTARTS are UNCONDITIONAL: after the pull every service is (re)created with
+# `docker compose up -d --build` and then ALL services are restarted with
+# `docker compose restart` - no per-service change detection. Verification runs
+# at the end.
 # ============================================================
 set -euo pipefail
 
@@ -226,7 +228,8 @@ deploy() {
   NEW_HEAD="$(remote_git rev-parse HEAD || true)"
   echo "   new host HEAD: ${NEW_HEAD:-none}"
 
-  # determine the changed set
+  # changed set (captured for reporting only - the restarts below are
+  # UNCONDITIONAL, every service is restarted on every deploy)
   declare -a CHANGED=()
   if [ -n "$OLD_HEAD" ] && [ "$OLD_HEAD" != "$NEW_HEAD" ]; then
     while IFS= read -r f; do [ -n "$f" ] && CHANGED+=("$f"); done \
@@ -234,59 +237,15 @@ deploy() {
   fi
   echo "   changed files since last deploy: ${#CHANGED[@]}"
 
-  COMPOSE_CHANGED=0;    FRIGATE_CFG_CHANGED=0; MQTT_CFG_CHANGED=0
-  FW_CODE_CHANGED=0;    FW_BUILD_CHANGED=0;    MODEL_CHANGED=0
-  for f in "${CHANGED[@]}"; do
-    case "$f" in
-      docker-compose.yml)                            COMPOSE_CHANGED=1 ;;
-      config/config.yaml)                            FRIGATE_CFG_CHANGED=1 ;;
-      models/coco/*)                                 FRIGATE_CFG_CHANGED=1 ;;
-      mosquitto/config/mosquitto.conf)               MQTT_CFG_CHANGED=1 ;;
-      firewatch/firewatch.py|scripts/collect_sensors.py|scripts/telegram_notify.py|config/firewatch.conf) FW_CODE_CHANGED=1 ;;
-      firewatch/Dockerfile|firewatch/requirements.txt) FW_BUILD_CHANGED=1 ;;
-      models/fire/*)                                 MODEL_CHANGED=1 ;;
-    esac
-  done
-
   echo "=============================================================="
-  echo "3) restart services as needed"
-  # --- config concerns (always deployed) ---
-  if [ "$COMPOSE_CHANGED" -eq 1 ]; then
-    echo "   compose changed -> up -d"
-    run_ssh "cd ${REMOTE_DIR} && docker compose up -d" || true
-  fi
-  if [ "$FRIGATE_CFG_CHANGED" -eq 1 ] || [ "$COMPOSE_CHANGED" -eq 1 ]; then
-    echo "   frigate config changed -> up -d + restart frigate"
-    run_ssh "cd ${REMOTE_DIR} && docker compose up -d && sleep 5 && docker compose restart frigate && sleep 10" || true
-  else
-    run_ssh "cd ${REMOTE_DIR} && docker compose up -d" || true   # idempotent: starts if down
-  fi
-  if [ "$MQTT_CFG_CHANGED" -eq 1 ]; then
-    echo "   mosquitto config changed -> restart mqtt"
-    run_ssh "cd ${REMOTE_DIR} && docker compose restart mqtt" || true
-  fi
-  # --- firewatch concerns (always deployed) ---
-  if [ "$FW_BUILD_CHANGED" -eq 1 ]; then
-    echo "   firewatch image changed -> up -d --build firewatch (background)"
-    run_ssh "cd ${REMOTE_DIR} && rm -f /tmp/fw_up.log && (nohup docker compose up -d --build firewatch >/tmp/fw_up.log 2>&1 &) && echo 'build started'" || exit 1
-    for i in $(seq 1 90); do
-      sleep 10
-      state="$(run_ssh "cd ${REMOTE_DIR} && docker compose ps --format '{{.Service}}|{{.Status}}' 2>/dev/null | grep '^firewatch|' || true" || true)"
-      case "$state" in
-        *"Up"*) echo "   firewatch Up after ~$((i * 10))s"; break ;;
-      esac
-      if ! run_ssh "pgrep -f 'docker compose up -d --build firewatch' >/dev/null" >/dev/null 2>&1; then
-        echo "   build ended without 'Up' - log tail:"
-        run_ssh "tail -40 /tmp/fw_up.log" || true
-        echo "ERROR: firewatch did not come up" >&2
-        exit 1
-      fi
-    done
-  fi
-  if [ "$FW_CODE_CHANGED" -eq 1 ] || [ "$MODEL_CHANGED" -eq 1 ] || [ "$FW_BUILD_CHANGED" -eq 1 ]; then
-    echo "   firewatch code/config/model changed -> restart firewatch"
-    run_ssh "cd ${REMOTE_DIR} && docker compose restart firewatch" || true
-  fi
+  echo "3) restart ALL services (no change-detection)"
+  # Bring the freshly pulled compose state up (recreates containers whose
+  # config/image changed; --build applies any firewatch Dockerfile/requirements
+  # change), then UNCONDITIONALLY restart every service so ALL of them load the
+  # new files/config - not just the ones change detection would have found.
+  run_ssh "cd ${REMOTE_DIR} && docker compose up -d --build" || true
+  sleep 5
+  run_ssh "cd ${REMOTE_DIR} && docker compose restart" || true
   run_ssh "cd ${REMOTE_DIR} && docker compose ps firewatch" || true
 
   echo "=============================================================="
@@ -295,7 +254,7 @@ deploy() {
   echo "   host clean:     $(remote_git status --porcelain | head -5 || true)"
   echo "   tracked model:  $(remote_git ls-files models/fire | tr '\n' ' ' || true)"
   if [ "${#CHANGED[@]}" -eq 0 ]; then
-    echo "   (no files changed since last deploy - services untouched)"
+    echo "   (no files changed since last deploy - all services restarted anyway)"
   else
     echo "   deployed: ${CHANGED[*]}"
   fi

@@ -212,7 +212,9 @@ snapshots:
 # to cut spurious triggers from wind/grass/insects on the busy farm scenes,
 # which was firing detection on ~every frame. Baseline was stock Frigate:
 # threshold 25 / contour_area 10. Per-camera motion.mask polygons can be added
-# from the Frigate UI once always-busy regions are identified; none set yet.)
+# from the Frigate UI once always-busy regions are identified. cam01 got one on
+# 2026-09-07 for a continuously-moving roof object on the upper-left (see the
+# cam01 motion.mask below).)
 #   threshold: 30     higher = fewer pixels count as motion (LESS sensitive)
 #   contour_area: 15  higher = motion must be a bigger blob (LESS sensitive)
 #   delta_alpha: 0.2  higher = background adapts faster (LESS sensitive)
@@ -251,6 +253,22 @@ cameras:
         # - horse
         # - sheep
         # - cow
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-07): continuously-moving object(s) hanging from the
+    # roof on the upper-left of the cam01 scene kept motion "active" almost
+    # permanently, so Frigate ran full-frame detection on nearly every frame ->
+    # high CPU. These 3 polygons make motion inside them IGNORED, so the
+    # detector no longer fires for the roof object (only genuine motion
+    # elsewhere triggers it). Drawn in the Frigate UI (cam01 -> Edit -> Mask ->
+    # Motion) and synced here verbatim from the host config on 2026-09-07.
+    # Coordinates are normalized 0..1 of the 640x360 detect frame.
+    # Revisit if the object drifts or you miss detections along that edge.
+    # ------------------------------------------------------------------
+    motion:
+      mask:
+        - 0.364,0.015,0.323,0.118,0.253,0.281,0.198,0.421,0.144,0.519,0.064,0.594,0.016,0.51,0.008,0.38,0.035,0.198,0.098,0.109,0.223,0.015
+        - 0.581,0.074,0.578,0.172,0.576,0.228,0.572,0.29,0.58,0.305,0.591,0.299,0.602,0.249,0.601,0.189,0.597,0.115,0.599,0.072
+        - 0.501,0.226,0.528,0.258,0.55,0.244,0.568,0.252,0.608,0.24,0.607,0.273,0.571,0.296,0.533,0.293,0.503,0.273,0.495,0.246
     detect:
       enabled: true
       width: 640

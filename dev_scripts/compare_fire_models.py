@@ -83,6 +83,22 @@ SUITES = [
                    "built v4, so it favours D-Fire-fine-tuned models by construction."),
         "skip_val": False,
     },
+    {
+        "key": "cctv48",
+        "yaml": "fire-model-training/dedup/cctv_clean_eval/data.yaml",
+        "title": "CCTV Smoke & Fire Emergency - synthetic event-level (48 imgs)",
+        "caveat": ("100% synthetic (Simuletic) high-angle CCTV, early-stage micro-ignitions "
+                   "(bin fires, sidewalk paper, smoldering vegetation) - the closest "
+                   "synthetic proxy we hold for the farm-CCTV ground-view deployment "
+                   "domain. Event-level clean: 240 near-identical angle frames (same event "
+                   "per varN family) collapsed to 1 representative each -> 48 events "
+                   "(24 fire + 24 smoke). Ref-dedup vs 8,939 union Abonia-kept removed 0 "
+                   "(4 ref-phash flags were coincidental 8x8-dHash collisions, verified by "
+                   "low-res MAE ~ baseline). NO 'other(1)' GT (fire/smoke only, remapped "
+                   "fire0/smoke2). Synthetic realism != real CCTV: read recall/FP as a "
+                   "domain probe, not a numeric benchmark."),
+        "skip_val": False,
+    },
 ]
 
 SUITE_KEYS = [s["key"] for s in SUITES]

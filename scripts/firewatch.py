@@ -14,7 +14,7 @@ Design notes
   touched; this watcher is fully out-of-band (see plans/fire-detection.md).
 - Code/config live on runtime mounts (./scripts, ./config, ./models are
   mounted read-only into the container) so edits need no image rebuild.
-- The watcher is stdlib + openvino + numpy + Pillow only. collect_sensors is
+- The watcher is stdlib + openvino + numpy + Pillow only. telegram_notify is
   imported from the mounted ./scripts directory.
 
 Model assumption (see plans/fire-detection.md section 5.1)
@@ -43,7 +43,7 @@ import urllib.request
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import collect_sensors as lib  # noqa: E402
+import telegram_notify as tg  # noqa: E402
 
 # Pillow is only used to overlay detection boxes on the alert snapshot; it is
 # a hard dependency of the firewatch image (see firewatch/requirements.txt).
@@ -54,7 +54,7 @@ LOG = lambda *a: print(time.strftime("[%Y-%m-%d %H:%M:%S]"), *a, flush=True)  # 
 
 
 # ---------------------------------------------------------------------------
-# tiny KEY=VALUE conf reader with typed defaults (mirrors collect_sensors.load_conf)
+# tiny KEY=VALUE conf reader with typed defaults (mirrors telegram_notify.load_conf)
 # ---------------------------------------------------------------------------
 def _raw_conf(path):
     cfg = {}
@@ -289,10 +289,10 @@ def build_caption(camera, dets, track_smoke):
     top = "🔥 FIRE ALERT" if any(d["label"].lower() == "fire" for d in dets) else "⚠️ FIRE WATCH"
     if not track_smoke and all(d["label"].lower() == "smoke" for d in dets):
         top = "💨 SMOKE WATCH"
-    lines = [f"<b>{top}</b>", f"<b>Camera:</b> {lib.esc_html(camera)}",
-             f"<b>Time:</b> {lib.esc_html(ts)}"]
+    lines = [f"<b>{top}</b>", f"<b>Camera:</b> {tg.esc_html(camera)}",
+             f"<b>Time:</b> {tg.esc_html(ts)}"]
     for d in sorted(dets, key=lambda x: x["score"], reverse=True)[:5]:
-        lines.append(f"• {lib.esc_html(d['label'])} {d['score']:.2f}")
+        lines.append(f"• {tg.esc_html(d['label'])} {d['score']:.2f}")
     return "\n".join(lines)
 
 
@@ -327,7 +327,7 @@ def run_once(cfg, model, dry=False):
 def send_alert(cfg, cam, jpg, dets, track_smoke):
     text = build_caption(cam, dets, track_smoke)
     try:
-        lib.send_telegram_photo(cfg, jpg, text)
+        tg.send_telegram_photo(cfg, jpg, text)
         LOG(f"ALERT sent for {cam}")
     except Exception as exc:  # noqa: BLE001
         LOG(f"ALERT FAILED for {cam}: {exc}")
@@ -418,7 +418,7 @@ def main():
     # scripts use (mounted at /config/telegram.conf in the container).
     telegram_path = os.environ.get("TELEGRAM_CONF", _get(raw, "TELEGRAM_CONF",
                                                          "/config/telegram.conf"))
-    cfg = lib.load_conf(telegram_path)
+    cfg = tg.load_conf(telegram_path)
     # merge firewatch tunables into cfg so helpers can read camera config too
     cfg.update(raw)
 
@@ -440,7 +440,7 @@ def main():
         return 0
 
     try:
-        lib.ensure_creds(cfg)
+        tg.ensure_creds(cfg)
     except RuntimeError as exc:
         LOG(f"ERROR: {exc}")
         return 2

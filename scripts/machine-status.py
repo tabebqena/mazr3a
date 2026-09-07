@@ -25,7 +25,8 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import collect_sensors as lib
+import collect_sensors as sensors  # noqa: E402
+import telegram_notify as tg       # noqa: E402
 
 DRY = "--dry-run" in sys.argv
 
@@ -146,7 +147,7 @@ def docker_stack_lines():
     if not services:
         return ["🐳 Stack: no services running"]
     lines = ["🐳 Stack:"]
-    lines += [f"   • {lib.esc_html(s)}" for s in services]
+    lines += [f"   • {tg.esc_html(s)}" for s in services]
     return lines
 
 
@@ -173,14 +174,14 @@ def frigate_lines():
         for name in sorted(cams):
             fps = cams[name].get("camera_fps") or 0
             label = f"✅ online ({fps:.1f} fps)" if fps > 0 else "❌ offline"
-            lines.append(f"   • {lib.esc_html(name)} {label}")
+            lines.append(f"   • {tg.esc_html(name)} {label}")
     return lines
 
 
 def main():
-    cfg = lib.load_conf()
+    cfg = tg.load_conf()
     try:
-        lib.ensure_creds(cfg)
+        tg.ensure_creds(cfg)
     except RuntimeError as exc:
         print(f"[machine-status] ERROR: {exc}", file=sys.stderr)
         return 1
@@ -189,22 +190,22 @@ def main():
     add = report.append
 
     host = socket.gethostname() or "unknown"
-    add(f"<b>🖥️ {lib.esc_html(host)} - daily report</b>")
+    add(f"<b>🖥️ {tg.esc_html(host)} - daily report</b>")
     now = datetime.datetime.now().astimezone()
     add(f"📅 {now.strftime('%Y-%m-%d %H:%M %Z')}")
 
-    add(f"⏱ Uptime: {lib.esc_html(format_uptime())}")
+    add(f"⏱ Uptime: {tg.esc_html(format_uptime())}")
 
-    temp = lib.get_cpu_temp_max()
+    temp = sensors.get_cpu_temp_max()
     if temp is not None:
         add(f"🌡 CPU temp (max): {temp}°C")
     else:
         add("🌡 CPU temp (max): n/a")
 
-    add(f"⚙️ Load 1/5/15m: {lib.esc_html(load_summary())}")
-    add(f"🧠 Memory used: {lib.esc_html(memory_summary())}")
-    add(f"💾 Disk /: {lib.esc_html(disk_summary('/'))}")
-    add(f"🎥 Media dir: {lib.esc_html(media_dir_summary())}")
+    add(f"⚙️ Load 1/5/15m: {tg.esc_html(load_summary())}")
+    add(f"🧠 Memory used: {tg.esc_html(memory_summary())}")
+    add(f"💾 Disk /: {tg.esc_html(disk_summary('/'))}")
+    add(f"🎥 Media dir: {tg.esc_html(media_dir_summary())}")
 
     report.extend(docker_stack_lines())
     report.extend(frigate_lines())
@@ -214,7 +215,7 @@ def main():
         print(text)
         return 0
     try:
-        lib.send_telegram(cfg, text)
+        tg.send_telegram(cfg, text)
     except Exception as exc:  # noqa: BLE001 - report and fail loudly under cron
         print(f"[machine-status] failed to send report: {exc}", file=sys.stderr)
         return 1

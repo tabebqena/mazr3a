@@ -242,7 +242,7 @@ deploy() {
       config/config.yaml)                            FRIGATE_CFG_CHANGED=1 ;;
       models/coco/*)                                 FRIGATE_CFG_CHANGED=1 ;;
       mosquitto/config/mosquitto.conf)               MQTT_CFG_CHANGED=1 ;;
-      scripts/firewatch.py|scripts/collect_sensors.py|config/firewatch.conf) FW_CODE_CHANGED=1 ;;
+      scripts/firewatch.py|scripts/collect_sensors.py|scripts/telegram_notify.py|config/firewatch.conf) FW_CODE_CHANGED=1 ;;
       firewatch/Dockerfile|firewatch/requirements.txt) FW_BUILD_CHANGED=1 ;;
       models/fire/*)                                 MODEL_CHANGED=1 ;;
     esac

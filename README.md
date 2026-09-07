@@ -342,6 +342,26 @@ docker compose exec firewatch python /firewatch/firewatch.py --dry-run   # one l
 docker compose restart firewatch          # apply firewatch.conf / code edits
 ```
 
+### Live status on demand — `telegram-bot`
+
+A stdlib-only [`telegram-bot`](scripts/telegram_bot.py) compose service long-polls the
+Bot API and answers `/status`, `/help` and `/start` **in the chat that asked** — so you
+can get a live host + Frigate report in Telegram without waiting for the daily cron or
+an alert. It reuses the shared [`scripts/telegram_notify.py`](scripts/telegram_notify.py)
+and reads host health through read-only bind mounts (`/proc`, coretemp `hwmon`, `./media`)
+plus the Frigate REST API. Start it once (no build — stock python image):
+
+```bash
+docker compose up -d telegram-bot
+docker compose logs -f telegram-bot       # watch command replies
+docker compose restart telegram-bot       # apply code / config edits
+```
+
+Then in the group (or privately) send `/status@mazr3a_garden_bot`. Commands are
+answered only for the configured recipients; restrict to specific user ids with
+`ALLOWED_USER_IDS` in [`config/telegram.conf`](config/telegram.conf). Long-polling
+must be the only `getUpdates` consumer — no manual `curl` loops while it runs.
+
 Verification steps are in the plan file's checklist.
 
 ## Deferred (future phases)

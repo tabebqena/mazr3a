@@ -84,3 +84,36 @@ services:
       - MODEL_DIR=/models/fire
     depends_on:
       - frigate
+
+  # ------------------------------------------------------------------
+  # telegram-bot - on-demand command responder for the farm Telegram bot
+  # (see plans/telegram-command-bot.md). Long-polls the Bot API getUpdates
+  # and answers /status, /help, /start IN THE CHAT THAT ASKED.
+  # Dependency-free: a stock python:3.11-slim image (stdlib only) - no build.
+  # Code + config are mounted read-only (like firewatch) so edits need only
+  # `docker compose restart telegram-bot`. HOST health for /status comes from
+  # read-only bind mounts (/proc, coretemp hwmon, ./media) + ./config for the
+  # root filesystem stats and the Frigate REST API; the container never
+  # writes to the host. Long-polling getUpdates must be the ONLY consumer of
+  # the bot's updates (cron scripts + firewatch only SEND - no webhook).
+  # ------------------------------------------------------------------
+  telegram-bot:
+    container_name: telegram-bot
+    image: python:3.11-slim
+    restart: unless-stopped
+    command: ["python", "/scripts/telegram_bot.py"]
+    volumes:
+      - ./scripts:/scripts:ro            # telegram_bot.py + telegram_notify.py
+      - ./config:/config:ro              # telegram.conf (creds + tunables)
+      - /proc:/host/proc:ro              # host uptime / loadavg / meminfo / hostname
+      - /sys/class/hwmon:/host/hwmon:ro  # host coretemp (CPU temp for /status)
+      - ./media:/media:ro                # Frigate media filesystem usage
+    environment:
+      - FRIGATE_API=http://frigate:5000  # compose network: frigate service
+      - TELEGRAM_CONF=/config/telegram.conf
+      - HOST_PROC=/host/proc
+      - HOST_HWMON=/host/hwmon
+      - MEDIA_DIR=/media
+      - ROOT_STAT=/config                # config mount sits on the host root fs
+    depends_on:
+      - frigate

@@ -16,6 +16,8 @@ re-implement it:
   - send_telegram():      post a message to EVERY configured chat/group.
   - send_telegram_photo(): post a photo (JPEG) with an optional caption to EVERY
                           configured chat/group.
+  - send_message_to():    post a message to ONE specific chat/group (used by the
+                          command bot to reply in the chat that asked).
 
 Every notification is delivered to ALL recipients in CHAT_ID (comma/whitespace-
 separated - a single id is also accepted). One bot can post to many chats; each
@@ -30,6 +32,9 @@ Consumers (all stdlib-only, no third-party deps):
   - firewatch/firewatch.py       fire/smoke alert photos (the firewatch container
                                  mounts ./scripts read-only at /scripts:ro, so
                                  this module ships with the script)
+  - scripts/telegram_bot.py      on-demand /status command responder (the
+                                 telegram-bot docker service long-polls
+                                 getUpdates and replies in the chat that asked)
 """
 import html
 import json
@@ -132,6 +137,17 @@ def send_telegram(cfg, text, parse_mode="html"):
         raise RuntimeError(
             "Telegram send failed for recipient(s): " + "; ".join(failures)
         )
+
+
+def send_message_to(cfg, chat_id, text, parse_mode="html"):
+    """Post `text` to ONE specific chat/group, not the CHAT_ID recipient list.
+
+    Used by the command responder (scripts/telegram_bot.py) to reply in the
+    chat that asked (e.g. /status in the farm group must answer there, not
+    broadcast to every configured recipient).
+    """
+    token, _chat_ids = ensure_creds(cfg)
+    _post_message(token, chat_id, text, parse_mode)
 
 
 def _post_photo(token, chat_id, photo_bytes, caption, parse_mode):

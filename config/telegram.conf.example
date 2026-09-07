@@ -11,6 +11,7 @@
 #     scripts/machine-monitor.py   debounced high-CPU-temperature alerts
 #     scripts/machine-status.py    daily machine health report
 #     firewatch/firewatch.py       fire/smoke alert photos (container mount)
+#     scripts/telegram_bot.py      on-demand /status responder (docker service)
 #
 # telegram.conf is git-ignored (see .gitignore) - never commit
 # the real bot token. If you edit the values on the host only,
@@ -54,3 +55,26 @@ CHAT_ID=CHANGE_ME
 MAX_TEMP=75
 MIN_HITS=3
 MIN_INTERVAL=30
+
+# ------------------------------------------------------------------
+# telegram-bot tunables (on-demand /status command responder - docker
+# service, see scripts/telegram_bot.py + docker-compose.yml).
+#
+#   ALLOWED_USER_IDS  comma-separated Telegram user ids allowed to run
+#                     commands (/status etc.). UNSET/empty (default) = any
+#                     message coming from one of the CHAT_ID recipients is
+#                     answered (e.g. any member of the farm group). Set it to
+#                     the owner id to restrict commands to specific people in
+#                     ANY chat:
+#                         ALLOWED_USER_IDS=7844679766
+#
+# Commands (send in the group, or privately to the bot; in a group with
+# several bots use /status@<botname>):
+#     /status   live host + Frigate health report
+#     /help     help text
+#     /start    greeting
+#
+# The bot long-polls getUpdates as the telegram-bot service - do NOT run
+# manual getUpdates/curl while it is up (that would cause HTTP 409 conflicts).
+# ------------------------------------------------------------------
+# ALLOWED_USER_IDS=7844679766

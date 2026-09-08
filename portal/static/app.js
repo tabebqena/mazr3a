@@ -12,7 +12,7 @@ const state = {
   me: null,
   settings: null,
   cameras: [],
-  live: { cam: null, playing: false, mode: '' },  // mode: '' | 'hls' | 'snap'
+  live: { cam: null, playing: false, mode: '', sound: false },  // mode: '' | 'hls' | 'snap'
   idleSec: 300,
 };
 
@@ -199,6 +199,34 @@ function showImage() {
   $('#live-img').classList.remove('hidden');
 }
 
+/* Live audio: the portal HLS carries AAC (go2rtc <cam>_portal transcode) but
+   the <video> must start muted so browsers allow autoplay. Sound is opt-in via
+   the #live-sound button; clicking it is a user gesture (always permitted), and
+   once a stream is already playing muted the last choice is re-applied safely. */
+function applyLiveSound() {
+  const video = $('#live-video');
+  video.muted = !state.live.sound;
+  if (!video.muted) video.volume = 1;
+  syncSoundUI();
+}
+function toggleLiveSound() {
+  state.live.sound = !state.live.sound;
+  applyLiveSound();
+  if (state.live.sound) {
+    const p = $('#live-video').play();   // re-engage if a mute stopped it
+    if (p && p.catch) p.catch(() => {});
+  }
+}
+function syncSoundUI() {
+  const b = $('#live-sound');
+  if (!b) return;
+  const on = !!state.live.sound;
+  b.textContent = on ? '\u{1F50A}' : '\u{1F507}';   // 🔊 / 🔇
+  b.title = on ? 'Mute' : 'Enable sound';
+  b.setAttribute('aria-label', b.title);
+  b.classList.toggle('sound-on', on);
+}
+
 function ensureLive() {
   if (!state.live.cam || state.live.playing) return;
   startStream(state.live.cam);
@@ -221,6 +249,11 @@ function startHls(cam, tok) {
   const video = $('#live-video');
   // Same-origin HLS through the portal (behind the session cookie):
   // https://<portal>/api/live/<cam>/hls/stream.m3u8?src=<cam>
+  // The backend serves the <cam>_portal AAC source; still start muted so the
+  // browser permits autoplay, then restore the user's sound choice on play.
+  video.muted = true;
+  $('#live-sound').classList.remove('hidden');
+  syncSoundUI();
   const url = '/api/live/' + encodeURIComponent(cam) +
     '/hls/stream.m3u8?src=' + encodeURIComponent(cam);
   $('#live-status').textContent = 'Connecting ' + cam + '…';
@@ -239,7 +272,7 @@ function startHls(cam, tok) {
       if (state.live.playing && tok === liveTok && cam === state.live.cam) {
         $('#live-status').textContent = 'Live (HLS)';
         hideSpinner();
-        video.play().catch(() => {});
+        video.play().then(() => applyLiveSound()).catch(() => {});
       }
     });
     hls.on(Hls.Events.ERROR, (e, data) => {
@@ -260,6 +293,7 @@ function startHls(cam, tok) {
       if (state.live.playing && tok === liveTok && cam === state.live.cam) {
         $('#live-status').textContent = 'Live (HLS)';
         hideSpinner();
+        applyLiveSound();
       }
     }).catch(() => hlsFallback(cam, tok));
     return;
@@ -274,6 +308,7 @@ function startSnapshot(cam, tok) {
   state.live.mode = 'snap';
   showSpinner();            // spinner until the first detect frame loads
   showImage();
+  $('#live-sound').classList.add('hidden');   // JPEG fallback has no audio
   $('#live-status').textContent = 'Live (snapshot ~1 fps)';
   scheduleFrame(cam, tok);
 }
@@ -312,6 +347,7 @@ function stopStream() {
   if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.add('hidden');
+  $('#live-sound').classList.add('hidden');
   hideSpinner();
   $('#live-status').textContent = '';
 }
@@ -323,6 +359,10 @@ function resume() {
 
 $('#cam-select').addEventListener('change', (e) => startStream(e.target.value));
 $('#overlay-resume').addEventListener('click', resume);
+$('#live-sound').addEventListener('click', (e) => {
+  e.preventDefault();
+  toggleLiveSound();
+});
 
 /* ---------------- shared time-range + pagination helpers ---------------- */
 const TIME_PRESETS = [

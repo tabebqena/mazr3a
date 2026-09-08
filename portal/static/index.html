@@ -50,6 +50,10 @@
           <div id="live-spinner" class="spinner hidden" title="Connecting…"></div>
           <video id="live-video" autoplay muted playsinline class="hidden"></video>
           <img id="live-img" alt="live camera" class="hidden">
+          <!-- Live HLS audio is AAC (portal transcode); sound starts muted so
+               autoplay is allowed - clicking this toggles it (user gesture). -->
+          <button id="live-sound" class="sound hidden" type="button"
+                  title="Enable sound" aria-label="Enable sound">&#128263;</button>
           <div id="live-overlay" class="overlay hidden">
             <div class="overlay-card">
               <div id="overlay-msg">Stream paused.</div>

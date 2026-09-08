@@ -214,15 +214,31 @@ async def _frigate_stream(request: Request, path: str, params=None):
 # go2rtc's master references "hls/playlist.m3u8" relative to /api/, so the
 # browser resolves it under the /hls/ mount here and no playlist rewriting is
 # needed. go2rtc pulls the camera only while a viewer keeps fetching.
+#
+# AUDIO: the cameras send G.711 (PCMU) audio, which browsers/MSE cannot
+# decode, so the master playlist is fetched for the <cam>_portal go2rtc
+# source (config/config.yaml go2rtc.streams) - an on-demand ffmpeg transcode
+# that copies the video and re-encodes the audio to AAC. hls.js/Safari can
+# then play Live WITH sound; the SPA's Live stage exposes a muted-by-default
+# 🔊 toggle (browsers only allow sound autoplay after a user gesture).
 # --------------------------------------------------------------------------
+# go2rtc source suffix for the AAC-audio portal variants (config/config.yaml
+# go2rtc.streams). Keep these two files in sync.
+LIVE_SOURCE_SUFFIX = "_portal"
+
 @app.get("/api/live/{camera}/hls/stream.m3u8")
 async def live_hls_master(camera: str, request: Request,
                           user: dict = Depends(current_user)):
-    """go2rtc HLS master playlist for a camera (same-origin, behind the cookie)."""
+    """go2rtc HLS master playlist for a camera (same-origin, behind the cookie).
+
+    Serves the <cam>_portal AAC-audio variant so browsers can decode the
+    audio (the base <cam> stream carries G.711/PCMU, not MSE-playable).
+    """
     if not frigate.valid_camera_name(camera):
         raise HTTPException(status_code=400, detail="invalid camera name")
     return await _frigate_stream(
-        request, "/api/go2rtc/api/stream.m3u8", params={"src": camera})
+        request, "/api/go2rtc/api/stream.m3u8",
+        params={"src": camera + LIVE_SOURCE_SUFFIX})
 
 
 @app.get("/api/live/{camera}/hls/{rest:path}")

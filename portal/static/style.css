@@ -152,6 +152,20 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
   background: var(--accent); color: #06210f; font-weight: 700; border: 0;
 }
 
+/* Live sound toggle: the HLS audio is AAC (portal transcode), but the video
+   starts muted so browsers allow autoplay - this button (a user gesture)
+   turns sound on. Hidden in the snapshot fallback (no audio there). */
+.sound {
+  position: absolute; right: 10px; bottom: 10px; z-index: 6;
+  width: auto; min-width: 0; min-height: 0; margin: 0;
+  padding: 8px 12px; font-size: 18px; line-height: 1;
+  background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.25);
+  color: #fff; border-radius: 20px;
+}
+.sound:hover { background: rgba(0,0,0,.75); }
+.sound:active { transform: scale(.95); }
+.sound.sound-on { border-color: var(--accent); background: rgba(0,0,0,.7); }
+
 /* live loading spinner (hidden = .hidden) */
 .spinner {
   position: absolute; inset: 0; z-index: 5;

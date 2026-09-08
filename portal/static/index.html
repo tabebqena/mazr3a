@@ -39,7 +39,7 @@
     </header>
 
     <main>
-      <!-- Live: WebSocket-MSE (go2rtc) with a detect-snapshot fallback -->
+      <!-- Live: HLS (go2rtc, hls.js) with a detect-snapshot fallback -->
       <section id="view-live" class="view hidden">
         <div class="controls">
           <label>Camera
@@ -101,7 +101,7 @@
 
   <div id="global-err" class="toast hidden"></div>
 
-  <script src="/static/mse.js"></script>
+  <script src="/static/vendor/hls.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

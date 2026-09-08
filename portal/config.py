@@ -22,11 +22,12 @@ DEFAULTS = {
     "STREAM_IDLE_TIMEOUT_S": "300",   # live-view idle time watch default
     "DEFAULT_CAMERA": "",             # optional landing camera override
     "FRIGATE_API": "http://frigate:5000",
-    # Live MSE is proxied SAME-ORIGIN through the portal:
-    # ws(s)://<portal>/api/live/<cam>/mse  ->  Frigate go2rtc MSE
-    # (.../live/mse/api/ws?src=<cam>). No public stream URL template is needed:
-    # the SPA connects to its own origin, which stays behind the session cookie
-    # and works through the Cloudflare Tunnel without extra path mappings.
+    # Live view is served SAME-ORIGIN as HLS through the portal:
+    # /api/live/<cam>/hls/stream.m3u8 -> Frigate go2rtc HLS (master + .ts
+    # segments) via Frigate's /api/go2rtc/* reverse proxy. No public stream
+    # URL template is needed: the SPA (hls.js) fetches its own origin, which
+    # stays behind the session cookie and works through the Cloudflare Tunnel
+    # without extra path mappings.
     # firewatch evidence: DB path + stored-jpg prefix remap. The host ./media
     # tree is mounted at /media here; firewatch sees it at /media/firewatch
     # (STORE_DIR), so stored paths /media/firewatch/<cam>/x.jpg -> /media/<cam>/x.jpg.

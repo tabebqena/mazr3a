@@ -1,7 +1,6 @@
 """FastAPI app for the portal: auth + proxied Frigate JSON/media + Firewatch
 evidence, plus the static SPA. See portal/__init__.py and plans/portal-web-app.md.
 """
-import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,9 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-import websockets
 from fastapi import (
-    Depends, FastAPI, HTTPException, Request, Response, WebSocket,
+    Depends, FastAPI, HTTPException, Request, Response,
 )
 from fastapi.responses import (
     FileResponse, JSONResponse, StreamingResponse,
@@ -48,10 +46,10 @@ app = FastAPI(
     title="mazr3a CCTV portal",
     description=(
         "Authenticated API for the Frigate + Firewatch stack. Proxies Frigate "
-        "events/media, serves Firewatch fire evidence, and returns direct go2rtc "
-        "MSE live-stream URLs (Access-gated at the Cloudflare Tunnel)."
+        "events/media, serves Firewatch fire evidence, and serves the Live view "
+        "as same-origin HLS from Frigate's embedded go2rtc (via /api/live/<cam>/hls)."
     ),
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -170,59 +168,78 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
     return {"default_camera": default_cam, "cameras": items}
 
 
-@app.websocket("/api/live/{camera}/mse")
-async def ws_live_mse(camera: str, websocket: WebSocket):
-    """Same-origin WebSocket-MSE proxy to Frigate's go2rtc.
+async def _frigate_stream(request: Request, path: str, params=None):
+    """Stream an upstream Frigate route verbatim (content-type preserved).
 
-    The browser opens ws(s)://<portal>/api/live/<cam>/mse (same origin, behind
-    the session cookie) and this route relays both directions to Frigate's
-    embedded go2rtc MSE endpoint (.../live/mse/api/ws?src=<cam>). Same-origin
-    avoids Frigate's cross-origin WS/CSRF rejection and keeps auth + a single
-    public origin. go2rtc pulls the camera only while a viewer is connected.
+    go2rtc is embedded in Frigate and its HTTP API is reverse-proxied by
+    Frigate under /api/go2rtc/* on port 5000. Requests here carry the session
+    cookie (same-origin) and are relayed server-side, so the go2rtc HLS tree
+    never leaves the portal origin / Cloudflare Access boundary.
     """
-    token = websocket.cookies.get(COOKIE_NAME)
-    if not (app.state.secret and auth.read_session(app.state.secret, token)):
-        await websocket.close(code=1008)
-        return
-    if not frigate.valid_camera_name(camera):
-        await websocket.close(code=1008)
-        return
-    await websocket.accept()
-    base = pconf.get(app.state.cfg, "FRIGATE_API", "http://frigate:5000")
-    up = base.replace("http", "ws") + "/live/mse/api/ws?src=" + camera
+    client = request.app.state.client
+    req = client.build_request("GET", _frigate_base(request) + path,
+                               params=params)
     try:
-        async with websockets.connect(up, max_size=None,
-                                      open_timeout=15) as upws:
-            async def up_to_down():
-                try:
-                    async for msg in upws:
-                        if isinstance(msg, (bytes, bytearray)):
-                            await websocket.send_bytes(msg)
-                        else:
-                            await websocket.send_text(msg)
-                except Exception:
-                    pass
+        resp = await client.send(req, stream=True)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"frigate unreachable: {exc}")
+    if resp.status_code != 200:
+        await resp.aclose()
+        raise HTTPException(status_code=resp.status_code, detail="frigate error")
 
-            async def down_to_up():
-                try:
-                    while True:
-                        m = await websocket.receive()
-                        t = m.get("type")
-                        if t == "websocket.receive_text":
-                            await upws.send(m["text"])
-                        elif t == "websocket.receive_bytes":
-                            await upws.send(m["bytes"])
-                        elif t in ("websocket.disconnect", "websocket.close"):
-                            break
-                except Exception:
-                    pass
-
-            await asyncio.gather(up_to_down(), down_to_up())
-    except Exception:
+    async def gen():
         try:
-            await websocket.close(code=1011)
-        except Exception:
-            pass
+            async for chunk in resp.aiter_bytes(64 * 1024):
+                yield chunk
+        finally:
+            await resp.aclose()
+
+    ctype = resp.headers.get("content-type") or "application/octet-stream"
+    return StreamingResponse(gen(), media_type=ctype,
+                             headers={"Cache-Control": "no-store"})
+
+
+# --------------------------------------------------------------------------
+# Live view: same-origin HLS proxy to Frigate's embedded go2rtc.
+#
+# go2rtc 1.9.10 (embedded in this Frigate 0.17.2 build) exposes NO working
+# MSE-over-WebSocket for a generic client and no HTTP /api/stream.mse (404);
+# its reliable, tunnel-friendly (plain TCP) live transports are HLS and MP4,
+# both served under Frigate's /api/go2rtc/* reverse proxy. The SPA plays HLS
+# with hls.js (native MSE in the page); any failure falls back to the detect-
+# snapshot proxy. Routes below keep the whole HLS tree SAME-ORIGIN behind the
+# session cookie:
+#   GET /api/live/<cam>/hls/stream.m3u8          -> go2rtc master playlist
+#   GET /api/live/<cam>/hls/hls/<playlist|seg>.ts -> go2rtc media/segments
+# go2rtc's master references "hls/playlist.m3u8" relative to /api/, so the
+# browser resolves it under the /hls/ mount here and no playlist rewriting is
+# needed. go2rtc pulls the camera only while a viewer keeps fetching.
+# --------------------------------------------------------------------------
+@app.get("/api/live/{camera}/hls/stream.m3u8")
+async def live_hls_master(camera: str, request: Request,
+                          user: dict = Depends(current_user)):
+    """go2rtc HLS master playlist for a camera (same-origin, behind the cookie)."""
+    if not frigate.valid_camera_name(camera):
+        raise HTTPException(status_code=400, detail="invalid camera name")
+    return await _frigate_stream(
+        request, "/api/go2rtc/api/stream.m3u8", params={"src": camera})
+
+
+@app.get("/api/live/{camera}/hls/{rest:path}")
+async def live_hls_media(camera: str, rest: str, request: Request,
+                         user: dict = Depends(current_user)):
+    """go2rtc HLS media playlist + TS segments for a camera.
+
+    The master references 'hls/playlist.m3u8' (relative), which a browser
+    resolves to /api/live/<cam>/hls/hls/playlist.m3u8; segments resolve
+    similarly under hls/. Both are forwarded verbatim to go2rtc.
+    """
+    if not frigate.valid_camera_name(camera):
+        raise HTTPException(status_code=400, detail="invalid camera name")
+    if not rest.startswith("hls/"):
+        raise HTTPException(status_code=404, detail="not found")
+    return await _frigate_stream(request, "/api/go2rtc/api/" + rest,
+                                 params=request.query_params)
 
 
 @app.get("/api/live/{camera}/latest.jpg")

@@ -1,8 +1,8 @@
 /* mazr3a CCTV portal SPA - vanilla JS.
-   Views: Login, Live (single camera; WebSocket-MSE via go2rtc with a detect-
-   snapshot fallback, idle time watch), Frigate Events & detections, Firewatch
-   fire detections & alerts. Talks to the portal /api/* (same origin, session
-   cookie). */
+   Views: Login, Live (single camera; HLS via the portal's go2rtc proxy with
+   hls.js and a detect-snapshot fallback, idle time watch), Frigate Events &
+   detections, Firewatch fire detections & alerts. Talks to the portal /api/*
+   (same origin, session cookie). */
 'use strict';
 
 const $ = (s, el) => (el || document).querySelector(s);
@@ -12,7 +12,7 @@ const state = {
   me: null,
   settings: null,
   cameras: [],
-  live: { cam: null, playing: false, mode: '' },  // mode: '' | 'mse' | 'snap'
+  live: { cam: null, playing: false, mode: '' },  // mode: '' | 'hls' | 'snap'
   idleSec: 300,
 };
 
@@ -20,6 +20,7 @@ const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 let liveTimer = null;
 let idleTimer = null;
 let liveTok = 0;             // guards stale async callbacks after switch/stop
+let curHls = null;           // active hls.js instance (destroy on stop/switch)
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
 
@@ -142,18 +143,20 @@ async function loadCameras() {
   if (state.live.cam) $('#cam-select').value = state.live.cam;
 }
 
-/* ---------------- Live view: WebSocket-MSE (go2rtc) w/ snapshot fallback ------- */
-const player = new G2MSEPlayer($('#live-video'));
-player.onstatus = (m) => {
-  if (state.live.playing) $('#live-status').textContent = m || '';
-};
-player.onerror = () => {
-  // Only a genuine MSE failure (stream closed/unsupported) reaches here.
-  if (state.live.playing && state.live.mode === 'mse') {
-    $('#live-status').textContent = 'MSE unavailable - snapshot mode (1 fps)';
-    startSnapshot(state.live.cam, liveTok);
-  }
-};
+/* ---------------- Live view: HLS (go2rtc) via hls.js w/ snapshot fallback ----- */
+// go2rtc in this Frigate 0.17.2 build has no working MSE-over-WS and no HTTP
+// MSE endpoint; its tunnel-friendly live transport is HLS (master + ~0.5 s .ts
+// segments), proxied SAME-ORIGIN through the portal at
+//   /api/live/<cam>/hls/stream.m3u8?src=<cam>
+// hls.js plays it (MSE inside the page); Safari plays it natively. Any failure
+// falls back to the detect-snapshot proxy (Frigate /api/<cam>/latest.jpg).
+
+function hlsFallback(cam, tok) {
+  if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
+      || state.live.mode !== 'hls') return;
+  $('#live-status').textContent = 'HLS unavailable - snapshot mode (1 fps)';
+  startSnapshot(cam, tok);
+}
 
 function resetIdle() {
   if (idleTimer) clearTimeout(idleTimer);
@@ -199,31 +202,66 @@ function startStream(cam) {
   state.live.cam = cam;
   state.live.playing = true;
   hideOverlay();
-  startMse(cam, tok);
+  startHls(cam, tok);
   resetIdle();
 }
 
-function startMse(cam, tok) {
-  state.live.mode = 'mse';
+function startHls(cam, tok) {
+  state.live.mode = 'hls';
   showVideo();
-  if (!player.supported) {
-    $('#live-status').textContent = 'MSE unsupported in this browser';
-    startSnapshot(cam, tok);
+  const video = $('#live-video');
+  // Same-origin HLS through the portal (behind the session cookie):
+  // https://<portal>/api/live/<cam>/hls/stream.m3u8?src=<cam>
+  const url = '/api/live/' + encodeURIComponent(cam) +
+    '/hls/stream.m3u8?src=' + encodeURIComponent(cam);
+  $('#live-status').textContent = 'Connecting ' + cam + '…';
+
+  if (window.Hls && Hls.isSupported()) {
+    // hls.js -> MediaSource in the page (Chrome/Firefox/Edge etc.)
+    const hls = curHls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: true,
+      backBufferLength: 30,
+      maxLiveSyncPlaybackRate: 1.5,
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (state.live.playing && tok === liveTok && cam === state.live.cam) {
+        $('#live-status').textContent = 'Live (HLS)';
+        video.play().catch(() => {});
+      }
+    });
+    hls.on(Hls.Events.ERROR, (e, data) => {
+      if (!data || !data.fatal) return;
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+      else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+      else hlsFallback(cam, tok);
+    });
     return;
   }
-  $('#live-status').textContent = 'Connecting ' + cam + '…';
-  // Same-origin WebSocket proxy through the portal (behind the session cookie):
-  // ws(s)://<portal>/api/live/<cam>/mse  ->  Frigate go2rtc MSE.
-  const url = String(location.origin).replace(/^http/, 'ws') +
-    '/api/live/' + encodeURIComponent(cam) + '/mse';
-  player.play(url);
+
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari / iOS native HLS
+    const onErr = () => hlsFallback(cam, tok);
+    video.addEventListener('error', onErr, { once: true });
+    video.src = url;
+    video.play().then(() => {
+      if (state.live.playing && tok === liveTok && cam === state.live.cam) {
+        $('#live-status').textContent = 'Live (HLS)';
+      }
+    }).catch(() => hlsFallback(cam, tok));
+    return;
+  }
+
+  $('#live-status').textContent = 'HLS unsupported in this browser';
+  startSnapshot(cam, tok);
 }
 
 function startSnapshot(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam) return;
   state.live.mode = 'snap';
   showImage();
-  if (player.supported && !state.live._snapNote) { /* keep status quiet */ }
   $('#live-status').textContent = 'Live (snapshot ~1 fps)';
   scheduleFrame(cam, tok);
 }
@@ -253,7 +291,10 @@ function stopStream() {
   liveTok++;
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-  player.stop();
+  if (curHls) { curHls.destroy(); curHls = null; }
+  const video = $('#live-video');
+  try { video.pause(); } catch (e) { /* ignore */ }
+  try { video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
   const img = $('#live-img');
   if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
   $('#live-video').classList.add('hidden');

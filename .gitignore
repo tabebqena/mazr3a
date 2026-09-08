@@ -75,6 +75,12 @@ runs/
 # the curated negatives (fire-model-training/default-other) and eval artifacts.
 fire-model-training/*
 
+# Firewatch alert clip exports (Frigate recordings around registered fire alerts) -
+# large media artifacts, not source. Host staging dir (/home/dr/frigate/firewatch_clips)
+# and the local download mirror (./firewatch-fire-clips). See plans/firewatch-clip-export.md.
+firewatch_clips/
+firewatch-fire-clips/
+
 # ------------------------------------------------------------------
 # Local working docs (not versioned): all plan files (plans/), the master
 # prompt (prompt.txt) and Colab notebooks (notebooks/, regenerable from

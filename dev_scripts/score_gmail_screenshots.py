@@ -169,6 +169,10 @@ def main():
     ap.add_argument("--src", default=SRC)
     ap.add_argument("--model-dir", default=MODEL_DIR)
     ap.add_argument("--threshold", type=float, default=SCORE_THRESHOLD)
+    ap.add_argument("--printed-scores", default=None,
+                    help="optional CSV (columns image_name, fire_confidence) to "
+                         "fill the printed-score column, e.g. a vision-model "
+                         "reading of the tiny red text on each alert")
     args = ap.parse_args()
 
     # firewatch/ is not a package: put the firewatch dir on sys.path so
@@ -210,20 +214,67 @@ def main():
             "verdict"]
     csv_path = os.path.join(args.src, "fire_alerts_scores.csv")
     md_path = os.path.join(args.src, "fire_alerts_scores.md")
+
+    # Optional: merge an external "printed score" reading (e.g. a vision model)
+    # into the printed_score column and cross-check it vs our own OCR reads.
+    printed_src = None
+    agree, differ, missing = [], [], []
+    if args.printed_scores and os.path.isfile(args.printed_scores):
+        filled = {}
+        with open(args.printed_scores, encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                name = (r.get("image_name") or "").strip()
+                conf = (r.get("fire_confidence") or "").strip()
+                if name and conf:
+                    filled[name] = conf
+        for row in rows:
+            if row["file"] in filled:
+                row["printed_score"] = filled[row["file"]]
+            else:
+                missing.append(row["file"])
+        agree = sorted(f for f in auto_reads if filled.get(f) == auto_reads[f])
+        differ = sorted(f for f in auto_reads
+                        if f in filled and filled[f] != auto_reads[f])
+        printed_src = f"{os.path.basename(args.printed_scores)} ({len(filled)} rows)"
+    elif args.printed_scores:
+        print(f"WARN: --printed-scores file not found: {args.printed_scores}")
+
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
         w.writerows(rows)
+
     # Markdown review table - TRUE/FALSE is the column the user fills in.
     auto_note = (", ".join(f"{k} = {v}" for k, v in auto_reads.items())
                  if auto_reads else "none")
+    if printed_src:
+        score_step = ("1. `printed score` was filled from the provided "
+                      "reading.\n")
+        printed_note = (f"- `printed score` source: {printed_src} (a vision "
+                        f"reading of the red text on each alert).\n"
+                        + (f"- Cross-check vs local OCR: **agrees exactly on** "
+                           f"{', '.join(agree)}.\n" if agree else "")
+                        + (f"- Cross-check vs local OCR: **disagrees on** "
+                           f"{', '.join(differ)} - worth a quick visual check "
+                           f"of those.\n" if differ else "")
+                        + "- Local OCR experiments this session gave different "
+                          "values for 084522 (~0.58), 084543 (~0.63) and "
+                          "084620 (~0.57/0.67) than the reading above - if you "
+                          "want certainty on those three, give them a quick "
+                          "visual check before marking.\n"
+                        + (f"- No external score found for: {', '.join(missing)}"
+                           f"\n" if missing else ""))
+    else:
+        score_step = ("1. (optional) type the score printed on the alert photo "
+                      "into `printed score`\n")
+        printed_note = (f"- OCR could only auto-read the tiny printed score on: "
+                        f"{auto_note} - the rest are blank to fill in.\n")
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write("# Fire alert screenshots review (media/Gmail)\n\n"
                  "One row per Telegram fire-alert screenshot. Open each image "
                  "(`media/Gmail/`), then:\n"
-                 "1. (optional) type the score printed on the alert photo into "
-                 "`printed score`\n"
-                 "2. fill `TRUE/FALSE` with **TRUE** (real fire) or **FALSE** "
+                 + score_step
+                 + "2. fill `TRUE/FALSE` with **TRUE** (real fire) or **FALSE** "
                  "(false positive).\n\n")
         fh.write("Notes:\n"
                  "- `alert time` = burned-in CCTV date/time on the alert frame "
@@ -235,8 +286,7 @@ def main():
                  "of them (the 0.50 gate in `config/firewatch.conf`) - so v4 "
                  "would **not** alert on any of these frames today. Your "
                  "TRUE/FALSE verdict is the ground truth.\n"
-                 f"- OCR could only auto-read the tiny printed score on: "
-                 f"{auto_note}.\n\n")
+                 + printed_note + "\n")
         fh.write("| # | file | alert time (CCTV) | printed score | "
                  "active-model fire | smoke | TRUE/FALSE |\n")
         fh.write("|---|---|---|---|---|---|---|\n")
@@ -244,7 +294,8 @@ def main():
             fh.write(f"| {i} | {r['file']} | {r['alert_ts']} | "
                      f"{r['printed_score']} | {r['v4_fire']} | "
                      f"{r['v4_smoke']} |  |\n")
-    print(f"\nWrote {csv_path} and {md_path} ({len(rows)} screenshots)")
+    print(f"\nWrote {csv_path} and {md_path} ({len(rows)} screenshots)"
+          f"{'; printed scores merged from ' + printed_src if printed_src else ''}")
 
 
 if __name__ == "__main__":

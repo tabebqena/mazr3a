@@ -137,12 +137,12 @@ services:
   # host:8080 (this service) under that Access policy, and the portal login
   # gates the dashboard/JSON API on top.
   #
-  # LIVE VIEW = DETECT-SNAPSHOT mode: the SPA polls the proxied
-  # /api/live/<cam>/latest.jpg (Frigate's latest.jpg detect frame, ~1 fps,
-  # no extra decode). MSE/go2rtc true streaming is DEFERRED (go2rtc has no
-  # camera streams configured here; Frigate 0.17 serves MSE over a
-  # WebSocket). Single active camera + an idle time watch stop the refresh
-  # when idle, releasing the camera pull when nobody is watching.
+  # LIVE VIEW = WebSocket-MSE primary (direct go2rtc stream via
+  # /api/stream-url/<cam> -> .../live/mse/api/ws?src=<cam>, set in
+  # LIVE_URL_TMPL) with a detect-snapshot fallback (/api/live/<cam>/latest.jpg,
+  # ~1 fps). go2rtc pulls a camera only while a viewer is connected; single
+  # active camera + an idle time watch stop the stream when idle, releasing
+  # the pull when nobody is watching.
   #
   # Dependency-only image (./portal carries deps; python:3.11-slim +
   # fastapi/uvicorn/httpx). Code + config are mounted read-only so edits

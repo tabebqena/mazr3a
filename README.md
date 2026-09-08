@@ -373,12 +373,14 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   [`config/portal.conf`](config/portal.conf) (PBKDF2 hashes). Copy the committed
   [`config/portal.conf.example`](config/portal.conf.example) and add a user with
   `python portal/genpass.py --username NAME`. Signed HttpOnly session cookie.
-- **Live view** — one camera by default with a switcher. Snapshot mode: the SPA polls the
-  proxied `GET /api/live/<cam>/latest.jpg` (Frigate's already-decoded detect frame, ~1 fps,
-  no extra decode). An **idle time watch** stops the refresh after a configurable timeout
-  (default 300 s in `config/portal.conf`, with a per-browser override) so the camera pull
-  stops when nobody is watching. MSE/go2rtc true streaming is deferred (go2rtc has no camera
-  streams configured here yet).
+- **Live view** — one camera by default with a switcher. Primary: **WebSocket-MSE** playback
+  of the direct go2rtc stream (`GET /api/stream-url/<cam>` → `…/live/mse/api/ws?src=<cam>`,
+  set `LIVE_URL_TMPL` in `config/portal.conf`), which requires the cameras registered in
+  go2rtc (a `go2rtc.streams` block in [`config/config.yaml`](config/config.yaml)). Fallback:
+  the SPA auto-falls back to detect-snapshot polling (`GET /api/live/<cam>/latest.jpg`,
+  ~1 fps) if MSE is unavailable. An **idle time watch** stops the stream after a configurable
+  timeout (default 300 s, per-browser override) so the go2rtc camera pull is released when
+  nobody is watching.
 - **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class.
 - **Fire alerts** — Firewatch evidence frames with a detection-box overlay and an **alerted**
   badge for frames that produced a Telegram alert (the `frames.alerted` flag added by
@@ -386,8 +388,11 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
 `live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the Access policy,
-and the portal login gates the dashboard/API on top. Frigate REST/DB and the Firewatch WAL
-DB (`./media/firewatch.db`) are reached only server-side by the portal.
+and the portal login gates the dashboard/API on top. For MSE live over the public domain,
+the tunnel also maps a `/live/*` path → Frigate go2rtc (host:5000) under the same policy and
+`LIVE_URL_TMPL` uses `https://live.mazr3a.garden/live/mse/api/ws?src={camera}`. Frigate
+REST/DB and the Firewatch WAL DB (`./media/firewatch.db`) are reached only server-side by
+the portal.
 
 ```bash
 docker compose up -d --build portal

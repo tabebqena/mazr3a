@@ -1,11 +1,8 @@
 /* mazr3a CCTV portal SPA - vanilla JS.
-   Views: Login, Live (single camera, detect-snapshot refresh ~1 fps + idle
-   time watch), Frigate Events & detections, Firewatch fire detections &
-   alerts. Talks to the portal /api/* (same origin, session cookie).
-
-   Live is SNAPSHOT mode: the SPA polls the portal-proxied
-   /api/live/<cam>/latest.jpg (Frigate's detect frame). MSE/go2rtc live
-   streaming is deferred (go2rtc has no camera streams configured here). */
+   Views: Login, Live (single camera; WebSocket-MSE via go2rtc with a detect-
+   snapshot fallback, idle time watch), Frigate Events & detections, Firewatch
+   fire detections & alerts. Talks to the portal /api/* (same origin, session
+   cookie). */
 'use strict';
 
 const $ = (s, el) => (el || document).querySelector(s);
@@ -15,14 +12,16 @@ const state = {
   me: null,
   settings: null,
   cameras: [],
-  live: { cam: null, playing: false },
+  live: { cam: null, playing: false, mode: '' },  // mode: '' | 'mse' | 'snap'
   idleSec: 300,
 };
 
-const LIVE_POLL_MS = 1100;   // ~1 fps (matches Frigate detect fps)
+const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 let liveTimer = null;
+let idleTimer = null;
+let liveTok = 0;             // guards stale async callbacks after switch/stop
 
-let fwDets = {};   // fire frame id -> detections (for box overlay)
+let fwDets = {};             // fire frame id -> detections (for box overlay)
 
 /* ---------------- helpers ---------------- */
 function esc(s) {
@@ -113,7 +112,7 @@ async function boot() {
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
   const view = ['live', 'events', 'fire'].indexOf(raw) >= 0 ? raw : 'live';
-  if (view !== 'live') stopStream();           // only the Live view refreshes
+  if (view !== 'live') stopStream();           // only the Live view streams
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
   ['live', 'events', 'fire'].forEach(v =>
     $('#view-' + v).classList.toggle('hidden', v !== view));
@@ -143,8 +142,19 @@ async function loadCameras() {
   if (state.live.cam) $('#cam-select').value = state.live.cam;
 }
 
-/* ---------------- Live view (snapshot mode) + idle time watch ---------------- */
-let idleTimer = null;
+/* ---------------- Live view: WebSocket-MSE (go2rtc) w/ snapshot fallback ------- */
+const player = new G2MSEPlayer($('#live-video'));
+player.onstatus = (m) => {
+  if (state.live.playing) $('#live-status').textContent = m || '';
+};
+player.onerror = () => {
+  // Only a genuine MSE failure (stream closed/unsupported) reaches here.
+  if (state.live.playing && state.live.mode === 'mse') {
+    $('#live-status').textContent = 'MSE unavailable - snapshot mode (1 fps)';
+    startSnapshot(state.live.cam, liveTok);
+  }
+};
+
 function resetIdle() {
   if (idleTimer) clearTimeout(idleTimer);
   if (!state.live.playing) return;
@@ -155,7 +165,7 @@ function onIdleTimeout() {
   stopStream();
   const s = state.idleSec;
   const txt = s >= 60 ? Math.round(s / 60) + ' minutes' : s + ' seconds';
-  showOverlay('Live refresh paused after ' + txt + ' without activity.');
+  showOverlay('Live stopped after ' + txt + ' without activity.');
 }
 ['mousemove', 'mousedown', 'keydown', 'touchstart', 'pointerdown', 'wheel', 'scroll']
   .forEach(ev => document.addEventListener(ev, () => {
@@ -169,46 +179,87 @@ function showOverlay(msg) {
 function hideOverlay() {
   $('#live-overlay').classList.add('hidden');
 }
+function showVideo() {
+  $('#live-video').classList.remove('hidden');
+  $('#live-img').classList.add('hidden');
+}
+function showImage() {
+  $('#live-video').classList.add('hidden');
+  $('#live-img').classList.remove('hidden');
+}
 
 function ensureLive() {
-  if (!state.live.cam) return;
-  if (state.live.playing && liveTimer) return;   // already refreshing
+  if (!state.live.cam || state.live.playing) return;
   startStream(state.live.cam);
 }
 
 function startStream(cam) {
   stopStream();
+  const tok = ++liveTok;
   state.live.cam = cam;
   state.live.playing = true;
   hideOverlay();
-  $('#live-status').textContent = 'Loading ' + cam + '…';
-  scheduleFrame(cam);
+  startMse(cam, tok);
   resetIdle();
 }
 
-function scheduleFrame(cam) {
-  if (!state.live.playing || cam !== state.live.cam) return;
+function startMse(cam, tok) {
+  state.live.mode = 'mse';
+  showVideo();
+  $('#live-status').textContent = 'Connecting ' + cam + '…';
+  api('/api/stream-url/' + encodeURIComponent(cam)).then(r => {
+    if (!state.live.playing || tok !== liveTok || cam !== state.live.cam) return;
+    if (r && r.url && player.supported) {
+      player.play(r.url);
+    } else {
+      $('#live-status').textContent = player.supported
+        ? 'No MSE stream URL configured' : 'MSE unsupported in this browser';
+      startSnapshot(cam, tok);
+    }
+  }).catch(() => {
+    if (state.live.playing && tok === liveTok) startSnapshot(cam, tok);
+  });
+}
+
+function startSnapshot(cam, tok) {
+  if (!state.live.playing || tok !== liveTok || cam !== state.live.cam) return;
+  state.live.mode = 'snap';
+  showImage();
+  if (player.supported && !state.live._snapNote) { /* keep status quiet */ }
+  $('#live-status').textContent = 'Live (snapshot ~1 fps)';
+  scheduleFrame(cam, tok);
+}
+
+function scheduleFrame(cam, tok) {
+  if (!state.live.playing || cam !== state.live.cam || tok !== liveTok
+      || state.live.mode !== 'snap') return;
   const img = $('#live-img');
-  const cur = state.live.cam;
   img.onload = () => {
-    if (!state.live.playing || cam !== cur) return;
-    $('#live-status').textContent = 'Live';
-    liveTimer = setTimeout(() => scheduleFrame(cam), LIVE_POLL_MS);
+    if (state.live.playing && cam === state.live.cam && tok === liveTok
+        && state.live.mode === 'snap') {
+      liveTimer = setTimeout(() => scheduleFrame(cam, tok), LIVE_POLL_MS);
+    }
   };
   img.onerror = () => {
-    if (!state.live.playing || cam !== cur) return;
-    $('#live-status').textContent = cam + ' unavailable - retrying';
-    liveTimer = setTimeout(() => scheduleFrame(cam), 3000);
+    if (state.live.playing && cam === state.live.cam && tok === liveTok
+        && state.live.mode === 'snap') {
+      liveTimer = setTimeout(() => scheduleFrame(cam, tok), 3000);
+    }
   };
   img.src = '/api/live/' + encodeURIComponent(cam) + '/latest.jpg?t=' + Date.now();
 }
 
 function stopStream() {
   state.live.playing = false;
+  state.live.mode = '';
+  liveTok++;
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  player.stop();
   const img = $('#live-img');
   if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
+  $('#live-video').classList.add('hidden');
+  $('#live-img').classList.add('hidden');
   $('#live-status').textContent = '';
 }
 

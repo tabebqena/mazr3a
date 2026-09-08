@@ -39,18 +39,19 @@
     </header>
 
     <main>
-      <!-- Live (detect-snapshot mode) -->
+      <!-- Live: WebSocket-MSE (go2rtc) with a detect-snapshot fallback -->
       <section id="view-live" class="view hidden">
         <div class="controls">
           <label>Camera
             <select id="cam-select"></select>
           </label>
           <label>Idle stop (s)
-            <input id="idle-input" type="number" min="30" step="30" title="Stop the live refresh after this many seconds without interaction">
+            <input id="idle-input" type="number" min="30" step="30" title="Stop the live stream after this many seconds without interaction">
           </label>
         </div>
         <div id="live-stage" class="stage">
-          <img id="live-img" alt="live camera">
+          <video id="live-video" autoplay muted playsinline class="hidden"></video>
+          <img id="live-img" alt="live camera" class="hidden">
           <div id="live-overlay" class="overlay hidden">
             <div class="overlay-card">
               <div id="overlay-msg">Stream paused.</div>
@@ -100,6 +101,7 @@
 
   <div id="global-err" class="toast hidden"></div>
 
+  <script src="/static/mse.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

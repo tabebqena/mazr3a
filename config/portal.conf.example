@@ -43,13 +43,17 @@ DEFAULT_CAMERA=cam01
 FRIGATE_API=http://frigate:5000
 
 # ------------------------------------------------------------------
-# LIVE VIEW = DETECT-SNAPSHOT mode (default): the SPA polls
-# /api/live/<cam>/latest.jpg (Frigate's latest.jpg detect frame, ~1 fps, no
-# extra decode). go2rtc MSE live streaming is DEFERRED - go2rtc has no camera
-# streams configured on this host, and Frigate 0.17 serves MSE over a
-# WebSocket. Revisit (add a go2rtc.streams block to config/config.yaml + a
-# WebSocket MSE player) if true video streaming is wanted later.
-#
+# LIVE VIEW = WebSocket-MSE (primary) with a detect-snapshot fallback.
+# The SPA opens the go2rtc MSE WebSocket URL below (Frigate 0.17 serves MSE
+# over a WebSocket at .../live/mse/api/ws?src=<cam>; go2rtc must have the
+# cameras registered via a `go2rtc.streams` block in config/config.yaml).
+# {camera} is substituted. Examples:
+#   LAN test : http://192.168.1.5:5000/live/mse/api/ws?src={camera}
+#   public    : https://live.mazr3a.garden/live/mse/api/ws?src={camera}
+#              (the Cloudflare Tunnel must map /live/* -> Frigate go2rtc)
+# If unset or unreachable, Live falls back to /api/live/<cam>/latest.jpg.
+LIVE_URL_TMPL=http://192.168.1.5:5000/live/mse/api/ws?src={camera}
+
 # Firewatch evidence store (read-only consumer of the WAL DB).
 # The host ./media tree is mounted at /media in the portal container;
 # firewatch sees the same tree at /media/firewatch (STORE_DIR), so its

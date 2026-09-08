@@ -166,15 +166,32 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
     return {"default_camera": default_cam, "cameras": items}
 
 
+@app.get("/api/stream-url/{camera}")
+async def stream_url(camera: str, request: Request,
+                     user: dict = Depends(current_user)):
+    """Return the direct go2rtc MSE (WebSocket) URL for a camera.
+
+    Frigate 0.17 serves go2rtc MSE over a WebSocket at .../live/mse/api/ws?
+    src=<cam>. The SPA player swaps http->ws and connects; the URL is gated by
+    the Cloudflare Access policy (public) or reachable on the LAN.
+    """
+    if not frigate.valid_camera_name(camera):
+        raise HTTPException(status_code=400, detail="invalid camera name")
+    tmpl = pconf.get(_cfg(request), "LIVE_URL_TMPL", "")
+    if not tmpl or "{camera}" not in tmpl:
+        raise HTTPException(status_code=503,
+                            detail="LIVE_URL_TMPL not configured")
+    return {"camera": camera, "url": tmpl.replace("{camera}", camera)}
+
+
 @app.get("/api/live/{camera}/latest.jpg")
 async def live_snapshot(camera: str, request: Request,
                         user: dict = Depends(current_user)):
-    """Live view - detect-snapshot mode (MSE/go2rtc deferred).
+    """Live snapshot fallback - Frigate's detect frame (~1 fps, no extra decode).
 
-    Frigate serves /api/<camera>/latest.jpg from its already-decoded detect
-    frame (updates at detect fps, ~1 fps here; no extra decode), so the SPA
-    polls this authenticated proxy JPEG while a viewer watches. go2rtc MSE live
-    streaming is deferred (go2rtc has no camera streams configured yet).
+    Used when MSE is unavailable (MediaSource unsupported or the stream URL not
+    configured). Frigate serves /api/<camera>/latest.jpg from its already-
+    decoded detect frame, so this proxy JPEG adds ~no host load.
     """
     if not frigate.valid_camera_name(camera):
         raise HTTPException(status_code=400, detail="invalid camera name")

@@ -74,6 +74,26 @@ go2rtc:
     cam08: rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
     cam09: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
     cam10: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
+    # ------------------------------------------------------------------
+    # <cam>_portal sources: SAME video as the base <cam>, but the audio is
+    # re-encoded to AAC. The cameras send G.711 (PCMU) audio, which browsers/
+    # MSE (hls.js) cannot decode - the portal therefore plays these AAC
+    # variants so Live view has voice. Video is copied (no re-encode); only a
+    # low-cost AAC audio encode runs, on demand while a viewer is connected.
+    # The portal proxies HLS from <cam>_portal (see portal/app.py
+    # LIVE_SOURCE_SUFFIX); the base <cam> streams stay PCMU for Frigate UI.
+    # Keep this naming in sync with portal/app.py.
+    # ------------------------------------------------------------------
+    cam01_portal: ffmpeg:cam01#video=copy#audio=aac
+    cam02_portal: ffmpeg:cam02#video=copy#audio=aac
+    cam03_portal: ffmpeg:cam03#video=copy#audio=aac
+    cam04_portal: ffmpeg:cam04#video=copy#audio=aac
+    cam05_portal: ffmpeg:cam05#video=copy#audio=aac
+    cam06_portal: ffmpeg:cam06#video=copy#audio=aac
+    cam07_portal: ffmpeg:cam07#video=copy#audio=aac
+    cam08_portal: ffmpeg:cam08#video=copy#audio=aac
+    cam09_portal: ffmpeg:cam09#video=copy#audio=aac
+    cam10_portal: ffmpeg:cam10#video=copy#audio=aac
 
 # ------------------------------------------------------------------
 # Logging

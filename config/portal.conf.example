@@ -43,14 +43,15 @@ DEFAULT_CAMERA=cam01
 FRIGATE_API=http://frigate:5000
 
 # ------------------------------------------------------------------
-# LIVE VIEW = WebSocket-MSE (primary) with a detect-snapshot fallback.
-# The SPA connects SAME-ORIGIN through the portal: the portal proxies
-# ws(s)://<portal>/api/live/<cam>/mse to Frigate's embedded go2rtc MSE
-# (go2rtc must have the cameras registered via a `go2rtc.streams` block in
-# config/config.yaml). Same-origin means it stays behind the portal session
-# cookie and works through the Cloudflare Tunnel with no extra path mapping.
-# No stream URL template is required. If MSE is unavailable, Live falls back
-# to /api/live/<cam>/latest.jpg (~1 fps detect snapshot).
+# LIVE VIEW = HLS (primary) with a detect-snapshot fallback.
+# The SPA plays SAME-ORIGIN HLS through the portal with hls.js:
+# /api/live/<cam>/hls/stream.m3u8 -> Frigate's embedded go2rtc HLS (go2rtc
+# must have the cameras registered via a `go2rtc.streams` block in
+# config/config.yaml, using {FRIGATE_*} python-format credentials; go2rtc in
+# this Frigate has no MSE). Same-origin means it stays behind the portal
+# session cookie and works through the Cloudflare Tunnel with no extra path
+# mapping. No stream URL template is required. If HLS is unavailable, Live
+# falls back to /api/live/<cam>/latest.jpg (~1 fps detect snapshot).
 #
 # Firewatch evidence store (read-only consumer of the WAL DB).
 # The host ./media tree is mounted at /media in the portal container;

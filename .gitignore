@@ -1,6 +1,8 @@
 # Secrets - never commit camera credentials
 .env
 config/telegram.conf
+# Portal user credentials + session secret (example committed as portal.conf.example)
+config/portal.conf
 
 # Frigate media (recordings, snapshots, cache)
 media/

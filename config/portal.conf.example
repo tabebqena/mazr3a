@@ -1,0 +1,63 @@
+# ============================================================
+# portal - web portal (FastAPI + SPA) tunables for the Frigate +
+# Firewatch stack. Copy to config/portal.conf (git-ignored) and
+# EDIT THE VALUES, then recreate the portal container:
+#     cp config/portal.conf.example config/portal.conf
+#     docker compose up -d --force-recreate portal
+#
+# Consumed read-only at /config/portal.conf by the `portal`
+# container (mounted ./config). Every option can be overridden by a
+# same-named environment variable prefixed PORTAL_ (which wins).
+# ============================================================
+
+# ------------------------------------------------------------------
+# Users - one line per user. This is the app-level gate (the Cloudflare
+# Access policy already protects the network in front). Generate a hash
+# line with:
+#     python portal/genpass.py --username admin        # prompts (hidden)
+# Format: user <name> <pbkdf2$iters$salt$hash> [default_camera=<cam>]
+# ------------------------------------------------------------------
+# user admin pbkdf2$600000$<salt_hex>$<hash_hex> default_camera=cam01
+
+# Signs session cookies. REQUIRED - use a long random string:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+SECRET_KEY=change-me-to-a-long-random-string
+
+# Session cookie lifetime (days) and whether the cookie is Secure-only.
+# Secure=true matches the public HTTPS origin (Cloudflare Tunnel). Set
+# false only for plain-HTTP LAN testing.
+SESSION_DAYS=7
+COOKIE_SECURE=true
+
+# Live-view idle time watch: stop the stream after this many seconds of
+# user inactivity. The SPA shows a resume overlay; the browser override
+# (localStorage) wins over this server default.
+STREAM_IDLE_TIMEOUT_S=300
+
+# Landing camera when the user has no per-user default_camera. Empty =
+# first camera returned by Frigate.
+DEFAULT_CAMERA=cam01
+
+# Frigate REST API base (compose service name inside the network). Only
+# reached server-side; Frigate is never exposed to browsers directly.
+FRIGATE_API=http://frigate:5000
+
+# Public go2rtc MSE live-stream URL the SPA plays. This must be the URL
+# the Cloudflare Tunnel maps to Frigate's embedded go2rtc under the same
+# Access policy (e.g. the tunnel routes /live/* -> host:5000 go2rtc).
+# {camera} is substituted per camera. Confirm the exact go2rtc MSE path
+# on the host (host spike) and set it here - e.g.:
+#   LIVE_URL_TMPL=https://live.mazr3a.garden/live/{camera}
+#   (or .../live/{camera}/mse if that is the confirmed go2rtc endpoint)
+LIVE_URL_TMPL=https://live.mazr3a.garden/live/{camera}
+
+# ------------------------------------------------------------------
+# Firewatch evidence store (read-only consumer of the WAL DB).
+# The host ./media tree is mounted at /media in the portal container;
+# firewatch sees the same tree at /media/firewatch (STORE_DIR), so its
+# stored jpg_path /media/firewatch/<cam>/x.jpg is served from
+# /media/<cam>/x.jpg via the PREFIX -> REPLACE remap below.
+# ------------------------------------------------------------------
+FIREWATCH_DB=/media/firewatch.db
+FIREWATCH_JPG_PREFIX=/media/firewatch/
+FIREWATCH_JPG_REPLACE=/media/

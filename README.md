@@ -380,13 +380,15 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   hls.js (vendored under `portal/static/vendor/`; native HLS on Safari). go2rtc in this
   Frigate build has no MSE — HLS is its reliable TCP/tunnel-friendly live transport. Fallback:
   the SPA auto-falls back to detect-snapshot polling (`GET /api/live/<cam>/latest.jpg`, ~1 fps)
-  if HLS is unavailable. An **idle time watch** stops the stream after a configurable timeout
-  (default 300 s, per-browser override) so the go2rtc camera pull is released when nobody is
+  if HLS is unavailable. An **idle time watch** stops the stream after a timeout configured by
+  an admin in [`config/portal.conf`](config/portal.conf) (`STREAM_IDLE_TIMEOUT_S`, default
+  300 s; there is **no in-UI control**) so the go2rtc camera pull is released when nobody is
   watching.
 - **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class.
 - **Fire alerts** — Firewatch evidence frames with a detection-box overlay and an **alerted**
   badge for frames that produced a Telegram alert (the `frames.alerted` flag added by
-  `firewatch.py`).
+  `firewatch.py`). The view **defaults to alerts only** (uncheck "alerts only" to browse all
+  detections).
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
 `live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the Access policy,

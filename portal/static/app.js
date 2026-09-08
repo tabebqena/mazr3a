@@ -102,9 +102,9 @@ async function boot() {
   hideLogin();
   $('#user-chip').textContent = state.me.username;
   state.settings = await api('/api/settings');
-  const stored = localStorage.getItem('portal.idleSec');
-  state.idleSec = Number(stored) || state.settings.stream_idle_timeout_s || 300;
-  $('#idle-input').value = state.idleSec;
+  // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
+  // no in-UI control, so every user gets the server-configured value.
+  state.idleSec = state.settings.stream_idle_timeout_s || 300;
   await loadCameras();
   window.addEventListener('hashchange', onRoute);
   onRoute();
@@ -308,13 +308,6 @@ function resume() {
 }
 
 $('#cam-select').addEventListener('change', (e) => startStream(e.target.value));
-$('#idle-input').addEventListener('change', (e) => {
-  let v = Math.max(30, parseInt(e.target.value, 10) || state.settings.stream_idle_timeout_s || 300);
-  state.idleSec = v;
-  e.target.value = v;
-  try { localStorage.setItem('portal.idleSec', String(v)); } catch (err) { /* ignore */ }
-  if (state.live.playing) resetIdle();
-});
 $('#overlay-resume').addEventListener('click', resume);
 
 /* ---------------- Frigate events & detections ---------------- */

@@ -140,6 +140,17 @@ def read_overlay_label(im):
     return ("", c)
 
 
+_OCR_ENGINE = None  # RapidOCR is expensive to build - load it once
+
+
+def _get_ocr():
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _OCR_ENGINE = RapidOCR()
+    return _OCR_ENGINE
+
+
 def read_cctv_clock(im):
     """OCR the burned-in CCTV 'dd/mm/yyyy hh:mm:ss' near the frame's top-left.
 
@@ -147,7 +158,7 @@ def read_cctv_clock(im):
     clock sits ~y 845 on the 1080x2400 screenshot, just below the frame top.
     """
     try:
-        from rapidocr_onnxruntime import RapidOCR
+        engine = _get_ocr()
     except Exception:
         return None, None
     crop_y0 = 800
@@ -157,7 +168,7 @@ def read_cctv_clock(im):
         _scale(im.crop((0, crop_y0, 420, crop_y1)), up).save(tf.name)
         path = tf.name
     try:
-        res, _ = RapidOCR()(path)
+        res, _ = engine(path)
     finally:
         os.unlink(path)
     if not res:

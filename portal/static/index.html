@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mazr3a CCTV</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Login -->
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card">
+      <h1>mazr3a CCTV</h1>
+      <p class="sub">Frigate · Firewatch</p>
+      <label>Username
+        <input name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div id="login-error" class="err hidden"></div>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">mazr3a CCTV</div>
+      <nav id="nav">
+        <a data-view="live" href="#/live">Live</a>
+        <a data-view="events" href="#/events">Events</a>
+        <a data-view="fire" href="#/fire">Fire alerts</a>
+      </nav>
+      <div class="userbox">
+        <span id="user-chip"></span>
+        <button id="logout-btn" title="Sign out">&#9211;</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Live -->
+      <section id="view-live" class="view hidden">
+        <div class="controls">
+          <label>Camera
+            <select id="cam-select"></select>
+          </label>
+          <label>Idle stop (s)
+            <input id="idle-input" type="number" min="30" step="30" title="Stop the stream after this many seconds without interaction">
+          </label>
+        </div>
+        <div id="live-stage" class="stage">
+          <video id="live-video" autoplay muted playsinline></video>
+          <div id="live-overlay" class="overlay hidden">
+            <div class="overlay-card">
+              <div id="overlay-msg">Stream paused.</div>
+              <button id="overlay-resume" type="button">&#9654; Resume stream</button>
+            </div>
+          </div>
+        </div>
+        <div id="live-status" class="status"></div>
+      </section>
+
+      <!-- Frigate events & detections -->
+      <section id="view-events" class="view hidden">
+        <div class="controls">
+          <label>Camera <select id="ev-cam"></select></label>
+          <label>Class <input id="ev-label" list="ev-label-list" placeholder="all"></label>
+          <datalist id="ev-label-list">
+            <option value="person"><option value="car"><option value="motorcycle">
+            <option value="truck"><option value="dog"><option value="cat">
+            <option value="horse"><option value="sheep"><option value="cow">
+            <option value="bird"><option value="knife">
+          </datalist>
+          <button id="ev-refresh" type="button">Refresh</button>
+        </div>
+        <div id="ev-status" class="status"></div>
+        <div id="ev-list" class="list"></div>
+      </section>
+
+      <!-- Firewatch fire detections & alerts -->
+      <section id="view-fire" class="view hidden">
+        <div class="controls">
+          <label>Camera <select id="fw-cam"></select></label>
+          <label>Class
+            <select id="fw-label">
+              <option value="">all</option>
+              <option value="fire">fire</option>
+              <option value="smoke">smoke</option>
+            </select>
+          </label>
+          <label class="check"><input id="fw-alerted" type="checkbox"> alerts only</label>
+          <button id="fw-refresh" type="button">Refresh</button>
+        </div>
+        <div id="fw-status" class="status"></div>
+        <div id="fw-list" class="grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="global-err" class="toast hidden"></div>
+
+  <script src="/static/mse.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

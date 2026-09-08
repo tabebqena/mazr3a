@@ -8,14 +8,17 @@ fire/smoke YOLO model via OpenVINO, and sends a Telegram PHOTO alert on a
 sustained detection (min consecutive hits above a score threshold, with a
 per-camera cooldown to prevent spam).
 
-Evidence store (2026-09-08, see plans/firewatch-evidence-store.md): EVERY poll
-that is marked fire (a detection above SCORE_THRESHOLD) is ALSO persisted to
-disk as a JPEG + sidecar JSON (detections + scores), INDEPENDENT of the
-MIN_HITS/HITS_WINDOW alert gate and cooldown - so a real fire that never
-accumulates enough hits still leaves a durable record. STORE_DIR defaults to
-/media/firewatch (a read-write mount of the git-ignored host ./media tree added
-in docker-compose.yml); STORE_ENABLED=false reverts to the old send-only
-behavior.
+Evidence store (2026-09-08, see plans/firewatch-evidence-store.md; sqlite rework
+in plans/firewatch-sqlite-evidence-store.md): EVERY poll that is marked fire (a
+detection above SCORE_THRESHOLD) is ALSO persisted - the frame as a JPEG under
+<STORE_DIR>/<cam>/ and its metadata (camera, timestamp, best score, per-box
+detections, the JPEG path) in a single WAL-mode SQLite DB at
+<STORE_DIR>/firewatch.db - INDEPENDENT of the MIN_HITS/HITS_WINDOW alert gate
+and cooldown, so a real fire that never accumulates enough hits still leaves a
+durable record. This replaces the old per-frame .json sidecar. STORE_DIR
+defaults to /media/firewatch (a read-write mount of the git-ignored host
+./media tree added in docker-compose.yml); STORE_ENABLED=false reverts to the
+old send-only behavior.
 
 Design notes
 ------------
@@ -44,8 +47,8 @@ Usage
 """
 import collections
 import io
-import json
 import os
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -332,8 +335,9 @@ def run_once(cfg, model, dry=False):
                 if dry:
                     print(build_caption(cam, dets, track_smoke))
                     continue
-                # Evidence store: persist every fire-marked frame + score
-                # sidecar (even with no hit accumulation / single-pass runs).
+                # Evidence store: persist every fire-marked frame (JPEG file +
+                # SQLite metadata row) even with no hit accumulation or in a
+                # single-pass run.
                 store_fire_frame(cfg, cam, raw, dets)
                 jpg = overlay_boxes(raw, dets)
                 send_alert(cfg, cam, jpg, dets, track_smoke)
@@ -353,8 +357,108 @@ def send_alert(cfg, cam, jpg, dets, track_smoke):
         LOG(f"ALERT FAILED for {cam}: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# SQLite evidence store (2026-09-08 sqlite rework, see
+# plans/firewatch-sqlite-evidence-store.md). The JPEG frame stays a plain file
+# on disk; only the metadata that used to live in a per-frame .json sidecar
+# (camera, timestamp, best score, threshold, per-box detections, image PATH)
+# goes into one WAL-mode SQLite DB - no image BLOBs (user decision).
+# ---------------------------------------------------------------------------
+_STORE_CONN = None          # cached sqlite3 connection (loop is single-threaded)
+_STORE_LAST_PRUNE = 0.0     # throttle for the optional retention sweep
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS frames (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera          TEXT    NOT NULL,
+    captured_at     REAL    NOT NULL,   -- UTC epoch seconds (time.time())
+    ts_utc          TEXT    NOT NULL,   -- UTC 'YYYY-MM-DD HH:MM:SS' (readable)
+    jpg_path        TEXT    NOT NULL,   -- absolute path of the stored JPEG
+    best_score      REAL    NOT NULL,
+    score_threshold REAL    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS detections (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    frame_id INTEGER NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
+    label    TEXT    NOT NULL,
+    score    REAL    NOT NULL,
+    x1       REAL    NOT NULL,
+    y1       REAL    NOT NULL,
+    x2       REAL    NOT NULL,
+    y2       REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_frames_camera_ts ON frames(camera, captured_at);
+CREATE INDEX IF NOT EXISTS idx_frames_ts         ON frames(captured_at);
+CREATE INDEX IF NOT EXISTS idx_detections_frame  ON detections(frame_id);
+CREATE INDEX IF NOT EXISTS idx_detections_label  ON detections(label);
+"""
+
+
+def _store_db_path(cfg):
+    """Absolute path of the evidence SQLite DB (WAL mode)."""
+    store_dir = _get(cfg, "STORE_DIR", "")
+    if not store_dir:
+        return None
+    return os.path.join(store_dir, _get(cfg, "STORE_DB", "firewatch.db"))
+
+
+def _store_conn(cfg):
+    """Return the cached WAL-mode evidence connection, creating schema once.
+
+    Re-opens transparently if the DB file is missing/pruned (e.g. the host
+    media cleanup removed firewatch.db mid-run) - the next poll recreates the
+    file + schema.
+    """
+    global _STORE_CONN
+    if _STORE_CONN is not None:
+        try:
+            _STORE_CONN.execute("SELECT 1").fetchone()
+        except sqlite3.Error:
+            _STORE_CONN = None
+    if _STORE_CONN is None:
+        db_path = _store_db_path(cfg)
+        if db_path is None:
+            return None
+        store_dir = os.path.dirname(db_path) or "."
+        os.makedirs(store_dir, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        # WAL: readers never block this single writer and each commit does far
+        # fewer fsyncs than the rollback journal - right for a high-frequency
+        # fire-marked-frame append log. synchronous=NORMAL matches (durable to
+        # process/OS crash, safe on the journaled host filesystem).
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(_SCHEMA)
+        _STORE_CONN = conn
+    return _STORE_CONN
+
+
+def _prune_store(cfg, conn):
+    """Optional retention: STORE_RETENTION_DAYS > 0 deletes old frame records.
+
+    Runs at most once a minute. Frames are cascade-deleted WITH their detection
+    rows. Only DB rows are removed - the JPEG files stay (the host media
+    cleanup owns file purging) and the DB keeps its high-water size until a
+    manual VACUUM (see plans/firewatch-sqlite-evidence-store.md).
+    """
+    global _STORE_LAST_PRUNE
+    days = _getf(cfg, "STORE_RETENTION_DAYS", 0)
+    if days <= 0:
+        return
+    now = time.time()
+    if now - _STORE_LAST_PRUNE < 60:
+        return
+    _STORE_LAST_PRUNE = now
+    cur = conn.execute(
+        "DELETE FROM frames WHERE captured_at < ?", (now - days * 86400,)
+    )
+    if cur.rowcount:
+        LOG(f"store: pruned {cur.rowcount} frame record(s) older than {days:g} days")
+
+
 def store_fire_frame(cfg, cam, jpeg_bytes, dets):
-    """Best-effort persist a fire-marked frame + sidecar JSON (evidence store).
+    """Best-effort persist a fire-marked frame: JPEG file + SQLite metadata.
 
     Runs on EVERY poll where a fire/smoke detection exists above SCORE_THRESHOLD
     (dets non-empty), INDEPENDENT of the MIN_HITS/HITS_WINDOW alert gate and the
@@ -362,12 +466,13 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets):
     keeps re-hitting inside cooldown) still leaves a durable record on disk.
 
     Writes, per fire-marked frame:
-      <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.jpg   (raw frame)
-      <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.json  (sidecar)
-    The sidecar carries the full detection list (label/score/box), best score,
-    score threshold used, camera and UTC timestamp. See
-    plans/firewatch-evidence-store.md. Never raises (keeps the loop alive);
-    failures are logged and skipped.
+      <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.jpg   (raw frame;
+      the image itself stays on disk - only its PATH goes into SQLite)
+      plus one `frames` row (camera, timestamps, jpg_path, best score, score
+      threshold) and one `detections` row per box in the WAL-mode DB at
+      <STORE_DIR>/<STORE_DB|firewatch.db> - the old .json sidecar is gone. See
+      plans/firewatch-sqlite-evidence-store.md. Never raises (keeps the loop
+      alive); failures are logged and skipped.
     """
     if not _getb(cfg, "STORE_ENABLED", True):
         return
@@ -375,6 +480,8 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets):
     if not store_dir:
         return
     try:
+        # 1) image file - same bytes sent to Telegram; kept on disk (no BLOB
+        #    columns in the DB, per user decision).
         cam_dir = os.path.join(store_dir, cam)
         os.makedirs(cam_dir, exist_ok=True)
         now = time.time()
@@ -384,23 +491,39 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets):
         jpg_path = os.path.join(cam_dir, base + ".jpg")
         with open(jpg_path, "wb") as fh:
             fh.write(jpeg_bytes)
-        meta = {
-            "camera": cam,
-            "timestamp_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
-            "score_threshold": _getf(cfg, "SCORE_THRESHOLD", 0.5),
-            "best_score": round(best, 4),
-            "detections": [
-                {"label": d["label"], "score": round(d["score"], 4),
-                 "box": [round(v, 1) for v in d["box"]]}
-                for d in sorted(dets, key=lambda x: x["score"], reverse=True)
-            ],
-        }
-        with open(os.path.join(cam_dir, base + ".json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump(meta, fh, indent=2)
-        LOG(f"{cam}: stored fire frame {os.path.basename(jpg_path)} "
-            f"(conf {best:.2f})")
+
+        # 2) metadata (the old .json sidecar) -> SQLite (WAL). JPEG first so a
+        #    DB hiccup never leaves a row pointing at a missing file.
+        conn = _store_conn(cfg)
+        if conn is None:
+            LOG(f"{cam}: store SKIPPED (no STORE_DIR/STORE_DB path)")
+            return
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO frames (camera, captured_at, ts_utc, jpg_path, "
+            "best_score, score_threshold) VALUES (?,?,?,?,?,?)",
+            (cam, now,
+             time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
+             jpg_path, round(best, 4),
+             _getf(cfg, "SCORE_THRESHOLD", 0.5)),
+        )
+        frame_id = cur.lastrowid
+        cur.executemany(
+            "INSERT INTO detections (frame_id, label, score, x1, y1, x2, y2) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [(frame_id, d["label"], round(d["score"], 4),
+              round(d["box"][0], 1), round(d["box"][1], 1),
+              round(d["box"][2], 1), round(d["box"][3], 1))
+             for d in sorted(dets, key=lambda x: x["score"], reverse=True)],
+        )
+        conn.commit()
+        _prune_store(cfg, conn)
+        LOG(f"{cam}: stored fire frame #{frame_id} "
+            f"{os.path.basename(jpg_path)} (conf {best:.2f}, "
+            f"{len(jpeg_bytes) // 1024} KB, {len(dets)} detections)")
     except Exception as exc:  # noqa: BLE001 - evidence store must never kill loop
+        global _STORE_CONN
+        _STORE_CONN = None  # drop a possibly-stale conn; next poll reopens it
         LOG(f"{cam}: store FAILED: {exc}")
 
 
@@ -451,10 +574,10 @@ def run_forever(cfg, model):
                 now = time.monotonic()
                 in_cooldown = now - st["last_alert"] < cooldown
                 if dets:
-                    # Evidence store: persist EVERY fire-marked frame + score
-                    # sidecar, independent of the MIN_HITS alert gate / cooldown
-                    # (a real fire below the accumulation bar still leaves a
-                    # durable record on disk). Runs before the gate below.
+                    # Evidence store: persist EVERY fire-marked frame (JPEG +
+                    # SQLite metadata) independent of the MIN_HITS alert gate /
+                    # cooldown (a real fire below the accumulation bar still
+                    # leaves a durable record). Runs before the gate below.
                     store_fire_frame(cfg, cam, raw, dets)
                     best = max(d["score"] for d in dets)
                     if hits >= min_hits and not in_cooldown:

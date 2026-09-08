@@ -337,8 +337,9 @@ def run_once(cfg, model, dry=False):
                     continue
                 # Evidence store: persist every fire-marked frame (JPEG file +
                 # SQLite metadata row) even with no hit accumulation or in a
-                # single-pass run.
-                store_fire_frame(cfg, cam, raw, dets)
+                # single-pass run. Single-pass mode alerts on every fire-marked
+                # frame, so the stored frame is tagged alerted.
+                store_fire_frame(cfg, cam, raw, dets, alerted=True)
                 jpg = overlay_boxes(raw, dets)
                 send_alert(cfg, cam, jpg, dets, track_smoke)
         except urllib.error.HTTPError as exc:
@@ -375,7 +376,8 @@ CREATE TABLE IF NOT EXISTS frames (
     ts_utc          TEXT    NOT NULL,   -- UTC 'YYYY-MM-DD HH:MM:SS' (readable)
     jpg_path        TEXT    NOT NULL,   -- absolute path of the stored JPEG
     best_score      REAL    NOT NULL,
-    score_threshold REAL    NOT NULL
+    score_threshold REAL    NOT NULL,
+    alerted         INTEGER NOT NULL DEFAULT 0  -- 1 = this poll also produced a Telegram alert
 );
 CREATE TABLE IF NOT EXISTS detections (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -430,6 +432,17 @@ def _store_conn(cfg):
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
+        # Migration (2026-09-08, portal change): `frames` gained `alerted`.
+        # CREATE TABLE IF NOT EXISTS does NOT alter an existing table, so add
+        # the column for DBs created before this change. Idempotent - safe to
+        # run on every open (duplicate-column error is swallowed).
+        try:
+            conn.execute(
+                "ALTER TABLE frames ADD COLUMN "
+                "alerted INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.Error:
+            pass  # column already present (fresh DB or migrated earlier)
         _STORE_CONN = conn
     return _STORE_CONN
 
@@ -457,19 +470,22 @@ def _prune_store(cfg, conn):
         LOG(f"store: pruned {cur.rowcount} frame record(s) older than {days:g} days")
 
 
-def store_fire_frame(cfg, cam, jpeg_bytes, dets):
+def store_fire_frame(cfg, cam, jpeg_bytes, dets, alerted=False):
     """Best-effort persist a fire-marked frame: JPEG file + SQLite metadata.
 
     Runs on EVERY poll where a fire/smoke detection exists above SCORE_THRESHOLD
     (dets non-empty), INDEPENDENT of the MIN_HITS/HITS_WINDOW alert gate and the
     per-camera cooldown - so a real fire that never accumulates enough hits (or
     keeps re-hitting inside cooldown) still leaves a durable record on disk.
+    `alerted` (param) tags whether THIS poll also crossed the alert gate and
+    produced a Telegram alert (the caller evaluates the gate BEFORE storing); a
+    downstream portal uses it to separate real alerts from raw fire evidence.
 
     Writes, per fire-marked frame:
       <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.jpg   (raw frame;
       the image itself stays on disk - only its PATH goes into SQLite)
       plus one `frames` row (camera, timestamps, jpg_path, best score, score
-      threshold) and one `detections` row per box in the WAL-mode DB at
+      threshold, alerted) and one `detections` row per box in the WAL-mode DB at
       <STORE_DIR>/<STORE_DB|firewatch.db> - the old .json sidecar is gone. See
       plans/firewatch-sqlite-evidence-store.md. Never raises (keeps the loop
       alive); failures are logged and skipped.
@@ -501,11 +517,12 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets):
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO frames (camera, captured_at, ts_utc, jpg_path, "
-            "best_score, score_threshold) VALUES (?,?,?,?,?,?)",
+            "best_score, score_threshold, alerted) VALUES (?,?,?,?,?,?,?)",
             (cam, now,
              time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
              jpg_path, round(best, 4),
-             _getf(cfg, "SCORE_THRESHOLD", 0.5)),
+             _getf(cfg, "SCORE_THRESHOLD", 0.5),
+             1 if alerted else 0),
         )
         frame_id = cur.lastrowid
         cur.executemany(
@@ -577,10 +594,14 @@ def run_forever(cfg, model):
                     # Evidence store: persist EVERY fire-marked frame (JPEG +
                     # SQLite metadata) independent of the MIN_HITS alert gate /
                     # cooldown (a real fire below the accumulation bar still
-                    # leaves a durable record). Runs before the gate below.
-                    store_fire_frame(cfg, cam, raw, dets)
+                    # leaves a durable record). The gate is evaluated BEFORE
+                    # storing so the frame's `alerted` column reflects whether
+                    # THIS poll also crossed the gate and produced a Telegram
+                    # alert (the portal uses alerted vs raw evidence frames).
                     best = max(d["score"] for d in dets)
-                    if hits >= min_hits and not in_cooldown:
+                    will_alert = hits >= min_hits and not in_cooldown
+                    store_fire_frame(cfg, cam, raw, dets, alerted=will_alert)
+                    if will_alert:
                         st["last_alert"] = now
                         st["recent"].clear()
                         LOG(f"{cam}: ALERT ({hits} fire in last {window} "

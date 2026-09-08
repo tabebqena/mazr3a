@@ -16,6 +16,24 @@ read-write into the portal container (portal never writes; query_only guards).
 """
 import os
 import sqlite3
+import struct
+
+
+def _num(value):
+    """Normalize a stored numeric to float.
+
+    firewatch writes REAL coords, but legacy rows (pre-2026-09-08 store) may
+    hold raw little-endian float32 BLOBs; coerce both so the API always returns
+    numbers (FastAPI cannot JSON-encode bytes).
+    """
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) >= 4:
+            return struct.unpack("<f", bytes(value[:4]))[0]
+        return 0.0
+    try:
+        return float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def open_db(path):
@@ -56,10 +74,10 @@ def _row_to_dict(row):
     return {
         "id": row["id"],
         "camera": row["camera"],
-        "captured_at": row["captured_at"],
+        "captured_at": _num(row["captured_at"]),
         "ts_utc": row["ts_utc"],
-        "best_score": row["best_score"],
-        "score_threshold": row["score_threshold"],
+        "best_score": _num(row["best_score"]),
+        "score_threshold": _num(row["score_threshold"]),
         "alerted": bool(row["alerted"]),
         "jpg_path": row["jpg_path"],
     }
@@ -96,9 +114,9 @@ def list_frames(db_path, *, camera=None, alerted=None, label=None,
             for d in det_rows:
                 by_frame.setdefault(d["frame_id"], []).append({
                     "label": d["label"],
-                    "score": d["score"],
-                    "x1": d["x1"], "y1": d["y1"],
-                    "x2": d["x2"], "y2": d["y2"],
+                    "score": _num(d["score"]),
+                    "x1": _num(d["x1"]), "y1": _num(d["y1"]),
+                    "x2": _num(d["x2"]), "y2": _num(d["y2"]),
                 })
             for it in items:
                 it["detections"] = by_frame.get(it["id"], [])

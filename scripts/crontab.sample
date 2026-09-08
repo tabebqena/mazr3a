@@ -33,3 +33,11 @@
 # quality change, then "after_bump" once it's applied. CSV rows are bounded by
 # --max-rows (default 20000).
 * * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre >> /dev/null 2>&1
+
+# Firewatch evidence-store cleanup (python, run INSIDE the firewatch container)
+# - every 30 minutes. Caps stored firewatch JPEGs at MAX_IMAGES_GB (default 2)
+# and expires DB rows older than ROW_EXPIRE_DAYS (default 90 = 3 months).
+# Tunables: config/cleanup_firewatch.conf (mounted at /config in the container).
+# Runs as the firewatch user (uid 1000, owner of the evidence files) via docker
+# exec, so it can delete rows + images; it never touches Frigate's media files.
+*/30 * * * * /usr/bin/docker exec firewatch python /scripts/cleanup_firewatch_store.py >> /dev/null 2>&1

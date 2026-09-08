@@ -47,6 +47,7 @@
           </label>
         </div>
         <div id="live-stage" class="stage">
+          <div id="live-spinner" class="spinner hidden" title="Connecting…"></div>
           <video id="live-video" autoplay muted playsinline class="hidden"></video>
           <img id="live-img" alt="live camera" class="hidden">
           <div id="live-overlay" class="overlay hidden">
@@ -70,10 +71,20 @@
             <option value="horse"><option value="sheep"><option value="cow">
             <option value="bird"><option value="knife">
           </datalist>
-          <button id="ev-refresh" type="button">Refresh</button>
+          <label>Time <select id="ev-time"></select></label>
+          <div id="ev-custom-wrap" class="time-custom hidden" data-preset-sel="ev-time">
+            <label>From <input id="ev-from" type="datetime-local"></label>
+            <label>To <input id="ev-to" type="datetime-local"></label>
+          </div>
+          <button id="ev-refresh" type="button" title="Reload events">Refresh</button>
         </div>
         <div id="ev-status" class="status"></div>
         <div id="ev-list" class="list"></div>
+        <div id="ev-pager" class="pager hidden">
+          <button id="ev-prev" type="button">&#8249; Prev</button>
+          <span id="ev-pageno" class="pageno"></span>
+          <button id="ev-next" type="button">Next &#8250;</button>
+        </div>
       </section>
 
       <!-- Firewatch fire detections & alerts -->
@@ -87,11 +98,21 @@
               <option value="smoke">smoke</option>
             </select>
           </label>
+          <label>Time <select id="fw-time"></select></label>
+          <div id="fw-custom-wrap" class="time-custom hidden" data-preset-sel="fw-time">
+            <label>From <input id="fw-from" type="datetime-local"></label>
+            <label>To <input id="fw-to" type="datetime-local"></label>
+          </div>
           <label class="check"><input id="fw-alerted" type="checkbox" checked> alerts only</label>
-          <button id="fw-refresh" type="button">Refresh</button>
+          <button id="fw-refresh" type="button" title="Reload fire alerts">Refresh</button>
         </div>
         <div id="fw-status" class="status"></div>
         <div id="fw-list" class="grid"></div>
+        <div id="fw-pager" class="pager hidden">
+          <button id="fw-prev" type="button">&#8249; Prev</button>
+          <span id="fw-pageno" class="pageno"></span>
+          <button id="fw-next" type="button">Next &#8250;</button>
+        </div>
       </section>
     </main>
   </div>

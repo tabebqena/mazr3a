@@ -119,7 +119,7 @@ function onRoute() {
     $('#view-' + v).classList.toggle('hidden', v !== view));
   if (view === 'live') ensureLive();
   else if (view === 'events') loadEvents();
-  else if (view === 'fire') loadFire();
+  else if (view === 'fire') reloadFire();   // page-based: reset to page 1 on entry
 }
 
 async function loadCameras() {
@@ -182,6 +182,14 @@ function showOverlay(msg) {
 function hideOverlay() {
   $('#live-overlay').classList.add('hidden');
 }
+function showSpinner() {
+  const s = $('#live-spinner');
+  if (s) s.classList.remove('hidden');
+}
+function hideSpinner() {
+  const s = $('#live-spinner');
+  if (s) s.classList.add('hidden');
+}
 function showVideo() {
   $('#live-video').classList.remove('hidden');
   $('#live-img').classList.add('hidden');
@@ -202,6 +210,7 @@ function startStream(cam) {
   state.live.cam = cam;
   state.live.playing = true;
   hideOverlay();
+  showSpinner();            // spinner until the first live frame arrives
   startHls(cam, tok);
   resetIdle();
 }
@@ -229,6 +238,7 @@ function startHls(cam, tok) {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       if (state.live.playing && tok === liveTok && cam === state.live.cam) {
         $('#live-status').textContent = 'Live (HLS)';
+        hideSpinner();
         video.play().catch(() => {});
       }
     });
@@ -249,6 +259,7 @@ function startHls(cam, tok) {
     video.play().then(() => {
       if (state.live.playing && tok === liveTok && cam === state.live.cam) {
         $('#live-status').textContent = 'Live (HLS)';
+        hideSpinner();
       }
     }).catch(() => hlsFallback(cam, tok));
     return;
@@ -261,6 +272,7 @@ function startHls(cam, tok) {
 function startSnapshot(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam) return;
   state.live.mode = 'snap';
+  showSpinner();            // spinner until the first detect frame loads
   showImage();
   $('#live-status').textContent = 'Live (snapshot ~1 fps)';
   scheduleFrame(cam, tok);
@@ -273,6 +285,7 @@ function scheduleFrame(cam, tok) {
   img.onload = () => {
     if (state.live.playing && cam === state.live.cam && tok === liveTok
         && state.live.mode === 'snap') {
+      hideSpinner();
       liveTimer = setTimeout(() => scheduleFrame(cam, tok), LIVE_POLL_MS);
     }
   };
@@ -299,6 +312,7 @@ function stopStream() {
   if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.add('hidden');
+  hideSpinner();
   $('#live-status').textContent = '';
 }
 
@@ -310,26 +324,121 @@ function resume() {
 $('#cam-select').addEventListener('change', (e) => startStream(e.target.value));
 $('#overlay-resume').addEventListener('click', resume);
 
-/* ---------------- Frigate events & detections ---------------- */
+/* ---------------- shared time-range + pagination helpers ---------------- */
+const TIME_PRESETS = [
+  ['', 'All time'], ['1h', 'Last 1 hour'], ['6h', 'Last 6 hours'],
+  ['24h', 'Last 24 hours'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'],
+  ['custom', 'Custom…'],
+];
+const TIME_WINDOW_S = { '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
+
+function fillTimeSelect(sel) {
+  sel.innerHTML = TIME_PRESETS.map(t =>
+    '<option value="' + esc(t[0]) + '">' + esc(t[1]) + '</option>').join('');
+}
+
+// Wire one view's Time preset select + custom From/To row; any change auto-refreshes.
+function wireTimeControls(prefix, onApply) {
+  const timeSel = $('#' + prefix + '-time');
+  const wrap = $('#' + prefix + '-custom-wrap');
+  const fromEl = $('#' + prefix + '-from');
+  const toEl = $('#' + prefix + '-to');
+  fillTimeSelect(timeSel);
+  const sync = () => {
+    const custom = timeSel.value === 'custom';
+    wrap.classList.toggle('hidden', !custom);
+    if (!custom) { fromEl.value = ''; toEl.value = ''; }
+  };
+  timeSel.addEventListener('change', () => { sync(); onApply(); });
+  fromEl.addEventListener('change', onApply);
+  toEl.addEventListener('change', onApply);
+  sync();
+}
+
+// Active time window -> {after, before} (epoch s). Filled custom From/To win;
+// otherwise a preset is a trailing window ending now.
+function timeRange(timeSel, fromEl, toEl) {
+  const now = Math.floor(Date.now() / 1000);
+  const r = {};
+  const after = fromEl.value ? Math.floor(new Date(fromEl.value).getTime() / 1000) : null;
+  const before = toEl.value ? Math.floor(new Date(toEl.value).getTime() / 1000) + 60 : null;
+  if (after != null && !isNaN(after)) r.after = after;
+  if (before != null && !isNaN(before)) r.before = before;
+  if (r.after || r.before) return r;        // custom From/To present
+  const key = timeSel.value;
+  if (key && TIME_WINDOW_S[key]) return { after: now - TIME_WINDOW_S[key] };
+  return {};
+}
+
+function hidePager(prefix) {
+  const p = $('#' + prefix + '-pager');
+  if (p) p.classList.add('hidden');
+}
+function renderPager(prefix, page, pages) {
+  const pager = $('#' + prefix + '-pager');
+  if (!pager) return;
+  if (pages <= 1) { pager.classList.add('hidden'); return; }
+  pager.classList.remove('hidden');
+  const prev = $('#' + prefix + '-prev');
+  const next = $('#' + prefix + '-next');
+  if (prev) prev.disabled = page <= 1;
+  if (next) next.disabled = page >= pages;
+  const pn = $('#' + prefix + '-pageno');
+  if (pn) pn.textContent = 'Page ' + page + ' / ' + pages;
+}
+
+/* ---------------- Frigate events & detections (paged + time-filtered) -------- */
+const EV_PAGE = 24;
+const EV_MAX = 5000;     // client-side paging cap for a single Frigate fetch
+let evAll = [];          // current filter's full event array (newest first)
+let evPage = 1;
+
 $('#ev-refresh').addEventListener('click', loadEvents);
 $('#ev-cam').addEventListener('change', loadEvents);
 $('#ev-label').addEventListener('change', loadEvents);
+wireTimeControls('ev', loadEvents);
+$('#ev-prev').addEventListener('click', () => {
+  if (evPage > 1) { evPage--; renderEvPage(); }
+});
+$('#ev-next').addEventListener('click', () => {
+  if (evPage < Math.max(1, Math.ceil(evAll.length / EV_PAGE))) { evPage++; renderEvPage(); }
+});
 
 async function loadEvents() {
   const box = $('#ev-list');
   const st = $('#ev-status');
   st.textContent = 'Loading…';
+  hidePager('ev');
   try {
-    const p = new URLSearchParams({ limit: '60' });
+    const { after, before } = timeRange($('#ev-time'), $('#ev-from'), $('#ev-to'));
+    const p = new URLSearchParams({ limit: String(EV_MAX) });
     const cam = $('#ev-cam').value; if (cam) p.set('camera', cam);
     const lab = $('#ev-label').value.trim(); if (lab) p.set('label', lab);
+    if (after) p.set('after', String(after));
+    if (before) p.set('before', String(before));
     const events = await api('/api/events?' + p.toString());
+    evAll = Array.isArray(events) ? events : [];
+    evPage = 1;
     st.textContent = '';
-    renderEvents(events, box);
+    renderEvPage();
   } catch (e) {
+    evAll = [];
     st.textContent = '';
     box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    hidePager('ev');
   }
+}
+
+function renderEvPage() {
+  const box = $('#ev-list');
+  const pages = Math.max(1, Math.ceil(evAll.length / EV_PAGE));
+  if (evPage > pages) evPage = pages;
+  const slice = evAll.slice((evPage - 1) * EV_PAGE, evPage * EV_PAGE);
+  $('#ev-status').textContent =
+    (evAll.length ? evAll.length + ' event(s)' : '') +
+    (evAll.length >= EV_MAX ? ' (older events omitted - narrow the time filter)' : '');
+  renderEvents(slice, box);
+  renderPager('ev', evPage, pages);
 }
 
 function renderEvents(events, box) {
@@ -358,29 +467,53 @@ function renderEvents(events, box) {
   }).join('');
 }
 
-/* ---------------- Firewatch fire detections & alerts ---------------- */
-$('#fw-refresh').addEventListener('click', () => loadFire());
-$('#fw-cam').addEventListener('change', () => loadFire());
-$('#fw-label').addEventListener('change', () => loadFire());
-$('#fw-alerted').addEventListener('change', () => loadFire());
+/* ---------------- Firewatch fire detections & alerts (paged + time-filtered) -- */
+const FW_PAGE = 24;
+let fwPage = 1;
+let fwPages = 1;
 
-let fwOffset = 0;
-async function loadFire(reset) {
-  if (reset !== false) { reset = true; fwOffset = 0; fwDets = {}; }
+function reloadFire() {
+  fwPage = 1;
+  fwDets = {};
+  loadFire();
+}
+$('#fw-refresh').addEventListener('click', reloadFire);
+$('#fw-cam').addEventListener('change', reloadFire);
+$('#fw-label').addEventListener('change', reloadFire);
+$('#fw-alerted').addEventListener('change', reloadFire);
+wireTimeControls('fw', reloadFire);
+$('#fw-prev').addEventListener('click', () => {
+  if (fwPage > 1) { fwPage--; loadFire(); }
+});
+$('#fw-next').addEventListener('click', () => {
+  if (fwPage < fwPages) { fwPage++; loadFire(); }
+});
+
+async function loadFire() {
   const box = $('#fw-list');
   const st = $('#fw-status');
-  if (reset) st.textContent = 'Loading…';
+  st.textContent = 'Loading…';
+  hidePager('fw');
   try {
-    const p = new URLSearchParams({ limit: '24', offset: String(fwOffset) });
+    const { after, before } = timeRange($('#fw-time'), $('#fw-from'), $('#fw-to'));
+    const p = new URLSearchParams({
+      limit: String(FW_PAGE),
+      offset: String((fwPage - 1) * FW_PAGE),
+    });
     const cam = $('#fw-cam').value; if (cam) p.set('camera', cam);
     const lab = $('#fw-label').value; if (lab) p.set('label', lab);
     if ($('#fw-alerted').checked) p.set('alerted', '1');
+    if (after) p.set('after', String(after));
+    if (before) p.set('before', String(before));
     const data = await api('/api/fire/events?' + p.toString());
-    st.textContent = data.total ? data.total + ' record(s)' : '';
-    if (reset) box.innerHTML = '';
+    const total = data.total || 0;
+    fwPages = Math.max(1, Math.ceil(total / FW_PAGE));
+    if (fwPage > fwPages) fwPage = fwPages;
+    st.textContent = total ? total + ' record(s)' : '';
+    box.innerHTML = '';
     if (!data.items.length) {
-      if (reset) box.innerHTML = '<div class="empty">No fire evidence</div>';
-      removeLoadMore();
+      box.innerHTML = '<div class="empty">No fire evidence</div>';
+      hidePager('fw');
       return;
     }
     const frag = document.createElement('div');
@@ -390,11 +523,11 @@ async function loadFire(reset) {
       if (img.complete) drawFireBoxes(img);
     });
     $$('.card', frag).forEach(c => box.appendChild(c));
-    fwOffset += data.items.length;
-    ensureLoadMore(fwOffset < data.total);
+    renderPager('fw', fwPage, fwPages);
   } catch (e) {
     st.textContent = '';
-    if (reset) box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    hidePager('fw');
   }
 }
 
@@ -436,26 +569,6 @@ function drawFireBoxes(img) {
     return '<div class="fw-box ' + cls + '" style="left:' + x1 + '%;top:' + y1 + '%;' +
       'width:' + Math.max(0, x2 - x1) + '%;height:' + Math.max(0, y2 - y1) + '%"></div>';
   }).join('');
-}
-
-function ensureLoadMore(show) {
-  let lm = $('#fw-loadmore');
-  if (show) {
-    if (!lm) {
-      lm = document.createElement('button');
-      lm.id = 'fw-loadmore';
-      lm.className = 'loadmore';
-      lm.textContent = 'Load more';
-      lm.addEventListener('click', () => loadFire(false));
-      $('#fw-list').after(lm);
-    }
-  } else {
-    removeLoadMore();
-  }
-}
-function removeLoadMore() {
-  const lm = $('#fw-loadmore');
-  if (lm) lm.remove();
 }
 
 /* ---------------- start ---------------- */

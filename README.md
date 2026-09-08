@@ -373,9 +373,10 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   [`config/portal.conf`](config/portal.conf) (PBKDF2 hashes). Copy the committed
   [`config/portal.conf.example`](config/portal.conf.example) and add a user with
   `python portal/genpass.py --username NAME`. Signed HttpOnly session cookie.
-- **Live view** — one camera by default with a switcher. Primary: **HLS** playback proxied
-  same-origin through the portal (`GET /api/live/<cam>/hls/stream.m3u8` → Frigate's embedded
-  go2rtc HLS, which requires the cameras registered in go2rtc via a `go2rtc.streams` block in
+- **Live view** — one camera by default with a switcher and a loading spinner while the
+  stream connects. Primary: **HLS** playback proxied same-origin through the portal
+  (`GET /api/live/<cam>/hls/stream.m3u8` → Frigate's embedded go2rtc HLS, which requires the
+  cameras registered in go2rtc via a `go2rtc.streams` block in
   [`config/config.yaml`](config/config.yaml) with `{FRIGATE_*}` credentials), played with
   hls.js (vendored under `portal/static/vendor/`; native HLS on Safari). go2rtc in this
   Frigate build has no MSE — HLS is its reliable TCP/tunnel-friendly live transport. Fallback:
@@ -384,11 +385,16 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   an admin in [`config/portal.conf`](config/portal.conf) (`STREAM_IDLE_TIMEOUT_S`, default
   300 s; there is **no in-UI control**) so the go2rtc camera pull is released when nobody is
   watching.
-- **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class.
+- **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class
+  with **numbered pagination** (Prev/Next + "Page X of Y") and a **time filter** (quick
+  presets 1 h/6 h/24 h/7 d/30 d/All or a custom From/To). Filters **auto-refresh**; the
+  compact Refresh button reloads manually. (Events are fetched as one bounded set - up to
+  5000 - and paged client-side, since the Frigate API has no offset/total.)
 - **Fire alerts** — Firewatch evidence frames with a detection-box overlay and an **alerted**
   badge for frames that produced a Telegram alert (the `frames.alerted` flag added by
   `firewatch.py`). The view **defaults to alerts only** (uncheck "alerts only" to browse all
-  detections).
+  detections), has **numbered pagination** and the same preset/custom **time filter**, and
+  auto-refreshes when any filter changes.
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
 `live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the Access policy,

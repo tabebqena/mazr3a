@@ -133,14 +133,16 @@ services:
   # detections, fire alerts). See plans/portal-web-app.md (local only).
   #
   # PUBLIC ACCESS: the whole host sits behind a Cloudflare Tunnel with an
-  # Access policy on live.mazr3a.garden. The tunnel routes the portal root
-  # -> host:8080 (this service) and a /live/* path -> Frigate go2rtc on
-  # host:5000, BOTH under the same Access policy - so the direct go2rtc
-  # MSE stream URLs the SPA plays (/api/stream-url/<cam>) are gated at the
-  # edge, and the portal login only gates the dashboard/JSON API. Single
-  # active stream + an idle time watch stop the stream when idle, which
-  # releases the go2rtc camera pull (low CPU - go2rtc remuxes; the browser
-  # decodes H.264, so no host re-encode).
+  # Access policy on live.mazr3a.garden; the tunnel maps the portal root ->
+  # host:8080 (this service) under that Access policy, and the portal login
+  # gates the dashboard/JSON API on top.
+  #
+  # LIVE VIEW = DETECT-SNAPSHOT mode: the SPA polls the proxied
+  # /api/live/<cam>/latest.jpg (Frigate's latest.jpg detect frame, ~1 fps,
+  # no extra decode). MSE/go2rtc true streaming is DEFERRED (go2rtc has no
+  # camera streams configured here; Frigate 0.17 serves MSE over a
+  # WebSocket). Single active camera + an idle time watch stop the refresh
+  # when idle, releasing the camera pull when nobody is watching.
   #
   # Dependency-only image (./portal carries deps; python:3.11-slim +
   # fastapi/uvicorn/httpx). Code + config are mounted read-only so edits

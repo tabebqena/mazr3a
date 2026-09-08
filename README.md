@@ -373,22 +373,21 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   [`config/portal.conf`](config/portal.conf) (PBKDF2 hashes). Copy the committed
   [`config/portal.conf.example`](config/portal.conf.example) and add a user with
   `python portal/genpass.py --username NAME`. Signed HttpOnly session cookie.
-- **Live view** — one camera by default with a switcher (single active stream). The SPA plays
-  a direct **go2rtc MSE** URL from `GET /api/stream-url/<cam>` (go2rtc remuxes H.264; the
-  browser decodes — no host re-encode). An **idle time watch** stops the stream after a
-  configurable timeout (default 300 s in `config/portal.conf`, with a per-browser override)
-  so the go2rtc camera pull is released when nobody is watching.
+- **Live view** — one camera by default with a switcher. Snapshot mode: the SPA polls the
+  proxied `GET /api/live/<cam>/latest.jpg` (Frigate's already-decoded detect frame, ~1 fps,
+  no extra decode). An **idle time watch** stops the refresh after a configurable timeout
+  (default 300 s in `config/portal.conf`, with a per-browser override) so the camera pull
+  stops when nobody is watching. MSE/go2rtc true streaming is deferred (go2rtc has no camera
+  streams configured here yet).
 - **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class.
 - **Fire alerts** — Firewatch evidence frames with a detection-box overlay and an **alerted**
   badge for frames that produced a Telegram alert (the `frames.alerted` flag added by
   `firewatch.py`).
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
-`live.mazr3a.garden`. The tunnel maps the portal root → `host:8080` and a `/live/*` path →
-Frigate go2rtc on `host:5000`, both under the same Access policy — so the direct MSE stream
-URLs the SPA plays are gated at the edge, and the portal login only gates the dashboard/API.
-Frigate REST/DB and the Firewatch WAL DB (`./media/firewatch.db`) are reached only
-server-side by the portal.
+`live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the Access policy,
+and the portal login gates the dashboard/API on top. Frigate REST/DB and the Firewatch WAL
+DB (`./media/firewatch.db`) are reached only server-side by the portal.
 
 ```bash
 docker compose up -d --build portal

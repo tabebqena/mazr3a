@@ -22,10 +22,10 @@ DEFAULTS = {
     "STREAM_IDLE_TIMEOUT_S": "300",   # live-view idle time watch default
     "DEFAULT_CAMERA": "",             # optional landing camera override
     "FRIGATE_API": "http://frigate:5000",
-    # Public go2rtc MSE URL template the SPA plays (Access-gated /live/* on the
-    # Cloudflare Tunnel). {camera} is substituted. Set to the exact go2rtc MSE
-    # URL confirmed on the host (host spike).
-    "LIVE_URL_TMPL": "https://live.mazr3a.garden/live/{camera}",
+    # Live view is DETECT-SNAPSHOT mode (GET /api/live/<cam>/latest.jpg polls
+    # Frigate's latest.jpg at ~1 fps). MSE/go2rtc live streaming is deferred:
+    # go2rtc currently has no camera streams configured, and Frigate 0.17's MSE
+    # transport is a WebSocket - revisit when go2rtc streams are enabled.
     # firewatch evidence: DB path + stored-jpg prefix remap. The host ./media
     # tree is mounted at /media here; firewatch sees it at /media/firewatch
     # (STORE_DIR), so stored paths /media/firewatch/<cam>/x.jpg -> /media/<cam>/x.jpg.

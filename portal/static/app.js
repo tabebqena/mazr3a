@@ -1,8 +1,11 @@
 /* mazr3a CCTV portal SPA - vanilla JS.
-   Views: Live (single camera + idle time watch), Frigate Events & detections,
-   Firewatch fire detections & alerts. Talks to the portal /api/* (same origin,
-   session cookie). Live video is a direct go2rtc MSE URL (Access-gated at the
-   Cloudflare Tunnel). */
+   Views: Login, Live (single camera, detect-snapshot refresh ~1 fps + idle
+   time watch), Frigate Events & detections, Firewatch fire detections &
+   alerts. Talks to the portal /api/* (same origin, session cookie).
+
+   Live is SNAPSHOT mode: the SPA polls the portal-proxied
+   /api/live/<cam>/latest.jpg (Frigate's detect frame). MSE/go2rtc live
+   streaming is deferred (go2rtc has no camera streams configured here). */
 'use strict';
 
 const $ = (s, el) => (el || document).querySelector(s);
@@ -15,6 +18,9 @@ const state = {
   live: { cam: null, playing: false },
   idleSec: 300,
 };
+
+const LIVE_POLL_MS = 1100;   // ~1 fps (matches Frigate detect fps)
+let liveTimer = null;
 
 let fwDets = {};   // fire frame id -> detections (for box overlay)
 
@@ -107,7 +113,7 @@ async function boot() {
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
   const view = ['live', 'events', 'fire'].indexOf(raw) >= 0 ? raw : 'live';
-  if (view !== 'live') stopStream();           // only the Live view streams
+  if (view !== 'live') stopStream();           // only the Live view refreshes
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
   ['live', 'events', 'fire'].forEach(v =>
     $('#view-' + v).classList.toggle('hidden', v !== view));
@@ -124,7 +130,7 @@ async function loadCameras() {
   const camOpts = names.map(n => {
     const c = state.cameras.find(x => x.name === n);
     const tag = c && !c.online ? ' (offline)' : '';
-    return `<option value="${esc(n)}">${esc(n)}${tag}</option>`;
+    return '<option value="' + esc(n) + '">' + esc(n) + tag + '</option>';
   }).join('');
 
   $('#cam-select').innerHTML = camOpts;
@@ -137,16 +143,7 @@ async function loadCameras() {
   if (state.live.cam) $('#cam-select').value = state.live.cam;
 }
 
-/* ---------------- Live view + MSE + idle time watch ---------------- */
-const player = new G2MSEPlayer($('#live-video'));
-player.onerror = (e) => {
-  showOverlay('Live stream unavailable (' + e.message + ')');
-};
-player.onstatus = (m) => {
-  const st = $('#live-status');
-  if (m) st.textContent = m;
-};
-
+/* ---------------- Live view (snapshot mode) + idle time watch ---------------- */
 let idleTimer = null;
 function resetIdle() {
   if (idleTimer) clearTimeout(idleTimer);
@@ -158,7 +155,7 @@ function onIdleTimeout() {
   stopStream();
   const s = state.idleSec;
   const txt = s >= 60 ? Math.round(s / 60) + ' minutes' : s + ' seconds';
-  showOverlay('Stream paused after ' + txt + ' without activity.');
+  showOverlay('Live refresh paused after ' + txt + ' without activity.');
 }
 ['mousemove', 'mousedown', 'keydown', 'touchstart', 'pointerdown', 'wheel', 'scroll']
   .forEach(ev => document.addEventListener(ev, () => {
@@ -175,29 +172,46 @@ function hideOverlay() {
 
 function ensureLive() {
   if (!state.live.cam) return;
-  if (state.live.playing && player.connected) return; // already streaming
+  if (state.live.playing && liveTimer) return;   // already refreshing
   startStream(state.live.cam);
 }
+
 function startStream(cam) {
   stopStream();
   state.live.cam = cam;
   state.live.playing = true;
   hideOverlay();
-  $('#live-status').textContent = 'Connecting ' + cam + '…';
-  api('/api/stream-url/' + encodeURIComponent(cam)).then(r => {
-    player.play(r.url);
-    resetIdle();
-  }).catch(e => {
-    $('#live-status').textContent = '';
-    showOverlay('Cannot start stream: ' + e.message);
-  });
+  $('#live-status').textContent = 'Loading ' + cam + '…';
+  scheduleFrame(cam);
+  resetIdle();
 }
+
+function scheduleFrame(cam) {
+  if (!state.live.playing || cam !== state.live.cam) return;
+  const img = $('#live-img');
+  const cur = state.live.cam;
+  img.onload = () => {
+    if (!state.live.playing || cam !== cur) return;
+    $('#live-status').textContent = 'Live';
+    liveTimer = setTimeout(() => scheduleFrame(cam), LIVE_POLL_MS);
+  };
+  img.onerror = () => {
+    if (!state.live.playing || cam !== cur) return;
+    $('#live-status').textContent = cam + ' unavailable - retrying';
+    liveTimer = setTimeout(() => scheduleFrame(cam), 3000);
+  };
+  img.src = '/api/live/' + encodeURIComponent(cam) + '/latest.jpg?t=' + Date.now();
+}
+
 function stopStream() {
   state.live.playing = false;
+  if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-  player.stop();
+  const img = $('#live-img');
+  if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
   $('#live-status').textContent = '';
 }
+
 function resume() {
   if (!state.live.cam) return;
   startStream(state.live.cam);
@@ -245,20 +259,19 @@ function renderEvents(events, box) {
     const cam = esc(ev.camera || '');
     const score = ev.top_score != null ? ev.top_score : ev.score || 0;
     const thumb = ev.has_snapshot
-      ? `<img loading="lazy" src="/api/events/${ev.id}/snapshot.jpg" alt="">`
+      ? '<img loading="lazy" src="/api/events/' + ev.id + '/snapshot.jpg" alt="">'
       : '<div class="empty" style="padding:10px">no snapshot</div>';
     const clip = ev.has_clip
-      ? `<video class="media" controls preload="none" src="/api/events/${ev.id}/clip.mp4"></video>`
+      ? '<video class="media" controls preload="none" src="/api/events/' + ev.id + '/clip.mp4"></video>'
       : '';
-    return `<div class="card">
-      <div class="thumb">${thumb}</div>
-      <div class="meta">
-        <span class="tag">${lab}</span>
-        <span class="tag">${cam}</span>
-        <span>score ${Number(score).toFixed(2)}</span>
-        <span class="muted">${fmtDT(ev.start_time)}</span>
-      </div>${clip}
-    </div>`;
+    return '<div class="card">' +
+      '<div class="thumb">' + thumb + '</div>' +
+      '<div class="meta">' +
+        '<span class="tag">' + lab + '</span>' +
+        '<span class="tag">' + cam + '</span>' +
+        '<span>score ' + Number(score).toFixed(2) + '</span>' +
+        '<span class="muted">' + fmtDT(ev.start_time) + '</span>' +
+      '</div>' + clip + '</div>';
   }).join('');
 }
 
@@ -280,7 +293,7 @@ async function loadFire(reset) {
     const lab = $('#fw-label').value; if (lab) p.set('label', lab);
     if ($('#fw-alerted').checked) p.set('alerted', '1');
     const data = await api('/api/fire/events?' + p.toString());
-    st.textContent = data.total ? `${data.total} record(s)` : '';
+    st.textContent = data.total ? data.total + ' record(s)' : '';
     if (reset) box.innerHTML = '';
     if (!data.items.length) {
       if (reset) box.innerHTML = '<div class="empty">No fire evidence</div>';
@@ -307,23 +320,23 @@ function fireCard(f) {
   const labels = [...new Set((f.detections || []).map(d => d.label))];
   const labelTags = labels.map(l => {
     const c = String(l).toLowerCase();
-    return `<span class="tag ${c === 'smoke' ? 'smoke' : 'fire'}">${esc(l)}</span>`;
+    return '<span class="tag ' + (c === 'smoke' ? 'smoke' : 'fire') + '">' + esc(l) + '</span>';
   }).join(' ');
-  return `<div class="card">
-    <div class="thumb">
-      ${f.alerted ? '<span class="badge">alerted</span>' : '<span class="badge ok">detection</span>'}
-      <div class="fw-imgwrap">
-        <img class="fw-img" data-id="${f.id}" src="/api/fire/${f.id}/image.jpg" alt="fire evidence">
-        <div class="fw-overlays"></div>
-      </div>
-    </div>
-    <div class="meta">
-      ${labelTags}
-      <span>best ${Number(f.best_score).toFixed(2)}</span>
-      <span class="tag">${esc(f.camera)}</span>
-      <span class="muted">${esc(f.ts_utc || '')}</span>
-    </div>
-  </div>`;
+  return '<div class="card">' +
+    '<div class="thumb">' +
+      (f.alerted ? '<span class="badge">alerted</span>' : '<span class="badge ok">detection</span>') +
+      '<div class="fw-imgwrap">' +
+        '<img class="fw-img" data-id="' + f.id + '" src="/api/fire/' + f.id + '/image.jpg" alt="fire evidence">' +
+        '<div class="fw-overlays"></div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="meta">' +
+      labelTags +
+      '<span>best ' + Number(f.best_score).toFixed(2) + '</span>' +
+      '<span class="tag">' + esc(f.camera) + '</span>' +
+      '<span class="muted">' + esc(f.ts_utc || '') + '</span>' +
+    '</div>' +
+  '</div>';
 }
 
 function drawFireBoxes(img) {
@@ -337,8 +350,8 @@ function drawFireBoxes(img) {
     const x1 = d.x1 / nw * 100, y1 = d.y1 / nh * 100;
     const x2 = d.x2 / nw * 100, y2 = d.y2 / nh * 100;
     const cls = String(d.label).toLowerCase() === 'smoke' ? 'smoke' : '';
-    return `<div class="fw-box ${cls}" style="left:${x1}%;top:${y1}%;` +
-      `width:${Math.max(0, x2 - x1)}%;height:${Math.max(0, y2 - y1)}%"></div>`;
+    return '<div class="fw-box ' + cls + '" style="left:' + x1 + '%;top:' + y1 + '%;' +
+      'width:' + Math.max(0, x2 - x1) + '%;height:' + Math.max(0, y2 - y1) + '%"></div>';
   }).join('');
 }
 

@@ -166,16 +166,20 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
     return {"default_camera": default_cam, "cameras": items}
 
 
-@app.get("/api/stream-url/{camera}")
-async def stream_url(camera: str, request: Request,
-                     user: dict = Depends(current_user)):
+@app.get("/api/live/{camera}/latest.jpg")
+async def live_snapshot(camera: str, request: Request,
+                        user: dict = Depends(current_user)):
+    """Live view - detect-snapshot mode (MSE/go2rtc deferred).
+
+    Frigate serves /api/<camera>/latest.jpg from its already-decoded detect
+    frame (updates at detect fps, ~1 fps here; no extra decode), so the SPA
+    polls this authenticated proxy JPEG while a viewer watches. go2rtc MSE live
+    streaming is deferred (go2rtc has no camera streams configured yet).
+    """
     if not frigate.valid_camera_name(camera):
         raise HTTPException(status_code=400, detail="invalid camera name")
-    tmpl = pconf.get(_cfg(request), "LIVE_URL_TMPL",
-                     "https://live.mazr3a.garden/live/{camera}")
-    if "{camera}" not in tmpl:
-        raise HTTPException(status_code=500, detail="LIVE_URL_TMPL lacks {camera}")
-    return {"camera": camera, "url": tmpl.replace("{camera}", camera)}
+    return await _frigate_media(request, "/api/{}/latest.jpg".format(camera),
+                                "image/jpeg")
 
 
 # --------------------------------------------------------------------------

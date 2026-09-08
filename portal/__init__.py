@@ -2,8 +2,9 @@
 Frigate + Firewatch stack.
 
 Backend API routes live under /api/* behind a signed HttpOnly session cookie;
-Frigate REST/DB data is exposed only through those routes. Live MSE media is
-played by the SPA from a DIRECT go2rtc URL returned by GET /api/stream-url/<cam>
-- that URL is gated at the edge by the Cloudflare Tunnel Access policy, not by
-the portal cookie. See plans/portal-web-app.md.
+Frigate REST/DB data is exposed only through those routes. The Live view is
+DETECT-SNAPSHOT mode: the SPA polls GET /api/live/<cam>/latest.jpg (Frigate's
+already-decoded detect frame, ~1 fps, no extra decode). MSE/go2rtc true
+streaming is deferred (go2rtc has no camera streams configured on the host).
+See plans/portal-web-app.md.
 """

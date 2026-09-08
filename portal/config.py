@@ -22,12 +22,11 @@ DEFAULTS = {
     "STREAM_IDLE_TIMEOUT_S": "300",   # live-view idle time watch default
     "DEFAULT_CAMERA": "",             # optional landing camera override
     "FRIGATE_API": "http://frigate:5000",
-    # Live MSE stream URL template for the SPA player (Frigate 0.17 serves
-    # go2rtc MSE over a WebSocket at .../live/mse/api/ws?src=<cam>; the player
-    # swaps http->ws). {camera} is substituted. Set to the LAN/public base:
-    #   LAN  http://192.168.1.5:5000/live/mse/api/ws?src={camera}
-    #   PUblic https://live.mazr3a.garden/live/mse/api/ws?src={camera}
-    "LIVE_URL_TMPL": "https://live.mazr3a.garden/live/mse/api/ws?src={camera}",
+    # Live MSE is proxied SAME-ORIGIN through the portal:
+    # ws(s)://<portal>/api/live/<cam>/mse  ->  Frigate go2rtc MSE
+    # (.../live/mse/api/ws?src=<cam>). No public stream URL template is needed:
+    # the SPA connects to its own origin, which stays behind the session cookie
+    # and works through the Cloudflare Tunnel without extra path mappings.
     # firewatch evidence: DB path + stored-jpg prefix remap. The host ./media
     # tree is mounted at /media here; firewatch sees it at /media/firewatch
     # (STORE_DIR), so stored paths /media/firewatch/<cam>/x.jpg -> /media/<cam>/x.jpg.

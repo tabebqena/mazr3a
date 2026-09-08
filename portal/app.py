@@ -1,6 +1,7 @@
 """FastAPI app for the portal: auth + proxied Frigate JSON/media + Firewatch
 evidence, plus the static SPA. See portal/__init__.py and plans/portal-web-app.md.
 """
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,7 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+import websockets
+from fastapi import (
+    Depends, FastAPI, HTTPException, Request, Response, WebSocket,
+)
 from fastapi.responses import (
     FileResponse, JSONResponse, StreamingResponse,
 )
@@ -166,22 +170,59 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
     return {"default_camera": default_cam, "cameras": items}
 
 
-@app.get("/api/stream-url/{camera}")
-async def stream_url(camera: str, request: Request,
-                     user: dict = Depends(current_user)):
-    """Return the direct go2rtc MSE (WebSocket) URL for a camera.
+@app.websocket("/api/live/{camera}/mse")
+async def ws_live_mse(camera: str, websocket: WebSocket):
+    """Same-origin WebSocket-MSE proxy to Frigate's go2rtc.
 
-    Frigate 0.17 serves go2rtc MSE over a WebSocket at .../live/mse/api/ws?
-    src=<cam>. The SPA player swaps http->ws and connects; the URL is gated by
-    the Cloudflare Access policy (public) or reachable on the LAN.
+    The browser opens ws(s)://<portal>/api/live/<cam>/mse (same origin, behind
+    the session cookie) and this route relays both directions to Frigate's
+    embedded go2rtc MSE endpoint (.../live/mse/api/ws?src=<cam>). Same-origin
+    avoids Frigate's cross-origin WS/CSRF rejection and keeps auth + a single
+    public origin. go2rtc pulls the camera only while a viewer is connected.
     """
+    token = websocket.cookies.get(COOKIE_NAME)
+    if not (app.state.secret and auth.read_session(app.state.secret, token)):
+        await websocket.close(code=1008)
+        return
     if not frigate.valid_camera_name(camera):
-        raise HTTPException(status_code=400, detail="invalid camera name")
-    tmpl = pconf.get(_cfg(request), "LIVE_URL_TMPL", "")
-    if not tmpl or "{camera}" not in tmpl:
-        raise HTTPException(status_code=503,
-                            detail="LIVE_URL_TMPL not configured")
-    return {"camera": camera, "url": tmpl.replace("{camera}", camera)}
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    base = pconf.get(app.state.cfg, "FRIGATE_API", "http://frigate:5000")
+    up = base.replace("http", "ws") + "/live/mse/api/ws?src=" + camera
+    try:
+        async with websockets.connect(up, max_size=None,
+                                      open_timeout=15) as upws:
+            async def up_to_down():
+                try:
+                    async for msg in upws:
+                        if isinstance(msg, (bytes, bytearray)):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception:
+                    pass
+
+            async def down_to_up():
+                try:
+                    while True:
+                        m = await websocket.receive()
+                        t = m.get("type")
+                        if t == "websocket.receive_text":
+                            await upws.send(m["text"])
+                        elif t == "websocket.receive_bytes":
+                            await upws.send(m["bytes"])
+                        elif t in ("websocket.disconnect", "websocket.close"):
+                            break
+                except Exception:
+                    pass
+
+            await asyncio.gather(up_to_down(), down_to_up())
+    except Exception:
+        try:
+            await websocket.close(code=1011)
+        except Exception:
+            pass
 
 
 @app.get("/api/live/{camera}/latest.jpg")

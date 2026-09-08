@@ -206,19 +206,17 @@ function startStream(cam) {
 function startMse(cam, tok) {
   state.live.mode = 'mse';
   showVideo();
+  if (!player.supported) {
+    $('#live-status').textContent = 'MSE unsupported in this browser';
+    startSnapshot(cam, tok);
+    return;
+  }
   $('#live-status').textContent = 'Connecting ' + cam + '…';
-  api('/api/stream-url/' + encodeURIComponent(cam)).then(r => {
-    if (!state.live.playing || tok !== liveTok || cam !== state.live.cam) return;
-    if (r && r.url && player.supported) {
-      player.play(r.url);
-    } else {
-      $('#live-status').textContent = player.supported
-        ? 'No MSE stream URL configured' : 'MSE unsupported in this browser';
-      startSnapshot(cam, tok);
-    }
-  }).catch(() => {
-    if (state.live.playing && tok === liveTok) startSnapshot(cam, tok);
-  });
+  // Same-origin WebSocket proxy through the portal (behind the session cookie):
+  // ws(s)://<portal>/api/live/<cam>/mse  ->  Frigate go2rtc MSE.
+  const url = String(location.origin).replace(/^http/, 'ws') +
+    '/api/live/' + encodeURIComponent(cam) + '/mse';
+  player.play(url);
 }
 
 function startSnapshot(cam, tok) {

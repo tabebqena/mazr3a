@@ -374,13 +374,12 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   [`config/portal.conf.example`](config/portal.conf.example) and add a user with
   `python portal/genpass.py --username NAME`. Signed HttpOnly session cookie.
 - **Live view** — one camera by default with a switcher. Primary: **WebSocket-MSE** playback
-  of the direct go2rtc stream (`GET /api/stream-url/<cam>` → `…/live/mse/api/ws?src=<cam>`,
-  set `LIVE_URL_TMPL` in `config/portal.conf`), which requires the cameras registered in
-  go2rtc (a `go2rtc.streams` block in [`config/config.yaml`](config/config.yaml)). Fallback:
-  the SPA auto-falls back to detect-snapshot polling (`GET /api/live/<cam>/latest.jpg`,
-  ~1 fps) if MSE is unavailable. An **idle time watch** stops the stream after a configurable
-  timeout (default 300 s, per-browser override) so the go2rtc camera pull is released when
-  nobody is watching.
+  proxied same-origin through the portal (`/api/live/<cam>/mse` → Frigate go2rtc MSE, which
+  requires the cameras registered in go2rtc via a `go2rtc.streams` block in
+  [`config/config.yaml`](config/config.yaml)). Fallback: the SPA auto-falls back to
+  detect-snapshot polling (`GET /api/live/<cam>/latest.jpg`, ~1 fps) if MSE is unavailable.
+  An **idle time watch** stops the stream after a configurable timeout (default 300 s,
+  per-browser override) so the go2rtc camera pull is released when nobody is watching.
 - **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class.
 - **Fire alerts** — Firewatch evidence frames with a detection-box overlay and an **alerted**
   badge for frames that produced a Telegram alert (the `frames.alerted` flag added by

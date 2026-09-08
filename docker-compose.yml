@@ -137,12 +137,11 @@ services:
   # host:8080 (this service) under that Access policy, and the portal login
   # gates the dashboard/JSON API on top.
   #
-  # LIVE VIEW = WebSocket-MSE primary (direct go2rtc stream via
-  # /api/stream-url/<cam> -> .../live/mse/api/ws?src=<cam>, set in
-  # LIVE_URL_TMPL) with a detect-snapshot fallback (/api/live/<cam>/latest.jpg,
-  # ~1 fps). go2rtc pulls a camera only while a viewer is connected; single
-  # active camera + an idle time watch stop the stream when idle, releasing
-  # the pull when nobody is watching.
+  # LIVE VIEW = WebSocket-MSE primary, proxied SAME-ORIGIN through the portal
+  # (/api/live/<cam>/mse -> Frigate go2rtc .../live/mse/api/ws?src=<cam>), with
+  # a detect-snapshot fallback (/api/live/<cam>/latest.jpg, ~1 fps). go2rtc
+  # pulls a camera only while a viewer is connected; single active camera + an
+  # idle time watch stop the stream when idle, releasing the pull.
   #
   # Dependency-only image (./portal carries deps; python:3.11-slim +
   # fastapi/uvicorn/httpx). Code + config are mounted read-only so edits

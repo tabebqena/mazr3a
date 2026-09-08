@@ -74,8 +74,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 16px; }
 .controls input, .controls select { width: auto; min-width: 150px; }
 .controls .check { flex-direction: row; align-items: center; gap: 6px; align-self: center; padding-top: 12px; }
 .controls .check input { width: auto; min-width: 0; }
-.controls button { width: auto; min-width: 0; padding: 5px 12px; align-self: center; }
-.time-custom { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 12px; }
+.controls button { width: auto; min-width: 0; padding: 5px 12px; align-self: flex-end; }
+.time-custom { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
 .time-custom label { flex-direction: row; align-items: center; gap: 6px; }
 .time-custom input { min-width: 0; }
 .status { color: var(--muted); font-size: 13px; margin: 4px 0 10px; min-height: 18px; }

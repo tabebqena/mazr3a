@@ -156,7 +156,7 @@ services:
     ports:
       - "8080:8080"         # internal host port for the Cloudflare Tunnel
     volumes:
-      - ./portal:/portal:ro            # portal package + static SPA
+      - ./portal:/srv/app/portal:ro    # portal package + static SPA
       - ./config:/config:ro            # portal.conf (users + secret; git-ignored)
       - ./media:/media                 # firewatch evidence (rw for WAL read access)
     environment:

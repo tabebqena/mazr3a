@@ -6,24 +6,26 @@
 # edits need only `docker compose restart portal` - no image rebuild.
 #
 # Mounts (see docker-compose.yml):
-#   ./portal -> /portal:ro   (portal package + static SPA)
-#   ./config -> /config:ro   (portal.conf: users/secret/tunables)
-#   ./media  -> /media       (firewatch evidence; rw because SQLite WAL
-#                             readers need -shm/-wal write access)
+#   ./portal -> /srv/app/portal:ro   (portal package + static SPA)
+#   ./config -> /config:ro           (portal.conf: users/secret/tunables)
+#   ./media  -> /media               (firewatch evidence; rw because SQLite WAL
+#                                     readers need -shm/-wal write access)
 # ============================================================
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/portal \
+    PYTHONPATH=/srv/app \
     PORTAL_CONF=/config/portal.conf
 
-WORKDIR /portal
+# App code is bind-mounted at runtime at /srv/app/portal, so the `portal`
+# package is importable from /srv/app (portal.app).
+WORKDIR /srv/app
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt \
  && useradd --uid 1000 --create-home portal \
- && mkdir -p /portal /config /media \
+ && mkdir -p /srv/app /config /media \
  && chown portal:portal /tmp
 
 USER portal

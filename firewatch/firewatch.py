@@ -8,6 +8,15 @@ fire/smoke YOLO model via OpenVINO, and sends a Telegram PHOTO alert on a
 sustained detection (min consecutive hits above a score threshold, with a
 per-camera cooldown to prevent spam).
 
+Evidence store (2026-09-08, see plans/firewatch-evidence-store.md): EVERY poll
+that is marked fire (a detection above SCORE_THRESHOLD) is ALSO persisted to
+disk as a JPEG + sidecar JSON (detections + scores), INDEPENDENT of the
+MIN_HITS/HITS_WINDOW alert gate and cooldown - so a real fire that never
+accumulates enough hits still leaves a durable record. STORE_DIR defaults to
+/media/firewatch (a read-write mount of the git-ignored host ./media tree added
+in docker-compose.yml); STORE_ENABLED=false reverts to the old send-only
+behavior.
+
 Design notes
 ------------
 - Frigate's own person/car/animal detection (config/config.yaml) is NOT
@@ -323,6 +332,9 @@ def run_once(cfg, model, dry=False):
                 if dry:
                     print(build_caption(cam, dets, track_smoke))
                     continue
+                # Evidence store: persist every fire-marked frame + score
+                # sidecar (even with no hit accumulation / single-pass runs).
+                store_fire_frame(cfg, cam, raw, dets)
                 jpg = overlay_boxes(raw, dets)
                 send_alert(cfg, cam, jpg, dets, track_smoke)
         except urllib.error.HTTPError as exc:
@@ -339,6 +351,57 @@ def send_alert(cfg, cam, jpg, dets, track_smoke):
         LOG(f"ALERT sent for {cam}")
     except Exception as exc:  # noqa: BLE001
         LOG(f"ALERT FAILED for {cam}: {exc}")
+
+
+def store_fire_frame(cfg, cam, jpeg_bytes, dets):
+    """Best-effort persist a fire-marked frame + sidecar JSON (evidence store).
+
+    Runs on EVERY poll where a fire/smoke detection exists above SCORE_THRESHOLD
+    (dets non-empty), INDEPENDENT of the MIN_HITS/HITS_WINDOW alert gate and the
+    per-camera cooldown - so a real fire that never accumulates enough hits (or
+    keeps re-hitting inside cooldown) still leaves a durable record on disk.
+
+    Writes, per fire-marked frame:
+      <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.jpg   (raw frame)
+      <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.json  (sidecar)
+    The sidecar carries the full detection list (label/score/box), best score,
+    score threshold used, camera and UTC timestamp. See
+    plans/firewatch-evidence-store.md. Never raises (keeps the loop alive);
+    failures are logged and skipped.
+    """
+    if not _getb(cfg, "STORE_ENABLED", True):
+        return
+    store_dir = _get(cfg, "STORE_DIR", "")
+    if not store_dir:
+        return
+    try:
+        cam_dir = os.path.join(store_dir, cam)
+        os.makedirs(cam_dir, exist_ok=True)
+        now = time.time()
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime(now))
+        best = max(d["score"] for d in dets)
+        base = f"{stamp}_{int(now % 1 * 1000):03d}_{cam}_conf{best:.2f}"
+        jpg_path = os.path.join(cam_dir, base + ".jpg")
+        with open(jpg_path, "wb") as fh:
+            fh.write(jpeg_bytes)
+        meta = {
+            "camera": cam,
+            "timestamp_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
+            "score_threshold": _getf(cfg, "SCORE_THRESHOLD", 0.5),
+            "best_score": round(best, 4),
+            "detections": [
+                {"label": d["label"], "score": round(d["score"], 4),
+                 "box": [round(v, 1) for v in d["box"]]}
+                for d in sorted(dets, key=lambda x: x["score"], reverse=True)
+            ],
+        }
+        with open(os.path.join(cam_dir, base + ".json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(meta, fh, indent=2)
+        LOG(f"{cam}: stored fire frame {os.path.basename(jpg_path)} "
+            f"(conf {best:.2f})")
+    except Exception as exc:  # noqa: BLE001 - evidence store must never kill loop
+        LOG(f"{cam}: store FAILED: {exc}")
 
 
 def run_forever(cfg, model):
@@ -388,6 +451,11 @@ def run_forever(cfg, model):
                 now = time.monotonic()
                 in_cooldown = now - st["last_alert"] < cooldown
                 if dets:
+                    # Evidence store: persist EVERY fire-marked frame + score
+                    # sidecar, independent of the MIN_HITS alert gate / cooldown
+                    # (a real fire below the accumulation bar still leaves a
+                    # durable record on disk). Runs before the gate below.
+                    store_fire_frame(cfg, cam, raw, dets)
                     best = max(d["score"] for d in dets)
                     if hits >= min_hits and not in_cooldown:
                         st["last_alert"] = now

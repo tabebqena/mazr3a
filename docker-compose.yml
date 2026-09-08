@@ -77,11 +77,18 @@ services:
       - ./scripts:/scripts:ro
       - ./config:/config:ro
       - ./models:/models:ro
+      # Evidence store: firewatch persists every fire-marked frame (JPEG +
+      # sidecar JSON with detections/scores) under the git-ignored ./media dir,
+      # mounted read-write at /media/firewatch (subdir firewatch/). Same host
+      # media tree Frigate records into - no new host dir. See
+      # plans/firewatch-evidence-store.md.
+      - ./media:/media/firewatch
     environment:
       - FRIGATE_API=http://frigate:5000   # compose network: frigate service
       - TELEGRAM_CONF=/config/telegram.conf
       - FIREWATCH_CONF=/config/firewatch.conf
       - MODEL_DIR=/models/fire
+      - STORE_DIR=/media/firewatch
     depends_on:
       - frigate
 

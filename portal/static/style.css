@@ -176,6 +176,25 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
 }
 .card .thumb { position: relative; background: #000; }
 .card .thumb img { width: 100%; display: block; }
+
+/* Event clip card: thumbnail is the preview; ▶ swaps it for the playing video. */
+.evmedia .evmedia-img { width: 100%; display: block; }
+.evmedia-nosnap { min-height: 180px; background: #000; }
+.evmedia-play {
+  position: absolute; inset: 0; margin: auto;
+  width: 60px; height: 60px; padding: 0;
+  border-radius: 50%; background: rgba(0,0,0,.55); color: #fff;
+  border: 2px solid rgba(255,255,255,.65);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; line-height: 1;
+  z-index: 3;
+}
+.evmedia-play:hover { background: rgba(0,0,0,.75); }
+.evmedia-play:active { transform: scale(.96); }
+.evmedia-video {
+  display: block; width: 100%; aspect-ratio: 16/9;
+  object-fit: contain; background: #000;
+}
 .card .meta {
   padding: 10px 12px;
   display: flex; flex-wrap: wrap; gap: 6px 12px;

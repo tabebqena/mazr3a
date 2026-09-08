@@ -404,6 +404,20 @@ $('#ev-next').addEventListener('click', () => {
   if (evPage < Math.max(1, Math.ceil(evAll.length / EV_PAGE))) { evPage++; renderEvPage(); }
 });
 
+// Clicking a clip's play button swaps its thumbnail preview for the playing video.
+$('#ev-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('.evmedia-play');
+  if (!btn) return;
+  const media = btn.parentElement;
+  const img = media.querySelector('.evmedia-img');
+  const vid = media.querySelector('.evmedia-video');
+  if (!vid) return;
+  if (img) img.classList.add('hidden');
+  btn.classList.add('hidden');
+  vid.classList.remove('hidden');
+  vid.play().catch(() => {});
+});
+
 async function loadEvents() {
   const box = $('#ev-list');
   const st = $('#ev-status');
@@ -450,20 +464,42 @@ function renderEvents(events, box) {
     const lab = esc(ev.label || 'detection');
     const cam = esc(ev.camera || '');
     const score = ev.top_score != null ? ev.top_score : ev.score || 0;
-    const thumb = ev.has_snapshot
-      ? '<img loading="lazy" src="/api/events/' + ev.id + '/snapshot.jpg" alt="">'
-      : '<div class="empty" style="padding:10px">no snapshot</div>';
-    const clip = ev.has_clip
-      ? '<video class="media" controls preload="none" src="/api/events/' + ev.id + '/clip.mp4"></video>'
-      : '';
+    const id = encodeURIComponent(ev.id);
+    const snapUrl = '/api/events/' + id + '/snapshot.jpg';
+    const clipUrl = '/api/events/' + id + '/clip.mp4';
+    const hasSnap = !!ev.has_snapshot;
+    const hasClip = !!ev.has_clip;
+
+    let media;
+    if (hasClip) {
+      // Thumbnail is the clip preview; the ▶ button swaps it for the playing video.
+      media =
+        '<div class="thumb evmedia">' +
+          (hasSnap
+            ? '<img class="evmedia-img" loading="lazy" src="' + snapUrl + '" alt="">'
+            : '<div class="evmedia-nosnap" title="no preview"></div>') +
+          '<button class="evmedia-play" type="button" aria-label="Play clip">&#9654;</button>' +
+          '<video class="evmedia-video hidden" controls playsinline preload="none" ' +
+            'src="' + clipUrl + '"></video>' +
+        '</div>';
+    } else {
+      media =
+        '<div class="thumb">' +
+          (hasSnap
+            ? '<img loading="lazy" src="' + snapUrl + '" alt="">'
+            : '<div class="empty" style="padding:10px">no snapshot</div>') +
+        '</div>';
+    }
+
     return '<div class="card">' +
-      '<div class="thumb">' + thumb + '</div>' +
+      media +
       '<div class="meta">' +
         '<span class="tag">' + lab + '</span>' +
         '<span class="tag">' + cam + '</span>' +
         '<span>score ' + Number(score).toFixed(2) + '</span>' +
         '<span class="muted">' + fmtDT(ev.start_time) + '</span>' +
-      '</div>' + clip + '</div>';
+      '</div>' +
+    '</div>';
   }).join('');
 }
 

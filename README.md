@@ -364,6 +364,41 @@ must be the only `getUpdates` consumer — no manual `curl` loops while it runs.
 
 Verification steps are in the plan file's checklist.
 
+### Web portal — `portal`
+
+An authenticated **FastAPI + vanilla-JS portal** that consumes the Frigate REST API and the
+Firewatch evidence store ([`portal/`](portal/__init__.py)):
+
+- **Login** (multi-user) — credentials live in the git-ignored
+  [`config/portal.conf`](config/portal.conf) (PBKDF2 hashes). Copy the committed
+  [`config/portal.conf.example`](config/portal.conf.example) and add a user with
+  `python portal/genpass.py --username NAME`. Signed HttpOnly session cookie.
+- **Live view** — one camera by default with a switcher (single active stream). The SPA plays
+  a direct **go2rtc MSE** URL from `GET /api/stream-url/<cam>` (go2rtc remuxes H.264; the
+  browser decodes — no host re-encode). An **idle time watch** stops the stream after a
+  configurable timeout (default 300 s in `config/portal.conf`, with a per-browser override)
+  so the go2rtc camera pull is released when nobody is watching.
+- **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class.
+- **Fire alerts** — Firewatch evidence frames with a detection-box overlay and an **alerted**
+  badge for frames that produced a Telegram alert (the `frames.alerted` flag added by
+  `firewatch.py`).
+
+**Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
+`live.mazr3a.garden`. The tunnel maps the portal root → `host:8080` and a `/live/*` path →
+Frigate go2rtc on `host:5000`, both under the same Access policy — so the direct MSE stream
+URLs the SPA plays are gated at the edge, and the portal login only gates the dashboard/API.
+Frigate REST/DB and the Firewatch WAL DB (`./media/firewatch.db`) are reached only
+server-side by the portal.
+
+```bash
+docker compose up -d --build portal
+docker compose logs -f portal
+docker compose restart portal        # apply code / config edits
+```
+
+The portal API is self-documented at `/docs` (OpenAPI). Start the container after creating
+`config/portal.conf` on the host (a missing file means login is impossible).
+
 ## Deferred (future phases)
 
 - **Phase 1b** — Native in-Frigate fire/smoke detection by swapping the sole detector

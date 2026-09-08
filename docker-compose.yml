@@ -125,3 +125,41 @@ services:
       - ROOT_STAT=/config                # config mount sits on the host root fs
     depends_on:
       - frigate
+
+  # ------------------------------------------------------------------
+  # portal - authenticated web portal (FastAPI + vanilla JS SPA) that
+  # proxies Frigate REST/events/media and serves Firewatch fire evidence
+  # (login, single-camera live view with an idle time watch, events &
+  # detections, fire alerts). See plans/portal-web-app.md (local only).
+  #
+  # PUBLIC ACCESS: the whole host sits behind a Cloudflare Tunnel with an
+  # Access policy on live.mazr3a.garden. The tunnel routes the portal root
+  # -> host:8080 (this service) and a /live/* path -> Frigate go2rtc on
+  # host:5000, BOTH under the same Access policy - so the direct go2rtc
+  # MSE stream URLs the SPA plays (/api/stream-url/<cam>) are gated at the
+  # edge, and the portal login only gates the dashboard/JSON API. Single
+  # active stream + an idle time watch stop the stream when idle, which
+  # releases the go2rtc camera pull (low CPU - go2rtc remuxes; the browser
+  # decodes H.264, so no host re-encode).
+  #
+  # Dependency-only image (./portal carries deps; python:3.11-slim +
+  # fastapi/uvicorn/httpx). Code + config are mounted read-only so edits
+  # need only `docker compose restart portal`. ./media is mounted rw
+  # because SQLite WAL readers need -shm/-wal write access to read the
+  # firewatch evidence DB (the portal never writes - PRAGMA query_only).
+  # First build needs network for pip.
+  # ------------------------------------------------------------------
+  portal:
+    container_name: portal
+    build: ./portal
+    restart: unless-stopped
+    ports:
+      - "8080:8080"         # internal host port for the Cloudflare Tunnel
+    volumes:
+      - ./portal:/portal:ro            # portal package + static SPA
+      - ./config:/config:ro            # portal.conf (users + secret; git-ignored)
+      - ./media:/media                 # firewatch evidence (rw for WAL read access)
+    environment:
+      - PORTAL_CONF=/config/portal.conf
+    depends_on:
+      - frigate

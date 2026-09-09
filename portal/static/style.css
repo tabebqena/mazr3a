@@ -500,6 +500,43 @@ body.lb-open { overflow: hidden; }
   pointer-events: none; -webkit-user-select: none; user-select: none;
 }
 
+/* ================= ADMIN DEBUG LOGS =================
+   Debug tab (admin only): a pull of the last log lines of every container,
+   fetched from the read-only `logs` sidecar when the tab opens. Each container
+   is a card with a running/stopped dot + a monospace log block. */
+.dbg-list { display: flex; flex-direction: column; gap: 12px; }
+.dbg-card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+}
+.dbg-head {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px 12px; padding: 9px 12px; font-size: 13px;
+  background: rgba(255,255,255,.03);
+}
+.dbg-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--muted); opacity: .7;
+}
+.dbg-dot.on {
+  background: var(--accent); opacity: 1;
+  box-shadow: 0 0 0 3px rgba(53,194,111,.18);
+}
+.dbg-name { font-weight: 700; white-space: nowrap; }
+.dbg-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.dbg-img {
+  color: var(--muted); font-size: 11px; margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.dbg-err { color: var(--amber); padding: 8px 12px; font-size: 13px; }
+.dbg-logs {
+  margin: 0; padding: 10px 12px;
+  font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text); background: #0a0e12;
+  max-height: 46vh; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4;
+}
+
 /* ============================================================
    TABLETS / SMALL DESKTOP (>=640px wide AND >=560px tall)
    Controls flow into a row; grids get 2 columns.

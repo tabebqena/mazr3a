@@ -36,6 +36,9 @@
         <a data-view="live" href="#/live">Live</a>
         <a data-view="events" href="#/events">Events</a>
         <a data-view="fire" href="#/fire">Fire alerts</a>
+        <!-- Admin-only Debug tab (shown only when the logged-in user is the
+             admin - app.js removes .hidden at boot based on /api/me is_admin). -->
+        <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
       </nav>
       <div class="userbox">
         <span id="user-chip"></span>
@@ -187,6 +190,25 @@
           <span id="fw-pageno" class="pageno"></span>
           <button id="fw-next" type="button">Next &#8250;</button>
         </div>
+      </section>
+
+      <!-- Admin-only Debug: last log messages of every container. Pulled on
+           demand from the read-only `logs` sidecar when this tab opens (the
+           sidecar stays idle; there is no polling). Visible only to admin. -->
+      <section id="view-debug" class="view hidden">
+        <div class="controls">
+          <label>Lines
+            <select id="dbg-tail">
+              <option value="100">100</option>
+              <option value="200" selected>200</option>
+              <option value="500">500</option>
+              <option value="1000">1000</option>
+            </select>
+          </label>
+          <button id="dbg-refresh" type="button" title="Reload container logs">Refresh</button>
+        </div>
+        <div id="dbg-status" class="status"></div>
+        <div id="dbg-list" class="dbg-list"></div>
       </section>
     </main>
   </div>

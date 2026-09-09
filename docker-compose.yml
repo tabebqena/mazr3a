@@ -127,6 +127,28 @@ services:
       - frigate
 
   # ------------------------------------------------------------------
+  # logs - READ-ONLY Docker-logs sidecar for the portal's admin Debug tab
+  # (see plans/portal-admin-debug-logs.md). It "stands idle": a tiny stdlib
+  # HTTP server (scripts/container_logs.py) that owns a mount of the host
+  # Docker socket (/var/run/docker.sock) and exposes ONLY a container list +
+  # per-container log tail over the internal compose network (NO published
+  # host ports). The portal calls it on demand when the admin opens the Debug
+  # tab - the sidecar never polls. It runs as root (stock image default, like
+  # telegram-bot) so it can open the root-owned socket, and issues Docker READ
+  # calls only; it never exposes the raw socket.
+  # ------------------------------------------------------------------
+  logs:
+    container_name: logs
+    image: python:3.11-slim
+    restart: unless-stopped
+    command: ["python", "/scripts/container_logs.py"]
+    volumes:
+      - ./scripts:/scripts:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - LOGS_PORT=8090
+
+  # ------------------------------------------------------------------
   # portal - authenticated web portal (FastAPI + vanilla JS SPA) that
   # proxies Frigate REST/events/media and serves Firewatch fire evidence
   # (login, single-camera live view with an idle time watch, events &
@@ -163,5 +185,7 @@ services:
       - ./media:/media                 # firewatch evidence (rw for WAL read access)
     environment:
       - PORTAL_CONF=/config/portal.conf
+      - PORTAL_LOGS_API=http://logs:8090   # read-only logs sidecar (Debug tab)
     depends_on:
       - frigate
+      - logs

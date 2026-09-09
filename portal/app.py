@@ -33,7 +33,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.3.10"
+APP_VERSION = "0.3.11"
 _HTMX = None
 
 
@@ -104,6 +104,18 @@ def current_user(request: Request):
         if user["username"] == name:
             return user
     raise HTTPException(status_code=401, detail="not authenticated")
+
+
+def current_admin(request: Request, user: dict = Depends(current_user)):
+    """Dependency: like current_user but ONLY the admin user (403 otherwise).
+
+    The admin is the user whose username is `admin` (see plans/
+    portal-admin-debug-logs.md). Front-end nav gating uses /api/me is_admin,
+    but this server-side check is the real gate for admin-only routes.
+    """
+    if (user.get("username") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="admin only")
+    return user
 
 
 def _frigate_base(request: Request):
@@ -248,6 +260,7 @@ async def logout():
 async def me(request: Request, user: dict = Depends(current_user)):
     return {
         "username": user["username"],
+        "is_admin": (user.get("username") or "").lower() == "admin",
         "default_camera": (user.get("default_camera")
                            or pconf.get(_cfg(request), "DEFAULT_CAMERA")),
     }
@@ -477,3 +490,63 @@ async def fire_image(frame_id: int, request: Request,
         raise HTTPException(status_code=404, detail="image not found")
     return FileResponse(path, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=300"})
+
+
+# --------------------------------------------------------------------------
+# Admin-only Debug tab: last log messages of every container.
+#
+# The portal container itself has no Docker access; it pulls on demand from the
+# read-only `logs` sidecar (scripts/container_logs.py, compose service `logs`)
+# over the internal compose network. The sidecar owns the host Docker socket
+# and stays idle - it is queried only when the admin opens the Debug tab.
+# --------------------------------------------------------------------------
+def _logs_base(request: Request):
+    return pconf.get(_cfg(request), "LOGS_API", "http://logs:8090").rstrip("/")
+
+
+@app.get("/api/admin/logs")
+async def admin_logs(request: Request, tail: int = 200,
+                     admin: dict = Depends(current_admin)):
+    """Debug tab: last `tail` log lines of every container (admin only).
+
+    Returns each container with its merged stdout+stderr tail (timestamps).
+    503 = logs sidecar unreachable; 502 = sidecar/docker error; a per-container
+    `error` field records failures fetching that one container's logs.
+    """
+    client = request.app.state.client
+    base = _logs_base(request)
+    tail = max(1, min(2000, tail))
+    try:
+        resp = await client.get(base + "/api/containers", timeout=8.0)
+    except Exception as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"logs sidecar unreachable: {exc}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"logs sidecar error: HTTP {resp.status_code}")
+    try:
+        containers = (resp.json() or {}).get("containers") or []
+    except Exception:
+        containers = []
+    result = []
+    for c in containers:
+        entry = {
+            "name": c.get("name"),
+            "state": c.get("state"),
+            "status": c.get("status"),
+            "image": c.get("image"),
+            "logs": "",
+            "error": None,
+        }
+        try:
+            r = await client.get(base + "/api/logs",
+                                 params={"name": c.get("name"), "tail": tail},
+                                 timeout=8.0)
+            if r.status_code == 200:
+                entry["logs"] = (r.json() or {}).get("logs") or ""
+            else:
+                entry["error"] = f"HTTP {r.status_code}"
+        except Exception as exc:
+            entry["error"] = str(exc)
+        result.append(entry)
+    return {"tail": tail, "containers": result}

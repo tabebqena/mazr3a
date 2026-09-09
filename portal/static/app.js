@@ -130,6 +130,11 @@ async function boot() {
   } catch (e) { return; }
   hideLogin();
   $('#user-chip').textContent = state.me.username;
+  // Admin-only Debug tab: show the nav link only for the admin user. Toggled
+  // on every boot (not just revealed) so a logout->login as a non-admin hides
+  // it again. The server is the real gate (/api/admin/logs 403s everyone
+  // else) - the nav link visibility is purely cosmetic.
+  $('#nav-debug').classList.toggle('hidden', !state.me.is_admin);
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
@@ -144,16 +149,19 @@ async function boot() {
 
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
-  const view = ['live', 'events', 'fire'].indexOf(raw) >= 0 ? raw : 'live';
+  const VIEWS = ['live', 'events', 'fire', 'debug'];
+  let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
+  // Debug is admin-only: a non-admin who lands on #/debug falls back to Live.
+  if (view === 'debug' && !(state.me && state.me.is_admin)) view = 'live';
   // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
   document.body.classList.toggle('live-full', view === 'live');
   if (view !== 'live') stopStream();           // only the Live view streams
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
-  ['live', 'events', 'fire'].forEach(v =>
-    $('#view-' + v).classList.toggle('hidden', v !== view));
+  VIEWS.forEach(v => $('#view-' + v).classList.toggle('hidden', v !== view));
   if (view === 'live') ensureLive();
   else if (view === 'events') loadEvents();
   else if (view === 'fire') reloadFire();   // page-based: reset to page 1 on entry
+  else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
 }
 
 async function loadCameras() {
@@ -1376,6 +1384,63 @@ $('#fw-lightbox').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeFireLightbox();
 });
+
+/* ---------------- admin Debug: last logs of all containers ---------------- */
+/* The read-only `logs` sidecar stays idle; the portal pulls its container
+   list + log tails ONLY when this tab is opened (and on Refresh / tail change). */
+function isAdmin() {
+  return !!(state.me && state.me.is_admin);
+}
+
+async function loadDebug() {
+  const box = $('#dbg-list');
+  const st = $('#dbg-status');
+  if (!isAdmin()) {
+    box.innerHTML = '<div class="empty">Admin only</div>';
+    return;
+  }
+  const sel = $('#dbg-tail');
+  const tail = parseInt(sel && sel.value, 10) || 200;
+  st.textContent = 'Loading container logs\u2026';
+  box.innerHTML = '';
+  try {
+    const data = await api('/api/admin/logs?tail=' + tail);
+    renderDebug(data);
+    st.textContent = (data.containers ? data.containers.length : 0)
+      + ' container(s) \u00b7 last ' + data.tail + ' lines each';
+  } catch (e) {
+    st.textContent = '';
+    box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+  }
+}
+
+function renderDebug(data) {
+  const box = $('#dbg-list');
+  const frag = document.createElement('div');
+  frag.innerHTML = (data.containers || []).map(dbgCard).join('');
+  box.innerHTML = '';
+  Array.from(frag.children).forEach(c => box.appendChild(c));
+}
+
+function dbgCard(c) {
+  const running = c.state === 'running';
+  const dot = '<span class="dbg-dot' + (running ? ' on' : '')
+    + '" title="' + esc(c.state || 'stopped') + '"></span>';
+  return '<div class="dbg-card">' +
+    '<div class="dbg-head">' + dot +
+      '<span class="dbg-name">' + esc(c.name || '?') + '</span>' +
+      '<span class="dbg-meta">' + esc(c.state || '') + '</span>' +
+      '<span class="dbg-meta">' + esc(c.status || '') + '</span>' +
+      '<span class="dbg-img">' + esc(c.image || '') + '</span>' +
+    '</div>' +
+    (c.error
+      ? '<div class="dbg-err">log unavailable: ' + esc(c.error) + '</div>'
+      : '<pre class="dbg-logs">' + esc(c.logs || '') + '</pre>') +
+  '</div>';
+}
+
+$('#dbg-refresh').addEventListener('click', loadDebug);
+$('#dbg-tail').addEventListener('change', loadDebug);
 
 /* ---------------- start ---------------- */
 boot();

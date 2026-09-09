@@ -16,7 +16,7 @@ const state = {
   // imgLive: the <img> is the poster shown while an HLS attempt is starting
   //          (or the frozen last frame while an online camera auto-retries).
   // mode: '' | 'hls' | 'offline'
-  idleSec: 60,
+  idleSec: 30,
 };
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
@@ -120,7 +120,7 @@ async function boot() {
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
-  state.idleSec = state.settings.stream_idle_timeout_s || 60;
+  state.idleSec = Math.max(15, parseInt(state.settings.stream_idle_timeout_s, 10) || 30);
   await loadCameras();
   window.addEventListener('hashchange', onRoute);
   onRoute();
@@ -294,7 +294,7 @@ function scheduleLiveRetry(cam) {
 function resetIdle() {
   if (idleTimer) clearTimeout(idleTimer);
   if (!state.live.playing) return;
-  idleTimer = setTimeout(onIdleTimeout, Math.max(30, state.idleSec) * 1000);
+  idleTimer = setTimeout(onIdleTimeout, Math.max(15, state.idleSec) * 1000);
 }
 function onIdleTimeout() {
   if (!state.live.playing) return;
@@ -305,8 +305,14 @@ function onIdleTimeout() {
 }
 ['mousemove', 'mousedown', 'keydown', 'touchstart', 'pointerdown', 'wheel', 'scroll']
   .forEach(ev => document.addEventListener(ev, () => {
-    if (state.live.playing) resetIdle();
+    if (state.live.playing) resetIdle();   // any user activity restarts the clock
   }, { passive: true }));
+
+// When the tab is hidden nobody is watching - restart the countdown so a
+// backgrounded Live view still stops after the idle window (saves bandwidth).
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state.live.playing) resetIdle();
+});
 
 function showOverlay(msg) {
   $('#overlay-msg').textContent = msg;

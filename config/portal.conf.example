@@ -30,10 +30,11 @@ SESSION_DAYS=7
 COOKIE_SECURE=true
 
 # Live-view idle time watch: stop the stream after this many seconds of
-# user inactivity. The SPA shows a resume overlay. This is the single
-# source of truth for ALL users - there is no in-UI control; change it
-# here (an admin edit) and recreate/restart the portal container.
-STREAM_IDLE_TIMEOUT_S=60
+# user inactivity (mouse/touch/keyboard resets the clock). The SPA shows a
+# resume overlay. This is the single source of truth for ALL users - there is
+# no in-UI control; change it here (an admin edit) and recreate/restart the
+# portal container. The stream also stops when the browser tab is hidden.
+STREAM_IDLE_TIMEOUT_S=30
 
 # Landing camera when the user has no per-user default_camera. Empty =
 # first camera returned by Frigate.

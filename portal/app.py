@@ -152,7 +152,7 @@ async def settings(request: Request, user: dict = Depends(current_user)):
     return {
         "username": user["username"],
         "default_camera": default_cam,
-        "stream_idle_timeout_s": pconf.geti(cfg, "STREAM_IDLE_TIMEOUT_S", 60),
+        "stream_idle_timeout_s": pconf.geti(cfg, "STREAM_IDLE_TIMEOUT_S", 30),
     }
 
 

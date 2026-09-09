@@ -379,13 +379,16 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   cameras registered in go2rtc via a `go2rtc.streams` block in
   [`config/config.yaml`](config/config.yaml) with `{FRIGATE_*}` credentials), played with
   hls.js (vendored under `portal/static/vendor/`; native HLS on Safari). go2rtc in this
-  Frigate build has no MSE — HLS is its reliable TCP/tunnel-friendly live transport. Fallback:
-  the SPA auto-falls back to detect-snapshot polling (`GET /api/live/<cam>/latest.jpg`, ~1 fps)
-  if HLS is unavailable. An **idle time watch** stops the stream after a timeout configured by
-  an admin in [`config/portal.conf`](config/portal.conf) (`STREAM_IDLE_TIMEOUT_S`, default
-  60 s; there is **no in-UI control**) so the go2rtc camera pull is released when nobody is
-  watching. The Live view **fills the screen**, shows the freshest detect frame as a poster
-  while HLS connects, remembers the last camera opened, and lets you **swipe/drag** left/right
+  Frigate build has no MSE — HLS is its reliable TCP/tunnel-friendly live transport. The
+  latest detect frame is shown as a poster while HLS connects. If HLS cannot start, the camera
+  is classified from Frigate's online flag: an **offline camera** shows a clean "offline"
+  notice (no spinner) and auto-recovers when it returns; an **online camera** that is just slow
+  keeps auto-retrying HLS (no ~1 fps snapshot feed). An **idle time watch** stops the stream
+  after a timeout configured by an admin in [`config/portal.conf`](config/portal.conf)
+  (`STREAM_IDLE_TIMEOUT_S`, default 30 s; there is **no in-UI control**); any user activity
+  (mouse/touch/keyboard) resets the clock, and the stream also stops if the browser tab is
+  hidden. This releases the go2rtc camera pull when nobody is watching. The Live view
+  **fills the screen**, remembers the last camera opened, and lets you **swipe/drag** left/right
   to switch cameras.
 - **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class
   with **numbered pagination** (Prev/Next + "Page X of Y") and a **time filter** (quick

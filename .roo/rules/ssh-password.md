@@ -67,9 +67,6 @@ Retry flaky tunnel connections (up to ~5× with a pause), exactly as
 - Deploy / git handoff on the host is owned by `deploy_all.sh` running as **`dr`**
   (the owner of `/home/dr/frigate`). The AI must **not** run git on the host as
   `ai` (dubious ownership) and must **not** pull from the host side.
-- One-off remote **verification** as `ai` is allowed for **docker/compose checks
-  only**. Run it interactively (ask the user to type the password) or, if it must
-  be automated, with the SSH_ASKPASS recipe above.
 - Fully unattended runs (cron/CI/`DEPLOY_ASSUME_YES=1`) **require**
   `DEPLOY_SSH_USER` / `DEPLOY_SSH_PASS` to be exported; if they are missing and
   stdin is not a TTY, abort with a clear message (see `resolve_ssh_credentials()`

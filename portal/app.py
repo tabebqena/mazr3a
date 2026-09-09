@@ -1,6 +1,7 @@
 """FastAPI app for the portal: auth + proxied Frigate JSON/media + Firewatch
 evidence, plus the static SPA. See portal/__init__.py and plans/portal-web-app.md.
 """
+import hashlib
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +15,6 @@ from fastapi import (
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, StreamingResponse,
 )
-from fastapi.staticfiles import StaticFiles
 
 from portal import auth, config as pconf, firestore, frigate
 
@@ -27,8 +27,13 @@ COOKIE_NAME = "portal_session"
 # never drifts from this constant) and (b) served to the client via
 # /api/settings -> app_version (app.js re-fills #ver-no after boot). Bump on
 # UI/API change; no other copy of the number should be kept in the front-end.
-# AI instruction : update the version with each task, so the user can see the changes in the footer of the SPA. The version is also used in the API responses to indicate the version of the portal.
-APP_VERSION = "0.3.5"
+# AI instruction : update the version with each task, so the user can see the
+# changes in the footer of the SPA. The version is also used in the API
+# responses to indicate the version of the portal. APP_VERSION is ALSO an input
+# to the static-asset fingerprint below, so bumping it (on every update)
+# rotates the fingerprinted /static/* filenames and forces browsers to load the
+# fresh app.js/style.css instead of a stale cached copy.
+APP_VERSION = "0.3.6"
 _HTMX = None
 
 
@@ -106,28 +111,112 @@ def _frigate_base(request: Request):
 
 
 # --------------------------------------------------------------------------
-# app / static
+# app / static - content-hash fingerprinting (cache busting)
 # --------------------------------------------------------------------------
 # index.html carries a {{ APP_VERSION }} token as the fallback text of the
-# bottom-most version label. This route substitutes APP_VERSION (the single
-# source of truth above) on every request, so the label always matches the
-# running build without a hard-coded copy in the static HTML to keep in sync.
+# bottom-most version label, plus {{ ASSET_* }} tokens for every cacheable
+# static asset. _render_index() substitutes them on every request, so the
+# labels/URLs always match the running build without hard-coded copies.
+#
+# CACHE BUSTING: browsers cache /static/* by URL, so an updated app.js behind
+# the SAME filename would be served from cache (stale UI). Every cacheable
+# asset is therefore served under a CONTENT-HASH fingerprinted filename, e.g.
+# /static/app-154kuhn7.js, derived from APP_VERSION + the file's bytes. Bumping
+# APP_VERSION OR editing the file changes the fingerprint, so the URL changes
+# and the browser is forced to fetch the new version. index.html is served
+# no-cache (below) and always references the CURRENT fingerprinted names.
+#
+# AI instruction: on every portal update bump APP_VERSION above - the
+# fingerprinting below is automatic. NEVER hard-code /static/... filenames in
+# index.html; always use the {{ ASSET_* }} tokens so _render_index substitutes
+# the current fingerprint. See .roo/rules/portal-cache-busting.md.
+
+# Cacheable assets to fingerprint: (relpath under STATIC_DIR, {{ TOKEN }}).
+CACHEABLE_ASSETS = [
+    ("style.css", "ASSET_STYLE"),
+    ("app.js", "ASSET_APP"),
+    ("vendor/hls.min.js", "ASSET_HLS"),
+    ("favicon.svg", "ASSET_FAVICON"),
+]
+# Fingerprinted public name -> real relpath, e.g. "app-154kuhn7.js" -> "app.js".
+ASSET_ALIAS: dict = {}
+# {{ TOKEN }} -> fingerprinted public name used by _render_index().
+_ASSET_FINGERPRINTS: dict = {}
+
+
+def _asset_suffix(relpath: str) -> str:
+    """Short base36 fingerprint of APP_VERSION + file bytes (like '154kuhn7')."""
+    data = (STATIC_DIR / relpath).read_bytes()
+    digest = hashlib.sha256()
+    digest.update(APP_VERSION.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update(data)
+    n = int(digest.hexdigest()[:16], 16)  # first 64 bits of the SHA-256
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = []
+    for _ in range(8):
+        n, rem = divmod(n, 36)
+        out.append(chars[rem])
+    return "".join(reversed(out))
+
+
+def _build_asset_manifest():
+    for relpath, token in CACHEABLE_ASSETS:
+        base = Path(relpath).name              # e.g. hls.min.js / app.js
+        stem, dot, ext = base.rpartition(".")
+        name = base if not dot else f"{stem}-{_asset_suffix(relpath)}{dot}{ext}"
+        parent = Path(relpath).parent
+        public = str(parent / name) if str(parent) != "." else name
+        _ASSET_FINGERPRINTS[token] = public
+        ASSET_ALIAS[public] = relpath
+
+
+_build_asset_manifest()
+
+
 def _render_index() -> str:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    return html.replace("{{ APP_VERSION }}", APP_VERSION)
+    html = html.replace("{{ APP_VERSION }}", APP_VERSION)
+    for token, public in _ASSET_FINGERPRINTS.items():
+        html = html.replace("{{ " + token + " }}", f"/static/{public}")
+    return html
 
 
 @app.get("/", include_in_schema=False)
 async def index():
-    # no-cache: the page carries the live APP_VERSION - always revalidate so a
-    # bumped version is shown immediately instead of a stale cached copy.
+    # no-cache: the page carries the live APP_VERSION + current asset URLs -
+    # always revalidate so a bumped version/fresh fingerprint is picked up
+    # immediately instead of a stale cached copy.
     return HTMLResponse(
         content=_render_index(),
         headers={"Cache-Control": "no-cache"},
     )
 
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+# Replaces the plain StaticFiles mount: serves each /static asset and applies
+# cache headers. Fingerprinted names (in ASSET_ALIAS) are immutable - safe to
+# cache for a year because the URL changes whenever the content or APP_VERSION
+# changes. Any other file under /static (legacy/hard-coded references) is
+# served current-but-no-cache so a stale URL still gets fresh content.
+@app.get("/static/{path:path}", include_in_schema=False)
+async def static_asset(path: str):
+    real = ASSET_ALIAS.get(path)
+    if real is not None:
+        return FileResponse(
+            STATIC_DIR / real,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+    candidate = (STATIC_DIR / path).resolve()
+    if not str(candidate).startswith(str(STATIC_DIR)) or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="static asset not found")
+    return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
+
+
+# Browsers that ignore <link rel="icon"> and request /favicon.ico by default
+# get the same SVG asset instead of a 404.
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico():
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
 # --------------------------------------------------------------------------

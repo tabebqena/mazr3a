@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mazr3a CCTV</title>
-<link rel="stylesheet" href="/static/style.css">
+<!-- Asset URLs are content-hash fingerprinted by the server (see _render_index
+     in portal/app.py). The {{ ASSET_* }} tokens are substituted with the
+     current /static/<name>-<hash>.<ext> on every request so the browser is
+     forced to fetch fresh versions after an update. NEVER hard-code these. -->
+<link rel="icon" type="image/svg+xml" href="{{ ASSET_FAVICON }}">
+<link rel="stylesheet" href="{{ ASSET_STYLE }}">
 </head>
 <body>
   <!-- Login -->
@@ -224,7 +229,7 @@
 
   <div id="global-err" class="toast hidden"></div>
 
-  <script src="/static/vendor/hls.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="{{ ASSET_HLS }}"></script>
+  <script src="{{ ASSET_APP }}"></script>
 </body>
 </html>

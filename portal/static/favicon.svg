@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- mazr3a CCTV favicon: security-camera mark on the portal's dark card
+       with the green accent (--accent #35c26f) and a red live/record dot. -->
+  <rect width="64" height="64" rx="14" fill="#0b0e12"/>
+  <rect x="8" y="8" width="48" height="48" rx="11" fill="#141920" stroke="#2a3441" stroke-width="2"/>
+
+  <!-- Wall-mount arm above the head -->
+  <rect x="29.5" y="12" width="5" height="14" rx="2.5" fill="#35c26f"/>
+  <circle cx="32" cy="10" r="3.5" fill="#35c26f"/>
+
+  <!-- Camera head -->
+  <rect x="10" y="25" width="44" height="27" rx="11" fill="#1b222c" stroke="#35c26f" stroke-width="2.5"/>
+
+  <!-- Lens -->
+  <circle cx="32" cy="38.5" r="10" fill="#0b0e12" stroke="#2a3441" stroke-width="2"/>
+  <circle cx="32" cy="38.5" r="6" fill="#35c26f"/>
+  <circle cx="30" cy="36.5" r="2.2" fill="#dbe4ee"/>
+
+  <!-- Live / record indicator -->
+  <circle cx="46.5" cy="33" r="2" fill="#ff5c5c"/>
+</svg>

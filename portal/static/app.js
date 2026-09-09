@@ -22,8 +22,10 @@ const state = {
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live HLS
+// TODO: recheck if the user move the camera itself or press the refresh button.
 const OFFLINE_CHECK_MS = 8000;    // how often to re-check an offline camera
 const HLS_PAINT_WAIT_MS = 3500;   // post-reveal window before treating as black
+// TODO: I think this make a bug 
 const HLS_VIDEO_RETRY_MS = 6000;  // retry when HLS buffered but no video frame
 // True when this browser can play HLS at all (hls.js MSE or native Safari HLS).
 const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
@@ -147,27 +149,29 @@ function onRoute() {
 async function loadCameras() {
   const data = await api('/api/cameras');
   state.cameras = data.cameras || [];
-  const names = state.cameras.map(c => c.name);
-
-  const camOpts = names.map(n => {
-    const c = state.cameras.find(x => x.name === n);
-    const tag = c && !c.online ? ' (offline)' : '';
-    return '<option value="' + esc(n) + '">' + esc(n) + tag + '</option>';
-  }).join('');
-
-  $('#cam-select').innerHTML = camOpts;
-  $('#ev-cam').innerHTML = '<option value="">all cameras</option>' + camOpts;
-  $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + camOpts;
+  refreshCamSelects();                 // Events/Fire selects keep a dropdown
 
   // Reopen the LAST camera the user watched (persisted), else the default.
   let def = null;
   try { def = localStorage.getItem('portal.lastCam'); } catch (e) { /* ignore */ }
-  if (!def || names.indexOf(def) < 0) {
+  if (!def || camNames().indexOf(def) < 0) {
     def = state.me.default_camera || data.default_camera
-      || (state.cameras.find(c => c.enabled) || {}).name || names[0];
+      || (state.cameras.find(c => c.enabled) || {}).name || camNames()[0];
   }
-  state.live.cam = names.indexOf(def) >= 0 ? def : names[0] || null;
-  if (state.live.cam) $('#cam-select').value = state.live.cam;
+  state.live.cam = camNames().indexOf(def) >= 0 ? def : camNames()[0] || null;
+  renderCamPicker();                   // thumbnail row + modal grid + labels
+}
+
+/* Fill the Events/Fire camera <select>s from state.cameras. The Live view no
+   longer uses a <select> - cameras are picked from the thumbnail row/modal. */
+function refreshCamSelects() {
+  const opts = camNames().map(n => {
+    const c = state.cameras.find(x => x.name === n);
+    const tag = c && !c.online ? ' (offline)' : '';
+    return '<option value="' + esc(n) + '">' + esc(n) + tag + '</option>';
+  }).join('');
+  $('#ev-cam').innerHTML = '<option value="">all cameras</option>' + opts;
+  $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + opts;
 }
 
 /* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
@@ -218,25 +222,29 @@ async function decideAfterHlsFail(cam, tok) {
   scheduleLiveRetry(cam);
 }
 
-/* Refresh the camera list / online flags from the portal (/api/cameras). */
+/* Refresh the camera list / online flags from the portal (/api/cameras).
+   Re-renders the thumbnail row/modal only when the list really changed
+   (names/enabled/online) so frequent re-checks do not reload thumbnails. */
 async function fetchCameras() {
   try {
     const data = await api('/api/cameras');
     const list = data.cameras || [];
     if (list.length) {
       state.cameras = list;
-      const sel = $('#cam-select');
-      if (sel) {
-        const cur = state.live.cam;
-        sel.innerHTML = list.map(c => {
-          const tag = c && !c.online ? ' (offline)' : '';
-          return '<option value="' + esc(c.name) + '">' + esc(c.name) + tag + '</option>';
-        }).join('');
-        if (cur) sel.value = cur;
+      if (camsChanged(list)) {
+        refreshCamSelects();
+        renderCamPicker();             // fresh online flags + thumbnails
       }
     }
     return data;
   } catch (e) { return null; }
+}
+let camsSig = '';   // last-rendered camera signature (see camsChanged)
+function camsChanged(list) {
+  const sig = JSON.stringify(list.map(c => [c.name, c.enabled, !!c.online]));
+  if (sig === camsSig) return false;
+  camsSig = sig;
+  return true;
 }
 /* Frigate online flag for a camera; unknown -> assume ONLINE so HLS startup
    latency is never reported as an offline camera. */
@@ -375,6 +383,7 @@ function startStream(cam) {
   stopStream();
   const tok = ++liveTok;
   state.live.cam = cam;
+  syncCamUI();                        // highlight the active camera in the picker
   if (!isOnline(cam)) { enterOffline(cam); return; }   // offline: no spinner/feed
   state.live.playing = true;
   state.live.mode = 'hls';
@@ -620,7 +629,7 @@ function resume() {
   startStream(state.live.cam);
 }
 
-/* -------- camera switching: <select>, swipe/drag, remember the last one --- */
+/* -------- camera switching: thumbnail row / modal, prev + next buttons ---- */
 function camNames() {
   return state.cameras.map(c => c.name).filter(n => n);
 }
@@ -629,20 +638,94 @@ function switchCam(step) {
   if (names.length < 2) return;
   const i = names.indexOf(state.live.cam);
   const next = names[(i + step + names.length) % names.length];
-  if (next && next !== state.live.cam) {
-    rememberCam(next);
-    $('#cam-select').value = next;
-    startStream(next);
-  }
+  if (next && next !== state.live.cam) selectCam(next);
 }
 function rememberCam(cam) {
   state.live.cam = cam;                 // startStream also sets it (idempotent)
   try { localStorage.setItem('portal.lastCam', cam); } catch (e) { /* ignore */ }
 }
+/* Pick a camera from the thumbnail row / modal / prev-next buttons. Clicking
+   the camera that is already streaming just closes the picker (no restart). */
+function selectCam(cam) {
+  if (!cam || camNames().indexOf(cam) < 0) return;
+  closeCamModal();
+  if (cam === state.live.cam && state.live.playing) return;
+  rememberCam(cam);
+  startStream(cam);
+  syncCamUI();
+}
 
-$('#cam-select').addEventListener('change', (e) => {
-  if (e.target.value) { rememberCam(e.target.value); startStream(e.target.value); }
+/* -------- camera thumbnail cells (inline row + modal grid) -------- */
+let thumbTs = 0;                       // bumped to refresh the latest.jpg thumbs
+function camThumbSrc(cam) {
+  return '/api/live/' + encodeURIComponent(cam) + '/latest.jpg?t=' + thumbTs;
+}
+function camCell(c) {
+  const on = !!c.online;
+  const name = esc(c.name);
+  const cls = 'cam-item' + (on ? '' : ' offline');
+  return '<button type="button" class="' + cls + '" data-cam="' + esc(c.name) +
+         '" title="' + name + (on ? '' : ' (offline)') + '">' +
+    '<span class="cam-thumb">' +
+      '<img loading="lazy" src="' + camThumbSrc(c.name) + '" alt="' + name + '">' +
+      '<span class="cam-off">no signal</span>' +
+    '</span>' +
+    '<span class="cam-name">' + name + '</span>' +
+  '</button>';
+}
+function camCells() {
+  return (state.cameras || []).map(camCell).join('');
+}
+function bindCamThumbErrors(root) {
+  $$('.cam-thumb img', root).forEach(im =>
+    im.addEventListener('error', () => im.classList.add('broken'), { once: true }));
+}
+function renderCamPicker() {
+  thumbTs = Date.now();                 // fresh detect-frame thumbnails
+  $('#cam-strip').innerHTML = camCells();
+  $('#cam-grid').innerHTML = camCells();
+  bindCamThumbErrors($('#cam-strip'));
+  bindCamThumbErrors($('#cam-grid'));
+  syncCamUI();
+}
+function syncCamUI() {
+  const cam = state.live.cam || '';
+  const p = $('#cam-picker');
+  if (p) p.textContent = cam ? cam + '  \u25BE' : 'Select camera';
+  const tag = $('#live-cam-tag');
+  if (tag) tag.textContent = cam;
+  $$('.cam-item').forEach(b => b.classList.toggle('active', b.dataset.cam === cam));
+}
+function openCamModal() {
+  // Refresh the thumbnails + online tags whenever the picker is opened.
+  thumbTs = Date.now();
+  $('#cam-grid').innerHTML = camCells();
+  bindCamThumbErrors($('#cam-grid'));
+  syncCamUI();
+  $('#cam-modal').classList.remove('hidden');
+}
+function closeCamModal() {
+  $('#cam-modal').classList.add('hidden');
+}
+
+$('#cam-picker').addEventListener('click', openCamModal);
+$('#cam-modal-close').addEventListener('click', closeCamModal);
+$('#cam-modal').addEventListener('click', (e) => {
+  if (e.target.closest('[data-cam-close]')) closeCamModal();   // backdrop tap
 });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeCamModal();
+});
+// Clicking a camera thumbnail in the inline row or the modal picks it.
+$('#cam-strip').addEventListener('click', (e) => {
+  const b = e.target.closest('.cam-item');
+  if (b && b.dataset.cam) selectCam(b.dataset.cam);
+});
+$('#cam-grid').addEventListener('click', (e) => {
+  const b = e.target.closest('.cam-item');
+  if (b && b.dataset.cam) selectCam(b.dataset.cam);
+});
+
 $('#overlay-resume').addEventListener('click', resume);
 // Restart the current live stream (retry HLS) WITHOUT reloading the page;
 // also re-arms a stream after an idle pause or a snapshot fallback.
@@ -654,22 +737,9 @@ $('#live-sound').addEventListener('click', (e) => {
   e.preventDefault();
   toggleLiveSound();
 });
-
-// Swipe (touch) / horizontal drag (mouse) on the live stage switches camera:
-// left swipe -> next camera, right swipe -> previous camera.
-const SWIPE_MIN_PX = 60;
-let swipeStart = null;
-$('#live-stage').addEventListener('pointerdown', (e) => {
-  swipeStart = { x: e.clientX, y: e.clientY, id: e.pointerId };
-}, { passive: true });
-window.addEventListener('pointerup', (e) => {
-  if (!swipeStart || swipeStart.id !== e.pointerId) return;
-  const dx = e.clientX - swipeStart.x;
-  const dy = e.clientY - swipeStart.y;
-  swipeStart = null;
-  if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy)) return;
-  switchCam(dx < 0 ? 1 : -1);           // left -> next, right -> previous
-});
+// Prev/next camera (wrap around) - small buttons below the live frame.
+$('#cam-prev').addEventListener('click', () => switchCam(-1));
+$('#cam-next').addEventListener('click', () => switchCam(1));
 
 /* ---------------- shared time-range + pagination helpers ---------------- */
 const TIME_PRESETS = [

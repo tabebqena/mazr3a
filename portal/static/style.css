@@ -210,6 +210,107 @@ body.live-full #view-live .controls { flex: 0 0 auto; margin-bottom: 0; }
 body.live-full #view-live .stage { flex: 1 1 auto; aspect-ratio: auto; min-height: 0; }
 body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
 
+/* ============ LIVE CAMERA PICKER (row of thumbnails + modal) ============ */
+/* Compact control bar above the live frame: the picker button (opens the
+   thumbnail picker / modal) plus the small restart button. */
+.live-ctl {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.live-ctl #cam-picker {
+  flex: 1 1 auto; min-width: 0; width: auto; min-height: var(--tap-h);
+  text-align: left; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.live-ctl #live-refresh {
+  flex: 0 0 auto; width: auto; min-width: 0; padding: 10px 14px;
+}
+/* Current camera name, overlaid top-left on the live frame. */
+.cam-tag {
+  position: absolute; top: 10px; left: 10px; z-index: 4;
+  padding: 3px 10px; border-radius: 14px; font-size: 12px;
+  background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.22);
+  color: #fff; letter-spacing: .3px; pointer-events: none;
+}
+/* Prev/next camera: small buttons below the live frame. */
+.live-foot {
+  display: flex; justify-content: center; gap: 10px; margin-top: 8px;
+}
+.live-foot button {
+  width: auto; min-width: 0; min-height: 34px; padding: 4px 16px;
+  font-size: 18px; line-height: 1; border-radius: 20px;
+  background: var(--panel2);
+}
+.live-foot button:hover { border-color: var(--accent); }
+.live-foot button:active { transform: scale(.96); }
+.live-foot button:disabled { opacity: .45; cursor: default; }
+
+/* Inline camera row: hidden on phones (cameras are picked via the modal);
+   shown as a horizontal scroll strip on >=640px. */
+.cam-strip {
+  display: none;
+  flex: 0 0 auto; min-width: 0;
+  gap: 8px; margin-top: 10px; padding: 2px 2px 8px; overflow-x: auto;
+}
+.cam-strip .cam-item { flex: 0 0 auto; width: 132px; }
+
+/* One camera thumbnail cell (used in the inline row and the modal grid). */
+.cam-item {
+  display: flex; flex-direction: column; padding: 0; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+}
+.cam-item:hover { border-color: var(--accent); }
+.cam-item.active {
+  border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent);
+}
+.cam-item .cam-thumb {
+  position: relative; display: block; width: 100%;
+  aspect-ratio: 16/9; background: #000; overflow: hidden;
+}
+.cam-item .cam-thumb img {
+  display: block; width: 100%; height: 100%; object-fit: cover;
+}
+.cam-item .cam-thumb img.broken { display: none; }
+.cam-item .cam-off {
+  display: none; position: absolute; inset: 0;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55); color: var(--muted);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+}
+.cam-item.offline .cam-thumb img { opacity: .35; }
+.cam-item.offline .cam-off { display: flex; }
+.cam-item .cam-name {
+  padding: 5px 8px; font-size: 12px; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cam-item.active .cam-name { color: var(--accent); font-weight: 700; }
+
+/* Camera picker modal: a bottom sheet on phones; centered card on larger
+   screens. Reached via the picker button - on phones it is the only way to
+   browse cameras. */
+.cam-modal {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.cam-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.62); }
+.cam-modal-card {
+  position: relative; width: 100%; max-width: 720px; max-height: 86vh;
+  overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 16px 16px 0 0; padding: 14px;
+}
+.cam-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 12px; font-weight: 700;
+}
+#cam-modal-close {
+  width: auto; min-width: 0; min-height: 36px; padding: 6px 14px;
+}
+.cam-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+.cam-grid .cam-item { width: 100%; }
+
 /* ================= LISTS / GRIDS ================= */
 .list { display: flex; flex-direction: column; gap: 12px; }
 /* Single-column cards on phones (progressively widened below). */
@@ -314,9 +415,8 @@ video.media { width: 100%; display: block; background: #000; }
     width: auto; min-height: auto; padding: 5px 12px;
     align-self: flex-end;
   }
-  /* Live refresh (↻) sits at the END of the controls row, not next to the
-     camera select: margin-left:auto pushes it to the far right. */
-  #view-live .controls #live-refresh { margin-left: auto; }
+  /* Live refresh (↻) is right-aligned by the .live-ctl flex row (the picker
+     button flexes to fill, the refresh button sits at the far end). */
   .time-custom {
     flex-direction: row; align-items: flex-end; padding-top: 0;
   }
@@ -331,6 +431,13 @@ video.media { width: 100%; display: block; background: #000; }
   .login-card { padding: 28px; }
   input, select, button { min-height: auto; padding: 9px 11px; }
   button { min-height: auto; }
+
+  /* Camera row is inline from tablet up; the picker/modal stays available. */
+  .cam-strip { display: flex; }
+  .cam-modal { align-items: center; padding: 20px; }
+  .cam-modal-card { border-radius: 16px; border-bottom: 1px solid var(--line); }
+  .cam-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .live-foot button { padding: 6px 18px; }
 }
 
 /* ============================================================

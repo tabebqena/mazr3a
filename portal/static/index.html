@@ -41,10 +41,13 @@
     <main>
       <!-- Live: HLS (go2rtc, hls.js) with a detect-snapshot fallback -->
       <section id="view-live" class="view hidden">
-        <div class="controls">
-          <label>Camera
-            <select id="cam-select"></select>
-          </label>
+        <div class="live-ctl">
+          <!-- Opens the camera picker. On phones the picker is a modal over
+               the live frame; on tablet/desktop an inline thumbnail row is
+               also shown below the frame. -->
+          <button id="cam-picker" type="button"
+                  title="Select camera" aria-label="Select camera"
+                  aria-haspopup="dialog"></button>
           <!-- Restart the current live stream (retry HLS) without a page
                reload - useful after a temporary snapshot fallback. -->
           <button id="live-refresh" type="button"
@@ -52,6 +55,7 @@
                   aria-label="Restart live stream">&#8635;</button>
         </div>
         <div id="live-stage" class="stage">
+          <div id="live-cam-tag" class="cam-tag"></div>
           <div id="live-spinner" class="spinner hidden" title="Connecting…"></div>
           <video id="live-video" autoplay muted playsinline class="hidden"></video>
           <img id="live-img" alt="live camera" class="hidden">
@@ -66,7 +70,31 @@
             </div>
           </div>
         </div>
+        <!-- Prev/next camera (wrap around): small buttons below the live frame. -->
+        <div class="live-foot">
+          <button id="cam-prev" type="button" title="Previous camera"
+                  aria-label="Previous camera">&#8249;</button>
+          <button id="cam-next" type="button" title="Next camera"
+                  aria-label="Next camera">&#8250;</button>
+        </div>
+        <!-- Inline camera row (thumbnail per camera). Phones keep this hidden
+             and pick cameras from the modal below instead. -->
+        <div id="cam-strip" class="cam-strip"></div>
         <div id="live-status" class="status"></div>
+
+        <!-- Camera picker modal: a grid of camera thumbnails; on small screens
+             this is how cameras are chosen (opened by the picker button). -->
+        <div id="cam-modal" class="cam-modal hidden" role="dialog"
+             aria-modal="true" aria-label="Select camera">
+          <div class="cam-backdrop" data-cam-close></div>
+          <div class="cam-modal-card">
+            <div class="cam-modal-head">
+              <span>Select camera</span>
+              <button id="cam-modal-close" type="button" aria-label="Close">&times;</button>
+            </div>
+            <div id="cam-grid" class="cam-grid"></div>
+          </div>
+        </div>
       </section>
 
       <!-- Frigate events & detections -->

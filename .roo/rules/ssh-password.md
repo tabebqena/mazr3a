@@ -13,12 +13,7 @@ not fall back to `sshpass`.
    installed, or defaulted to.** Do not emit `sshpass -p … ssh` / `scp`, do not
    `apt/brew install sshpass`, and do not add it to any Dockerfile, script, or
    plan. There is always an SSH_ASKPASS-based way (below).
-2. **Never hard-code credentials** in scripts, plans, or this rule. SSH
-   credentials come from the environment
-   (`DEPLOY_SSH_USER` / `DEPLOY_SSH_PASS`; plain `SSH_USER` / `SSH_PASSWORD` are
-   also honoured) or are prompted interactively. The `ai` / `123456` pair
-   documented in [`.roo/rules/sshuser.md`](.roo/rules/sshuser.md) is for the
-   **user's own interactive sessions** — not for the AI to embed in commands.
+
 
 ## Strategy — SSH_ASKPASS (OpenSSH built-in, no external tool)
 

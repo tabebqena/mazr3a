@@ -373,9 +373,27 @@ function toggleLiveSound() {
   state.live.sound = !state.live.sound;
   applyLiveSound();
   if (state.live.sound) {
-    const p = $('#live-video').play();   // re-engage if a mute stopped it
-    if (p && p.catch) p.catch(() => {});
+    const v = $('#live-video');
+    // Re-engage play ONLY if a mute actually paused the element. Re-calling
+    // play() on an already-playing live MSE/HLS stream forces a live-edge
+    // reset (buffer drop + rebuffer) on go2rtc's shallow ~1 s live window,
+    // which itself looks like a stop-then-reconnect.
+    if (v && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+    forgiveLiveWatchdogs();   // the unmute decoder pause must not restart HLS
   }
+}
+/* Unmuting a live stream makes the browser start routing the AAC track, which
+   can pause the decoder for a beat while it re-locks A/V sync. On go2rtc's
+   shallow live window that hiccup can be misread as a dead/black stream by the
+   reveal paint check / post-"Live" stall watchdog, which then DESTROYS and
+   reconnects the HLS (the visible "stop the stream, then reconnect with
+   voice" loop + possible black screen). Re-baseline whichever live-decode
+   watchdog is active so turning sound on is transparent - never a restart. */
+function forgiveLiveWatchdogs() {
+  if (!state.live.playing || state.live.mode !== 'hls' || !state.live.cam) return;
+  const cam = state.live.cam, tok = liveTok;
+  if (paintCheck) { clearPaintCheck(); startPaintCheck(cam, tok); }
+  else if (stallWatch) { armStallWatch(cam, tok); }
 }
 /* Live audio only exists once an HLS video has revealed and really buffered
    media - during the warm-up poster, an auto-retry freeze, an interruption or

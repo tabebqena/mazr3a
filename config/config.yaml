@@ -1,7 +1,8 @@
 # ============================================================
 # Frigate NVR configuration - Phase 0 baseline
 # NOTE: Frigate 0.17+ reads this file as config/config.yaml.
-# Detector: OpenVINO on CPU (Intel i7-9700)
+# Detector: OpenVINO on the iGPU (device: GPU, Intel UHD 630) - offloads
+# inference from the CPU cores to cut host CPU/thermals (2026-09-09).
 # Cameras: 10 (9 UNV/VCP + 1 Hikvision)
 # MQTT: publish events to local Mosquitto broker (service "mqtt")
 #
@@ -157,13 +158,18 @@ model:
 # OpenVINO detector (0.17.2 container).
 # The flat `model_path:` overrides the model path; model_type / input
 # config come from the top-level `model:` block above.
-# device: CPU - benchmarked ~17ms avg (YOLO11n@640) vs ~19.5ms on the
-# iGPU (plans/replace-coco-with-yolo-on-igpu.md §Results).
+# device: GPU (iGPU UHD 630) - inference offloaded off the CPU cores to
+# reduce host CPU load/thermals (2026-09-09). The iGPU is slightly
+# SLOWER than the CPU for YOLO11n@640 (~19.5ms vs ~17ms avg, plans/
+# replace-coco-with-yolo-on-igpu.md §Results), so watch /api/stats that
+# sum(detection_fps) still tracks sum(process_fps); revert to device: CPU
+# if the iGPU cannot keep up when all 10 cameras fire simultaneously.
+# OpenVINO compiles the ONNX on the GPU at startup (~3s one-off).
 # ------------------------------------------------------------------
 detectors:
   ov:
     type: openvino
-    device: CPU
+    device: GPU
     model_path: /models/coco/yolo11n.onnx
 
 # ------------------------------------------------------------------

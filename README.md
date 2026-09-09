@@ -14,7 +14,7 @@ fire model) stay deferred to later phases.
 | Host | Debian (SSH), user `dr`, deploy dir `~/frigate` |
 | CPU | Intel Core i7-9700 (8 cores) |
 | RAM | 7.5 GiB |
-| Detector | OpenVINO on CPU (no GPU/Coral) |
+| Detector | OpenVINO on the iGPU (device: GPU, Intel UHD 630) — offloads inference off the CPU cores (2026-09-09) |
 | Decode | Software decode (VAAPI/QSV disabled — it caused "Invalid data" on the main record stream) |
 | Cameras | 10 × `192.168.1.200` – `192.168.1.209` |
 

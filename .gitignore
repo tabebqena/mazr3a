@@ -50,7 +50,11 @@ config/go2rtc_homekit.yml
 
 # media-cleanup.log is written to the deploy root by the host cleanup cron
 # (scripts/cleanup_media.sh -> cleanup_media.conf LOG_FILE). Host-only runtime log.
+# RETIRED 2026-09-09: the unified heartbeat (scripts/heartbeat_cleanup.py ->
+# config/heartbeat.conf LOG_FILE) replaces cleanup_media.sh; its own log is
+# heartbeat-cleanup.log (also at the deploy root).
 media-cleanup.log
+heartbeat-cleanup.log
 
 # machine-monitor.state is written to the deploy root by the host watchdog cron
 # (scripts/machine-monitor.py -> MONITOR_STATE). Host-only debounce state.

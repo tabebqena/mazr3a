@@ -1,19 +1,17 @@
 # ============================================================
-# Frigate host cron jobs: media cleanup + Telegram monitoring.
+# Host cron jobs (run as dr) - Telegram monitoring + sampling.
 #
-# Install (overwrites the whole crontab):
-#     crontab scripts/crontab.sample
-# or merge the lines into an existing crontab:
-#     crontab -e
+# The disk/heartbeat cleanup job runs as ROOT (deleting root-owned
+# service dirs needs it) and lives in scripts/crontab.root.sample.
+# Install:
+#     crontab scripts/crontab.sample            # dr crontab (this file)
+#     sudo crontab scripts/crontab.root.sample  # ROOT crontab (heartbeat)
+# or merge the lines into each crontab with crontab -e.
 #
 # Each job handles its own logging/alerting, so cron output is
 # sent to /dev/null. Adjust /home/dr/frigate if the host deploy
 # dir differs.
 # ============================================================
-
-# Media disk-cap cleanup (bash) - every 30 minutes
-# (logs to config/cleanup_media.conf -> LOG_FILE)
-*/30 * * * * /home/dr/frigate/scripts/cleanup_media.sh >> /dev/null 2>&1
 
 # CPU temperature watchdog (python) - EVERY MINUTE (was */10)
 # Two-tier Telegram alert (tunables in config/telegram.conf):
@@ -37,11 +35,3 @@
 # quality change, then "after_bump" once it's applied. CSV rows are bounded by
 # --max-rows (default 20000).
 * * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre >> /dev/null 2>&1
-
-# Firewatch evidence-store cleanup (python, run INSIDE the firewatch container)
-# - every 30 minutes. Caps stored firewatch JPEGs at MAX_IMAGES_GB (default 2)
-# and expires DB rows older than ROW_EXPIRE_DAYS (default 90 = 3 months).
-# Tunables: config/cleanup_firewatch.conf (mounted at /config in the container).
-# Runs as the firewatch user (uid 1000, owner of the evidence files) via docker
-# exec, so it can delete rows + images; it never touches Frigate's media files.
-*/30 * * * * /usr/bin/docker exec firewatch python /scripts/cleanup_firewatch_store.py >> /dev/null 2>&1

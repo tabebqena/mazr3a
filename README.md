@@ -27,14 +27,24 @@ fire model) stay deferred to later phases.
 ├── .env                        # RTSP credentials (git-ignored; copy from .env.example)
 ├── config/
 │   ├── config.yaml             # Frigate config (0.17 name): 10 cameras, OpenVINO, MQTT
-│   ├── cleanup_media.conf      # Cleanup-cron tunables (disk cap, min free space, age)
+│   ├── heartbeat.conf          # Unified disk heartbeat GLOBAL cap (root cron cleaner)
+│   ├── stores/                 # Per-service cleanup profiles (one <service>.conf each)
+│   │   ├── frigate.conf        #   Frigate media (recordings/clips/snapshots/cache)
+│   │   ├── firewatch.conf      #   firewatch evidence (DB-aware, docker-exec delegate)
+│   │   ├── watchdog.conf       #   watchdog baseline CSVs (media/watchdog/)
+│   │   ├── mosquitto.conf      #   mosquitto data/log
+│   │   └── logs.conf           #   host deploy-root runtime logs
+│   ├── cleanup_firewatch.conf  # firewatch in-container DB cleanup tunables (worker)
+│   ├── cleanup_media.conf      # SUPERSEDED 2026-09-09 (was cleanup_media.sh tunables)
 │   ├── firewatch.conf          # Fire-watch tunables (cameras, cadence, thresholds)
 │   └── telegram.conf           # Telegram bot creds (git-ignored; example in repo)
 ├── scripts/                    # HOST scripts - deployed to & run on the Frigate host
-│   ├── cleanup_media.sh        # Deletes oldest media when over the disk cap (host cron)
+│   ├── heartbeat_cleanup.py    # UNIFIED disk heartbeat (per-service + global cap; root cron)
+│   ├── cleanup_firewatch_store.py # firewatch DB-aware cleanup worker (in-container, delegated)
+│   ├── cleanup_media.sh        # SUPERSEDED 2026-09-09 (replaced by heartbeat_cleanup.py)
 │   ├── collect_sensors.py      # lm-sensors reading helpers (host scripts)
 │   ├── telegram_notify.py      # Shared Telegram helpers (host scripts + firewatch)
-│   ├── crontab.sample          # Sample cron lines to install on the host
+│   ├── crontab.sample          # Sample cron lines to install on the host (root + dr)
 │   ├── machine-monitor.py      # CPU-temp watchdog (host cron)
 │   ├── machine-status.py       # Daily health report (host cron)
 │   ├── diagnose_detection.py   # On-host detection diagnosis (read-only)
@@ -138,9 +148,11 @@ rm -f config/frigate.yml   # Frigate 0.17 reads config.yaml only; drop the depre
 mkdir -p media
 docker compose config          # validate the compose + env files
 docker compose up -d           # start Frigate and Mosquitto
-chmod +x scripts/cleanup_media.sh
-crontab scripts/crontab.sample # install disk-cap cleanup (every 30 min)
-crontab -l                     # confirm the cleanup entry
+sudo crontab scripts/crontab.root.sample  # ROOT crontab: unified disk heartbeat (every 15 min)
+crontab scripts/crontab.sample            # dr crontab: temp watchdog + daily report + sampler
+crontab -l; sudo crontab -l               # confirm both crontabs
+# sanity-check the heartbeat can reach every store dir (root):
+sudo /usr/bin/python3 /home/dr/frigate/scripts/heartbeat_cleanup.py --check
 docker compose logs -f frigate # watch startup; Ctrl+C to stop following
 ```
 
@@ -193,11 +205,20 @@ work from the detect stream.
 
 Clips expire two ways:
 - **By age** — Frigate `record.retain.default: 7` days (snapshots keep 14).
-- **By disk cap** — a host cron runs
-  [`scripts/cleanup_media.sh`](scripts/cleanup_media.sh) every 30 min and deletes the
-  **oldest** media files whenever usage exceeds the configurable cap in
-  [`config/cleanup_media.conf`](config/cleanup_media.conf) (`MAX_MEDIA_GB`,
-  `MIN_FREE_GB`, `MAX_AGE_DAYS`). Edit the values and re-deploy the file to the host.
+- **By disk cap** — the unified disk heartbeat
+  ([`scripts/heartbeat_cleanup.py`](scripts/heartbeat_cleanup.py), host root cron every
+  15 min) replaces the old `cleanup_media.sh`. Each locally-writing service declares its
+  own store profile under [`config/stores/`](config/stores/) (`frigate.conf`,
+  `firewatch.conf`, `watchdog.conf`, `mosquitto.conf`, `logs.conf`) telling the heartbeat
+  how to clean its files — by `MAX_SIZE_GB` (oldest-first while over the cap) and/or
+  `MAX_AGE_DAYS` (delete older than N days), scoped to that service's own dirs so no store
+  ever touches another's files. A **global cap** in
+  [`config/heartbeat.conf`](config/heartbeat.conf) (`MIN_FREE_GB` / `MAX_USED_PCT` +
+  `RELIEF_FREE_GB`) makes the heartbeat escalate across stores in `PRIORITY` order when the
+  disk is nearly full. firewatch evidence stays DB-aware: its profile is a `docker-exec`
+  delegate that calls the in-container `cleanup_firewatch_store.py` worker (the SQLite DB
+  is the source of truth). Run `scripts/heartbeat_cleanup.py --check` for a per-store
+  permission/usage table, `--dry-run` to preview deletions.
 
 **If high-res (3200×1800) event clips are wanted later** (needs hardware decode to
 keep CPU low):
@@ -290,10 +311,11 @@ The global `ffmpeg: hwaccel_args: []` in the config forces software decode (fine
 - [ ] MQTT events published (optional): on the host run
       `mosquitto_sub -h localhost -p 1883 -t 'frigate/#'`
       then walk in front of a camera — event JSON should appear
-- [ ] Cleanup cron works: `scripts/cleanup_media.sh` logs a run to
-      `media-cleanup.log`; temporarily lowering `MAX_MEDIA_GB` in
-      `config/cleanup_media.conf` deletes the oldest files until usage drops back under
-      the cap
+- [ ] Disk heartbeat works: `scripts/heartbeat_cleanup.py --check` (as root) shows
+      every `config/stores/*.conf` dir readable/writable; `--dry-run` reports what a run
+      would delete; lowering `MAX_SIZE_GB` in `config/stores/frigate.conf` (or
+      `MIN_FREE_GB` in `config/heartbeat.conf`) deletes oldest files until usage is under
+      the cap. `heartbeat-cleanup.log` logs each run.
 
 ## Troubleshooting
 

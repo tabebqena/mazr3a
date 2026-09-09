@@ -1,0 +1,21 @@
+# ============================================================
+# Host cron job run as ROOT - the unified disk heartbeat.
+#
+# Install:
+#     sudo crontab scripts/crontab.root.sample
+# (dr-level monitoring/sampling jobs live in scripts/crontab.sample.)
+#
+# UNIFIED DISK HEARTBEAT (python, root) - every 15 minutes.
+# The single cleaner replacing scripts/cleanup_media.sh + the old
+# firewatch-only cleanup cron line. Reads the central global cap from
+# config/heartbeat.conf and per-service rules from config/stores/*.conf
+# (frigate dir, firewatch docker-exec delegate, watchdog, mosquitto,
+# logs). Firewatch evidence is cleaned through its docker-exec store
+# profile (the in-container DB-aware worker), so it needs no separate
+# line. Logs to heartbeat.conf -> LOG_FILE.
+# MUST run as root: the permission pre-flight aborts a non-root real
+# run. Inspect with:
+#   sudo /usr/bin/python3 /home/dr/frigate/scripts/heartbeat_cleanup.py --check
+#   sudo /usr/bin/python3 /home/dr/frigate/scripts/heartbeat_cleanup.py --dry-run
+# ============================================================
+*/15 * * * * /usr/bin/python3 /home/dr/frigate/scripts/heartbeat_cleanup.py >> /dev/null 2>&1

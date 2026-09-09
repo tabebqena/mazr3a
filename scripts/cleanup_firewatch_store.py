@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """cleanup_firewatch_store.py - cap firewatch evidence storage (image cap + row expiry).
 
-Runs INSIDE the firewatch container from the host crontab (scripts/crontab.sample):
+Runs INSIDE the firewatch container. Since 2026-09-09 the unified disk
+heartbeat (scripts/heartbeat_cleanup.py -> config/stores/firewatch.conf,
+TYPE=docker-exec) invokes this as the firewatch store's DB-aware worker
+on every heartbeat tick - there is NO separate host cron line anymore.
+It can still be run standalone for a manual pass:
 
-    */30 * * * * /usr/bin/docker exec firewatch python /scripts/cleanup_firewatch_store.py
+    /usr/bin/docker exec firewatch python /scripts/cleanup_firewatch_store.py [--dry-run]
 
 The WAL-mode SQLite evidence DB (frames/detections) is the source of truth: every
 stored firewatch frame references its JPEGs via frames.jpg_path (the original) and

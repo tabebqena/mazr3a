@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
+# cleanup_media.sh - SUPERSEDED (2026-09-09) - DO NOT SCHEDULE.
+# Retired in favour of the unified disk heartbeat:
+#   scripts/heartbeat_cleanup.py + config/heartbeat.conf +
+#   config/stores/frigate.conf (config/stores/*.conf per service).
+# Kept on disk only as a reference / manual one-shot fallback.
+# ============================================================
+# ============================================================
+# (Original description preserved below for reference.)
 # cleanup_media.sh - Delete the oldest Frigate media files when
 # the media directory grows past a configurable disk cap (or free
 # space drops below a minimum).

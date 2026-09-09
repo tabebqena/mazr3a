@@ -27,7 +27,8 @@ COOKIE_NAME = "portal_session"
 # never drifts from this constant) and (b) served to the client via
 # /api/settings -> app_version (app.js re-fills #ver-no after boot). Bump on
 # UI/API change; no other copy of the number should be kept in the front-end.
-APP_VERSION = "0.3.4"
+# AI instruction : update the version with each task, so the user can see the changes in the footer of the SPA. The version is also used in the API responses to indicate the version of the portal.
+APP_VERSION = "0.3.5"
 _HTMX = None
 
 

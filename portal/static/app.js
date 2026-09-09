@@ -22,11 +22,16 @@ const state = {
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live HLS
-// TODO: recheck if the user move the camera itself or press the refresh button.
 const OFFLINE_CHECK_MS = 8000;    // how often to re-check an offline camera
-const HLS_PAINT_WAIT_MS = 3500;   // post-reveal window before treating as black
-// TODO: I think this make a bug 
-const HLS_VIDEO_RETRY_MS = 6000;  // retry when HLS buffered but no video frame
+const HLS_PAINT_WAIT_MS = 3500;   // post-reveal: claim Live only once a real
+                                  // video frame has been decoded (frame-based)
+// Retry when HLS buffered but no video frame ever rendered (blackRevert path).
+const HLS_VIDEO_RETRY_MS = 6000;
+// Post-"Live" watchdog: go2rtc HLS is a tiny ~2 x 0.5 s sliding live window and
+// can stall right after a frame renders over a slow path, freezing a black
+// "Live (HLS)". If no NEW video frame decodes for this long while Live is
+// claimed, restart HLS (fresh session) instead of sitting on a black/frozen.
+const HLS_STALL_WATCH_MS = 4000;
 // True when this browser can play HLS at all (hls.js MSE or native Safari HLS).
 const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
   || (function () {
@@ -43,6 +48,7 @@ let frameWatchTimer = null;  // watchdog: give up waiting for the first media
 let retryTimer = null;       // auto-retry: snapshot fallback -> HLS live
 let offlineTimer = null;     // periodic re-check while a camera is offline
 let paintCheck = null;       // post-reveal: confirm frames really render
+let stallWatch = null;       // post-Live: restart if no new frame (black/frozen)
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
 
@@ -197,6 +203,7 @@ function hlsFallback(cam, tok) {
       || state.live.mode !== 'hls') return;
   clearFrameWatch();                 // no stale first-media watchdog
   clearPaintCheck();
+  clearStallWatch();
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   state.live.imgLive = false;        // freeze the poster; stop the poster poll
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
@@ -449,9 +456,18 @@ function startHls(cam, tok) {
     // hls.js -> MediaSource in the page (Chrome/Firefox/Edge etc.)
     const hls = curHls = new Hls({
       enableWorker: true,
-      lowLatencyMode: true,
+      // go2rtc's HLS here is a very shallow live window (~2 x 0.5 s segments).
+      // lowLatencyMode pins the player to the live edge; over a high-latency
+      // path it stalls re-fetching the same edge segments (black / frozen), so
+      // play a little behind the edge with a tolerant, nudge-friendly config.
+      lowLatencyMode: false,
+      liveSyncDurationCount: 4,     // buffer a few segments behind the live edge
+      liveMaxLatencyDurationCount: 10,
+      maxBufferLength: 20,
       backBufferLength: 30,
       maxLiveSyncPlaybackRate: 1.5,
+      nudgeOffset: 0.5,             // restart playback quickly on a small stall
+      nudgeMaxRetry: 10,
     });
     let netErrs = 0;              // give up after repeated network failures
     video.addEventListener('loadeddata', () => firstMediaReady(cam, tok),
@@ -509,6 +525,7 @@ function firstHlsFrame(cam, tok) {
       || state.live.mode !== 'hls') return;
   clearFrameWatch();
   clearPaintCheck();
+  clearStallWatch();
   state.live.revealed = true;   // reveal only once per attempt
   state.live.imgLive = false;
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
@@ -520,16 +537,33 @@ function firstHlsFrame(cam, tok) {
   startPaintCheck(cam, tok);
 }
 
-/* After revealing, confirm the <video> is really rendering frames before we
-   claim "Live (HLS)". On camera switch the first buffered data can arrive
-   before the first decodable video keyframe, which previously dropped the
-   poster and left a black screen labelled Live. */
+/* Honest "is a frame really decoding?" counter: totalVideoFrames when the
+   browser exposes it (MSE/hls.js), else webkitDecodedFrameCount (Safari).
+   Returns -1 when the browser reports neither (can't verify frame decode). */
+function videoFrames(video) {
+  if (!video) return -1;
+  if (video.getVideoPlaybackQuality) {
+    const q = video.getVideoPlaybackQuality();
+    if (q && typeof q.totalVideoFrames === 'number') return q.totalVideoFrames;
+  }
+  if (video.webkitDecodedFrameCount !== undefined) {
+    return video.webkitDecodedFrameCount;
+  }
+  return -1;
+}
+
+/* After revealing, confirm the <video> is really decoding NEW frames before we
+   claim "Live (HLS)". The AAC audio track decodes and advances currentTime even
+   when the video track never decodes, so a media-clock check alone would label
+   a black feed "Live (HLS)". Only a growing decoded-frame counter is accepted.
+   Browsers with no frame counter fall back to the media clock (best effort). */
 function startPaintCheck(cam, tok) {
   const video = $('#live-video');
   if (!video) return;
   clearPaintCheck();
-  const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-  const fr0 = q ? q.totalVideoFrames : -1;
+  clearStallWatch();
+  const canCount = videoFrames(video) !== -1;
+  const fr0 = canCount ? videoFrames(video) : 0;
   const t0 = Date.now();
   let lastT = video.currentTime;
   paintCheck = setInterval(() => {
@@ -537,24 +571,53 @@ function startPaintCheck(cam, tok) {
         || state.live.mode !== 'hls' || state.live.imgLive) {
       clearPaintCheck(); return;
     }
-    const q2 = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-    const fr = q2 ? q2.totalVideoFrames : -1;
-    const painted = fr > fr0 || video.currentTime !== lastT;
+    const fr = canCount ? videoFrames(video) : -1;
+    // painted = a new video frame was actually decoded (not just audio).
+    const painted = canCount ? fr > fr0 : video.currentTime !== lastT;
     lastT = video.currentTime;
     if (painted && video.readyState >= 2) {
       clearPaintCheck();
       $('#live-status').textContent = 'Live (HLS)';
       applyLiveSound();
+      armStallWatch(cam, tok);   // keep it honest: restart if the picture freezes
       return;
     }
     if (Date.now() - t0 > HLS_PAINT_WAIT_MS) {
       clearPaintCheck();
-      blackRevert(cam, tok);          // buffered but never rendered
+      blackRevert(cam, tok);          // buffered but never decoded a frame
     }
   }, 250);
 }
 function clearPaintCheck() {
   if (paintCheck) { clearInterval(paintCheck); paintCheck = null; }
+}
+
+/* Post-"Live" watchdog. go2rtc HLS serves only a tiny ~2 x 0.5 s sliding live
+   window; over a high-latency path hls.js can stall right after a frame
+   renders, leaving a frozen/black "Live (HLS)". If no NEW video frame decodes
+   for HLS_STALL_WATCH_MS while we claim Live, restart HLS (fresh session)
+   instead of sitting on a black/frozen label. Disabled where the browser gives
+   no frame counter. */
+function armStallWatch(cam, tok) {
+  clearStallWatch();
+  const video = $('#live-video');
+  if (!video || videoFrames(video) < 0) return;   // can't count frames -> skip
+  let last = videoFrames(video);
+  let since = Date.now();
+  stallWatch = setInterval(() => {
+    if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
+        || state.live.mode !== 'hls') { clearStallWatch(); return; }
+    const f = videoFrames(video);
+    if (f < 0) { clearStallWatch(); return; }
+    if (f > last) { last = f; since = Date.now(); return; }
+    if (Date.now() - since > HLS_STALL_WATCH_MS) {
+      clearStallWatch();
+      blackRevert(cam, tok);   // no new frame for a while -> retry (fresh session)
+    }
+  }, 500);
+}
+function clearStallWatch() {
+  if (stallWatch) { clearInterval(stallWatch); stallWatch = null; }
 }
 
 /* Media was buffered but no video frame ever rendered (black): do NOT claim
@@ -563,6 +626,8 @@ function clearPaintCheck() {
 function blackRevert(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
+  clearPaintCheck();
+  clearStallWatch();
   state.live.revealed = true;         // this attempt already revealed once
   state.live.imgLive = false;         // frozen poster (no ~1 fps feed)
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
@@ -611,6 +676,7 @@ function stopStream() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = null; }
   clearPaintCheck();
+  clearStallWatch();
   if (curHls) { curHls.destroy(); curHls = null; }
   const video = $('#live-video');
   try { video.pause(); } catch (e) { /* ignore */ }

@@ -348,8 +348,11 @@ A stdlib-only [`telegram-bot`](scripts/telegram_bot.py) compose service long-pol
 Bot API and answers `/status`, `/help` and `/start` **in the chat that asked** — so you
 can get a live host + Frigate report in Telegram without waiting for the daily cron or
 an alert. It reuses the shared [`scripts/telegram_notify.py`](scripts/telegram_notify.py)
-and reads host health through read-only bind mounts (`/proc`, coretemp `hwmon`, `./media`)
-plus the Frigate REST API. Start it once (no build — stock python image):
+and reads host health through read-only bind mounts (`/proc`, `./media`) plus the
+container's native read-only sysfs coretemp (`/sys/class/hwmon` — a bare bind of host
+`/sys/class/hwmon` is unusable in-container: its relative hwmon symlinks resolve outside
+the mount, see `plans/telegram-bot-cpu-temp-n-a.md`) and the Frigate REST API. Start it
+once (no build — stock python image):
 
 ```bash
 docker compose up -d telegram-bot

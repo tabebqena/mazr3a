@@ -100,10 +100,13 @@ services:
   # Dependency-free: a stock python:3.11-slim image (stdlib only) - no build.
   # Code + config are mounted read-only (like firewatch) so edits need only
   # `docker compose restart telegram-bot`. HOST health for /status comes from
-  # read-only bind mounts (/proc, coretemp hwmon, ./media) + ./config for the
-  # root filesystem stats and the Frigate REST API; the container never
-  # writes to the host. Long-polling getUpdates must be the ONLY consumer of
-  # the bot's updates (cron scripts + firewatch only SEND - no webhook).
+  # read-only bind mounts (/proc, ./media) + ./config for the root filesystem
+  # stats + the container's NATIVE read-only sysfs coretemp (HOST_HWMON=/sys/
+  # class/hwmon). Do NOT bind-mount host /sys/class/hwmon for this: its relative
+  # hwmon symlinks resolve outside the mount, so temps would read as n/a (see
+  # plans/telegram-bot-cpu-temp-n-a.md) + the Frigate REST API; the container
+  # never writes to the host. Long-polling getUpdates must be the ONLY consumer
+  # of the bot's updates (cron scripts + firewatch only SEND - no webhook).
   # ------------------------------------------------------------------
   telegram-bot:
     container_name: telegram-bot
@@ -114,13 +117,12 @@ services:
       - ./scripts:/scripts:ro            # telegram_bot.py + telegram_notify.py
       - ./config:/config:ro              # telegram.conf (creds + tunables)
       - /proc:/host/proc:ro              # host uptime / loadavg / meminfo / hostname
-      - /sys/class/hwmon:/host/hwmon:ro  # host coretemp (CPU temp for /status)
       - ./media:/media:ro                # Frigate media filesystem usage
     environment:
       - FRIGATE_API=http://frigate:5000  # compose network: frigate service
       - TELEGRAM_CONF=/config/telegram.conf
       - HOST_PROC=/host/proc
-      - HOST_HWMON=/host/hwmon
+      - HOST_HWMON=/sys/class/hwmon       # native ro sysfs coretemp (see comment above)
       - MEDIA_DIR=/media
       - ROOT_STAT=/config                # config mount sits on the host root fs
     depends_on:

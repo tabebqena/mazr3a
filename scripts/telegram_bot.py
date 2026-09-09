@@ -8,9 +8,13 @@ host live from Telegram instead of waiting for the daily cron report or an alert
 It runs as the `telegram-bot` docker compose service (see docker-compose.yml):
 a dependency-free python:3.11-slim image with ./scripts + ./config mounted
 read-only (code/config edits need only `docker compose restart telegram-bot`),
-plus read-only HOST bind mounts so /status reports real host health:
-  - /proc            -> $HOST_PROC    (uptime, load, meminfo, hostname)
-  - /sys/class/hwmon -> $HOST_HWMON   (coretemp -> CPU temp)
+plus read-only host mounts so /status reports real host health:
+  - /proc            -> $HOST_PROC    (host uptime, load, meminfo, hostname)
+  - coretemp         -> $HOST_HWMON   (default /sys/class/hwmon = the container's
+                                       native read-only sysfs; bind-mounting host
+                                       /sys/class/hwmon alone cannot work - its
+                                       relative hwmon symlinks resolve outside the
+                                       mount, see plans/telegram-bot-cpu-temp-n-a.md)
   - ./media          -> $MEDIA_DIR    (media filesystem usage)
   - ./config         -> $ROOT_STAT    (config mount sits on the host root fs)
 and the Frigate REST API ($FRIGATE_API, e.g. http://frigate:5000). The bot
@@ -48,7 +52,10 @@ import telegram_notify as tg  # noqa: E402
 
 FRIGATE_API = os.environ.get("FRIGATE_API", "http://frigate:5000").rstrip("/")
 HOST_PROC = os.environ.get("HOST_PROC", "/host/proc")
-HOST_HWMON = os.environ.get("HOST_HWMON", "/host/hwmon")
+# Container-native read-only sysfs coretemp. A bare bind of host /sys/class/hwmon
+# is NOT usable in a container: the hwmon entries are relative symlinks that would
+# resolve to /devices (outside the mount) instead of /sys/devices (see plan).
+HOST_HWMON = os.environ.get("HOST_HWMON", "/sys/class/hwmon")
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "/media")
 ROOT_STAT = os.environ.get("ROOT_STAT", "/config")
 

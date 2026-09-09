@@ -554,6 +554,12 @@ def run_forever(cfg, model):
     track_smoke = _getb(cfg, "TRACK_SMOKE", False)
     allowed = {"fire"} if not track_smoke else {"fire", "smoke"}
     enabled = _getb(cfg, "ENABLED", True)
+    # Liveness heartbeat (2026-09-09, plans/firewatch-heartbeat-logging.md): a
+    # healthy watcher with nothing on fire logs NOTHING between events, so it is
+    # indistinguishable from a dead/hung one in `docker logs`. Every HEARTBEAT_S
+    # seconds print one summary line (cams OK / fire-marked cams this sweep) to
+    # prove the loop is alive. Default 300s, clamped to >=60s to prevent spam.
+    heartbeat_s = max(60.0, _getf(cfg, "HEARTBEAT_S", 300))
     # Sliding-window gate (2026-09-06 fix, see plans/fire-detection.md): alert
     # when the last `window` polls contain >= MIN_HITS fire/smoke hits.
     # window == MIN_HITS means strictly-consecutive (old behavior); window >
@@ -570,18 +576,24 @@ def run_forever(cfg, model):
              for c in cameras}
     LOG(f"started: {len(cameras)} cameras, sweep every {interval}s, "
         f"min_hits={min_hits} in window {window}, cooldown={cooldown}s, "
-        f"smoke={track_smoke}, enabled={enabled}")
+        f"smoke={track_smoke}, enabled={enabled}, heartbeat={heartbeat_s:g}s")
+    sweep = 0
+    last_hb = time.monotonic()
     while True:
         if not enabled:
             LOG("disabled (ENABLED=false) - sleeping 60s")
             time.sleep(60)
             continue
+        sweep += 1
+        up = 0
+        fire_cams = 0
         for cam in cameras:
             st = state[cam]
             try:
                 raw = fetch_frame(api, cam)
                 img = Image.open(io.BytesIO(raw)).convert("RGB")
                 dets = model.detect(img, score_thresh=threshold, allowed=allowed)
+                up += 1
                 if st["down"]:
                     LOG(f"{cam}: back online")
                     st["down"] = False
@@ -591,6 +603,7 @@ def run_forever(cfg, model):
                 now = time.monotonic()
                 in_cooldown = now - st["last_alert"] < cooldown
                 if dets:
+                    fire_cams += 1
                     # Evidence store: persist EVERY fire-marked frame (JPEG +
                     # SQLite metadata) independent of the MIN_HITS alert gate /
                     # cooldown (a real fire below the accumulation bar still
@@ -618,12 +631,23 @@ def run_forever(cfg, model):
             except urllib.error.HTTPError as exc:
                 st["recent"].clear()
                 if not st["down"]:
+                    # Mark down + log once per episode (not every 15s sweep),
+                    # mirroring the generic-error branch below - so a long
+                    # Frigate outage can't flood the log, and the next
+                    # successful poll logs "back online".
+                    st["down"] = True
                     LOG(f"{cam}: HTTP {exc.code}")
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
                 st["recent"].clear()
                 if not st["down"]:
                     LOG(f"{cam}: error: {exc}")
                     st["down"] = True
+        now = time.monotonic()
+        if now - last_hb >= heartbeat_s:
+            last_hb = now
+            LOG(f"heartbeat: {up}/{len(cameras)} cams OK, "
+                f"{fire_cams} fire-marked camera(s) this sweep "
+                f"(sweep #{sweep}, every {interval:g}s)")
         time.sleep(interval)
 
 

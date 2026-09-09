@@ -161,49 +161,66 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
 }
 
 /* ================= LIVE CONTROL ROW (above the frame) =================
-   Order (DOM): camera name/picker (FIRST), sound toggle, save-image, the zoom
-   group (- / + / reset), and the refresh/restart button (LAST). Buttons here
-   are NEVER forced full width - even on phones they size to their content and
-   wrap onto extra rows on very narrow screens (this overrides the generic
-   `button { width: 100% }` rule). */
+   Order (DOM): camera name/picker (FIRST, flexes to fill) + a .live-tools
+   group holding sound toggle, save-image, the zoom segmented control
+   (- / + / reset) and the refresh/restart button (LAST). Every control shares
+   one uniform height so the row reads as a single compact toolbar. Buttons are
+   NEVER forced full width (mobile override of the generic
+   `button { width: 100% }` rule); on very narrow screens the flex row wraps
+   the WHOLE .live-tools group under the camera name - the zoom control itself
+   never wraps. */
 .live-ctl {
   display: flex; flex-wrap: wrap; align-items: center;
-  gap: 6px 8px; margin-bottom: 8px;
+  gap: 8px; margin-bottom: 10px;
 }
 .live-ctl button {
-  width: auto; min-width: 0; min-height: var(--tap-h);
-  padding: 7px 12px; white-space: nowrap;
+  width: auto; min-width: 0; min-height: 40px;
+  padding: 6px 12px; white-space: nowrap;
 }
-/* Camera name/picker (first control): flexes to fill the spare width (name with
-   ellipsis on narrow rows); clicking still opens the camera picker. */
+/* Camera name/picker (first control): flexes to fill the spare width (name
+   with ellipsis on narrow rows) and pushes the tool group to the far end. */
 .live-ctl #cam-picker {
-  flex: 1 1 150px; min-width: 0; text-align: left;
+  flex: 1 1 auto; min-width: 0; text-align: left;
   overflow: hidden; text-overflow: ellipsis;
+  font-weight: 600; background: var(--panel);
 }
-/* Compact square icon chips (sound / save / zoom +/-). */
+/* Right-hand tool cluster: one atomic group (never wraps internally) so a
+   narrow row drops the whole cluster below the camera name instead of
+   scattering individual buttons across lines. */
+.live-ctl .live-tools {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center;
+  flex-wrap: nowrap; gap: 6px;
+}
+/* Compact square icon chips (sound / save): same height as the text buttons
+   but a narrow small glyph, so the take-photo button no longer dominates the
+   toolbar. (The zoom +/- segments are sized separately below.) */
 .live-ctl #live-sound,
-.live-ctl #live-shot,
-.live-ctl #zoom-out,
-.live-ctl #zoom-in {
-  flex: 0 0 auto; width: 46px; padding: 0;
-  text-align: center; font-size: 17px; line-height: 1;
+.live-ctl #live-shot {
+  flex: 0 0 auto; width: 40px; padding: 0;
+  text-align: center; font-size: 16px; line-height: 1;
 }
-/* Zoom group: the three small buttons joined as a segmented control. */
+/* Zoom group: the three small buttons joined as a horizontal segmented control.
+   nowrap + fixed small segments guarantee - / + / reset sit side-by-side and
+   can never stack vertically. */
 .live-ctl .zoom-ctl {
-  display: inline-flex; align-items: center; gap: 2px;
+  flex: 0 0 auto;
+  display: inline-flex; align-items: stretch;
+  flex-wrap: nowrap; gap: 2px;
   border: 1px solid var(--line); border-radius: 9px; padding: 2px;
   background: var(--panel2);
 }
 .live-ctl .zoom-ctl button {
-  min-height: 38px; min-width: 38px; padding: 0;
-  border: 0; background: transparent; font-size: 17px; line-height: 1;
+  flex: 0 0 auto;
+  min-height: 34px; min-width: 34px; padding: 0;
+  border: 0; background: transparent; font-size: 16px; line-height: 1;
 }
 .live-ctl .zoom-ctl #zoom-reset {
   min-width: 0; width: auto; padding: 0 9px; font-size: 12px;
 }
 .live-ctl button:disabled { opacity: .45; cursor: default; }
 .live-ctl button:active:not(:disabled) { transform: scale(.95); }
-/* The refresh (restart stream) button is the LAST control, pinned to the end. */
+/* The refresh (restart stream) button is the LAST control of the tools group. */
 .live-ctl #live-refresh { flex: 0 0 auto; font-size: 16px; }
 /* Sound toggle on-state (moved off the frame into the row). */
 .live-ctl #live-sound.sound-on {

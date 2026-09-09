@@ -12,7 +12,8 @@ const state = {
   me: null,
   settings: null,
   cameras: [],
-  live: { cam: null, playing: false, mode: '', sound: false, imgLive: false },
+  live: { cam: null, playing: false, mode: '', sound: false, imgLive: false,
+          revealed: false },   // true once this HLS attempt dropped the poster
   // imgLive: the <img> is the poster shown while an HLS attempt is starting
   //          (or the frozen last frame while an online camera auto-retries).
   // mode: '' | 'hls' | 'offline'
@@ -22,6 +23,8 @@ const state = {
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live HLS
 const OFFLINE_CHECK_MS = 8000;    // how often to re-check an offline camera
+const HLS_PAINT_WAIT_MS = 3500;   // post-reveal window before treating as black
+const HLS_VIDEO_RETRY_MS = 6000;  // retry when HLS buffered but no video frame
 // True when this browser can play HLS at all (hls.js MSE or native Safari HLS).
 const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
   || (function () {
@@ -37,6 +40,7 @@ let curHls = null;           // active hls.js instance (destroy on stop/switch)
 let frameWatchTimer = null;  // watchdog: give up waiting for the first media
 let retryTimer = null;       // auto-retry: snapshot fallback -> HLS live
 let offlineTimer = null;     // periodic re-check while a camera is offline
+let paintCheck = null;       // post-reveal: confirm frames really render
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
 
@@ -188,6 +192,7 @@ function hlsFallback(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
   clearFrameWatch();                 // no stale first-media watchdog
+  clearPaintCheck();
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   state.live.imgLive = false;        // freeze the poster; stop the poster poll
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
@@ -279,7 +284,7 @@ function enterOffline(cam) {
 /* While an ONLINE camera's HLS is slow/unavailable (latency), keep retrying to
    upgrade to live in the background - the frozen poster stays up. Stops when
    the view stops (idle, leaving Live, switching) or the camera is offline. */
-function scheduleLiveRetry(cam) {
+function scheduleLiveRetry(cam, delayMs) {
   if (retryTimer || !state.live.playing || !HLS_SUPPORTED
       || state.live.imgLive) return;
   retryTimer = setTimeout(() => {
@@ -288,7 +293,7 @@ function scheduleLiveRetry(cam) {
         || state.live.mode !== 'hls' || state.live.imgLive) return;
     $('#live-status').textContent = 'Upgrading to live HLS\u2026';
     startHls(cam, liveTok);   // background attempt; the frozen poster stays up
-  }, SNAPSHOT_RETRY_MS);
+  }, delayMs || SNAPSHOT_RETRY_MS);
 }
 
 function resetIdle() {
@@ -405,7 +410,7 @@ function armFirstFrameWatch(cam, tok) {
 }
 function firstMediaReady(cam, tok) {   // first real media buffered -> reveal
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-      || state.live.mode !== 'hls') return;
+      || state.live.mode !== 'hls' || state.live.revealed) return;
   firstHlsFrame(cam, tok);
 }
 function clearFrameWatch() {
@@ -414,6 +419,7 @@ function clearFrameWatch() {
 
 function startHls(cam, tok) {
   state.live.mode = 'hls';
+  state.live.revealed = false;   // each attempt may reveal the poster once
   const video = $('#live-video');
   // Keep the <video> element visible UNDER the poster <img> (CSS z-index) so
   // the browser keeps decoding while we wait; the poster is removed only once
@@ -449,7 +455,12 @@ function startHls(cam, tok) {
       }
     });
     hls.on(Hls.Events.FRAG_BUFFERED, (e, data) => {
-      if (data && data.frag) firstMediaReady(cam, tok);
+      if (!data || !data.frag) return;
+      // Audio-only fragments (AAC) can buffer before any video keyframe - do
+      // NOT drop the poster on those (that caused a black "Live (HLS)" on
+      // camera switch). Reveal only when video data is in the buffer.
+      if (data.frag.type === 'audio' || data.frag.type === 'subtitle') return;
+      firstMediaReady(cam, tok);
     });
     hls.on(Hls.Events.ERROR, (e, data) => {
       if (!data || !data.fatal) return;
@@ -480,20 +491,81 @@ function startHls(cam, tok) {
   hlsFallback(cam, tok);
 }
 
-/* First real HLS media has buffered -> drop the poster <img> and reveal the
-   (already playing) <video>: no black gap between spinner/stream. */
+/* A real video data fragment has buffered -> reveal the <video> (drop the
+   poster). "Live (HLS)" is only claimed once a frame actually renders
+   (startPaintCheck) - otherwise we keep the poster and auto-retry instead of
+   a black screen that says Live. */
 function firstHlsFrame(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
   clearFrameWatch();
+  clearPaintCheck();
+  state.live.revealed = true;   // reveal only once per attempt
   state.live.imgLive = false;
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   const img = $('#live-img');
   if (img) { img.onload = null; img.onerror = null; }
-  showVideo();                        // hide poster, show the live video
+  showVideo();                        // hide poster, show the <video>
   hideSpinner();
-  $('#live-status').textContent = 'Live (HLS)';
-  applyLiveSound();
+  $('#live-status').textContent = 'HLS starting\u2026';
+  startPaintCheck(cam, tok);
+}
+
+/* After revealing, confirm the <video> is really rendering frames before we
+   claim "Live (HLS)". On camera switch the first buffered data can arrive
+   before the first decodable video keyframe, which previously dropped the
+   poster and left a black screen labelled Live. */
+function startPaintCheck(cam, tok) {
+  const video = $('#live-video');
+  if (!video) return;
+  clearPaintCheck();
+  const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+  const fr0 = q ? q.totalVideoFrames : -1;
+  const t0 = Date.now();
+  let lastT = video.currentTime;
+  paintCheck = setInterval(() => {
+    if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
+        || state.live.mode !== 'hls' || state.live.imgLive) {
+      clearPaintCheck(); return;
+    }
+    const q2 = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    const fr = q2 ? q2.totalVideoFrames : -1;
+    const painted = fr > fr0 || video.currentTime !== lastT;
+    lastT = video.currentTime;
+    if (painted && video.readyState >= 2) {
+      clearPaintCheck();
+      $('#live-status').textContent = 'Live (HLS)';
+      applyLiveSound();
+      return;
+    }
+    if (Date.now() - t0 > HLS_PAINT_WAIT_MS) {
+      clearPaintCheck();
+      blackRevert(cam, tok);          // buffered but never rendered
+    }
+  }, 250);
+}
+function clearPaintCheck() {
+  if (paintCheck) { clearInterval(paintCheck); paintCheck = null; }
+}
+
+/* Media was buffered but no video frame ever rendered (black): do NOT claim
+   live. Keep the frozen poster, stop this HLS attempt, and retry shortly so
+   the view self-recovers instead of showing a black "Live (HLS)". */
+function blackRevert(cam, tok) {
+  if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
+      || state.live.mode !== 'hls') return;
+  state.live.revealed = true;         // this attempt already revealed once
+  state.live.imgLive = false;         // frozen poster (no ~1 fps feed)
+  if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
+  const video = $('#live-video');
+  try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
+  const img = $('#live-img');
+  if (img) { img.onload = null; img.onerror = null; }
+  $('#live-video').classList.add('hidden');
+  $('#live-img').classList.remove('hidden');
+  hideSpinner();
+  $('#live-status').textContent = 'HLS starting - waiting for video\u2026';
+  scheduleLiveRetry(cam, HLS_VIDEO_RETRY_MS);
 }
 
 /* Refresh the poster <img> while an HLS attempt is starting (imgLive true).
@@ -529,6 +601,7 @@ function stopStream() {
   clearFrameWatch();
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = null; }
+  clearPaintCheck();
   if (curHls) { curHls.destroy(); curHls = null; }
   const video = $('#live-video');
   try { video.pause(); } catch (e) { /* ignore */ }

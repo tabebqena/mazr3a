@@ -45,6 +45,11 @@
           <label>Camera
             <select id="cam-select"></select>
           </label>
+          <!-- Restart the current live stream (retry HLS) without a page
+               reload - useful after a temporary snapshot fallback. -->
+          <button id="live-refresh" type="button"
+                  title="Restart the live stream (retry HLS)"
+                  aria-label="Restart live stream">&#8635;</button>
         </div>
         <div id="live-stage" class="stage">
           <div id="live-spinner" class="spinner hidden" title="Connecting…"></div>

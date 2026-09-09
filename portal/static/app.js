@@ -23,8 +23,7 @@ let liveTimer = null;
 let idleTimer = null;
 let liveTok = 0;             // guards stale async callbacks after switch/stop
 let curHls = null;           // active hls.js instance (destroy on stop/switch)
-let frameWatch = null;       // poll timer: waiting for the first HLS video frame
-let frameWatchTimer = null;  // watchdog: give up waiting for the first frame
+let frameWatchTimer = null;  // watchdog: give up waiting for the first media
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
 
@@ -175,7 +174,7 @@ function hlsFallback(cam, tok) {
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.remove('hidden');
   $('#live-sound').classList.add('hidden');   // JPEG fallback has no audio
-  $('#live-status').textContent = 'Live (snapshot ~1 fps)';
+  $('#live-status').textContent = 'Live (snapshot ~1 fps) - tap \u21BB to retry';
   hideSpinner();
 }
 
@@ -262,47 +261,32 @@ function startStream(cam) {
   resetIdle();
 }
 
-/* Reveal the live video only once a REAL frame is presented, never on the
-   media 'playing' event (which fires before the first frame paints - that
-   caused "spinner -> black screen" while go2rtc starts a camera on demand:
-   RTSP pull + ffmpeg AAC transcode). Uses requestVideoFrameCallback when
-   available, else polls getVideoPlaybackQuality().totalVideoFrames. A
-   watchdog falls back to the detect-snapshot view if no frame appears. */
+/* Reveal the live video once real media has been BUFFERED - NOT on the media
+   'playing' event (which fires before any frame exists and caused a black gap
+   while go2rtc starts a camera on demand), and NOT on painted-frame detection
+   (requestVideoFrameCallback / totalVideoFrames never fire for a <video> that
+   is still fully covered by the poster <img>, which wrongly sent every camera
+   to the snapshot fallback). Data-level signals - hls.js FRAG_BUFFERED and the
+   video 'loadeddata' event - fire as soon as real media is in the buffer, even
+   while the video sits under the poster. The poster + spinner stay up during
+   the true no-data latency window; a watchdog drops to the detect-snapshot
+   view if no media ever arrives. */
 const HLS_FIRST_FRAME_WAIT_MS = 15000;
-function revealOnFirstFrame(cam, tok) {
-  if (frameWatchTimer) return;                 // already waiting for a frame
-  if (!state.live.imgLive) return;             // poster already replaced
-  frameWatchTimer = setTimeout(() => {         // watchdog: nothing in time
+function armFirstFrameWatch(cam, tok) {
+  if (frameWatchTimer || !state.live.imgLive) return;   // already waiting/done
+  frameWatchTimer = setTimeout(() => {         // watchdog: no media in time
     frameWatchTimer = null;
     clearFrameWatch();
     if (state.live.playing && tok === liveTok && cam === state.live.cam
         && state.live.mode === 'hls' && state.live.imgLive) hlsFallback(cam, tok);
   }, HLS_FIRST_FRAME_WAIT_MS);
-  const video = $('#live-video');
-  if (!video) return;
-  if (typeof video.requestVideoFrameCallback === 'function') {
-    try {
-      video.requestVideoFrameCallback(() => firstHlsFrame(cam, tok));
-      return;
-    } catch (e) { /* fall through to the poll fallback */ }
-  }
-  pollForVideoFrame(cam, tok);
 }
-function pollForVideoFrame(cam, tok) {
-  const video = $('#live-video');
-  if (!video || frameWatch) return;
-  const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-  const base = q ? q.totalVideoFrames : -1;
-  frameWatch = setInterval(() => {
-    if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-        || state.live.mode !== 'hls') { clearFrameWatch(); return; }
-    const q2 = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-    const n = q2 ? q2.totalVideoFrames : -1;
-    if (n > base && video.readyState >= 2) firstHlsFrame(cam, tok);
-  }, 200);
+function firstMediaReady(cam, tok) {   // first real media buffered -> reveal
+  if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
+      || state.live.mode !== 'hls' || !state.live.imgLive) return;
+  firstHlsFrame(cam, tok);
 }
 function clearFrameWatch() {
-  if (frameWatch) { clearInterval(frameWatch); frameWatch = null; }
   if (frameWatchTimer) { clearTimeout(frameWatchTimer); frameWatchTimer = null; }
 }
 
@@ -310,8 +294,8 @@ function startHls(cam, tok) {
   state.live.mode = 'hls';
   const video = $('#live-video');
   // Keep the <video> element visible UNDER the poster <img> (CSS z-index) so
-  // the browser actually starts decoding/playing while we wait; the poster is
-  // removed only when the first REAL frame is presented (revealOnFirstFrame).
+  // the browser keeps decoding while we wait; the poster is removed only once
+  // real media is buffered (FRAG_BUFFERED / loadeddata -> firstMediaReady).
   video.muted = true;                 // autoplay-safe; sound restored on play
   $('#live-video').classList.remove('hidden');
   $('#live-sound').classList.remove('hidden');
@@ -322,6 +306,7 @@ function startHls(cam, tok) {
   const url = '/api/live/' + encodeURIComponent(cam) +
     '/hls/stream.m3u8?src=' + encodeURIComponent(cam);
   $('#live-status').textContent = 'Connecting ' + cam + '…';
+  armFirstFrameWatch(cam, tok);       // watchdog: snapshot if no media arrives
 
   if (window.Hls && Hls.isSupported()) {
     // hls.js -> MediaSource in the page (Chrome/Firefox/Edge etc.)
@@ -332,13 +317,17 @@ function startHls(cam, tok) {
       maxLiveSyncPlaybackRate: 1.5,
     });
     let netErrs = 0;              // give up after repeated network failures
+    video.addEventListener('loadeddata', () => firstMediaReady(cam, tok),
+                           { once: true });
     hls.loadSource(url);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       if (state.live.playing && tok === liveTok && cam === state.live.cam) {
         video.play().catch(() => {});   // muted autoplay
-        revealOnFirstFrame(cam, tok);   // reveal when a frame is actually painted
       }
+    });
+    hls.on(Hls.Events.FRAG_BUFFERED, (e, data) => {
+      if (data && data.frag) firstMediaReady(cam, tok);
     });
     hls.on(Hls.Events.ERROR, (e, data) => {
       if (!data || !data.fatal) return;
@@ -358,9 +347,10 @@ function startHls(cam, tok) {
     // Safari / iOS native HLS
     const onErr = () => hlsFallback(cam, tok);
     video.addEventListener('error', onErr, { once: true });
+    video.addEventListener('loadeddata', () => firstMediaReady(cam, tok),
+                           { once: true });
     video.src = url;
-    video.play().then(() => revealOnFirstFrame(cam, tok))
-      .catch(() => hlsFallback(cam, tok));
+    video.play().catch(() => hlsFallback(cam, tok));
     return;
   }
 
@@ -368,8 +358,8 @@ function startHls(cam, tok) {
   hlsFallback(cam, tok);
 }
 
-/* The first real HLS video frame has rendered -> drop the poster <img> and
-   reveal the (already playing) <video>: no black gap between spinner/stream. */
+/* First real HLS media has buffered -> drop the poster <img> and reveal the
+   (already playing) <video>: no black gap between spinner/stream. */
 function firstHlsFrame(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
@@ -457,6 +447,12 @@ $('#cam-select').addEventListener('change', (e) => {
   if (e.target.value) { rememberCam(e.target.value); startStream(e.target.value); }
 });
 $('#overlay-resume').addEventListener('click', resume);
+// Restart the current live stream (retry HLS) WITHOUT reloading the page;
+// also re-arms a stream after an idle pause or a snapshot fallback.
+$('#live-refresh').addEventListener('click', () => {
+  if (!state.live.cam) return;
+  startStream(state.live.cam);
+});
 $('#live-sound').addEventListener('click', (e) => {
   e.preventDefault();
   toggleLiveSound();

@@ -383,8 +383,10 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   the SPA auto-falls back to detect-snapshot polling (`GET /api/live/<cam>/latest.jpg`, ~1 fps)
   if HLS is unavailable. An **idle time watch** stops the stream after a timeout configured by
   an admin in [`config/portal.conf`](config/portal.conf) (`STREAM_IDLE_TIMEOUT_S`, default
-  300 s; there is **no in-UI control**) so the go2rtc camera pull is released when nobody is
-  watching.
+  60 s; there is **no in-UI control**) so the go2rtc camera pull is released when nobody is
+  watching. The Live view **fills the screen**, shows the freshest detect frame as a poster
+  while HLS connects, remembers the last camera opened, and lets you **swipe/drag** left/right
+  to switch cameras.
 - **Events & detections** — Frigate events with snapshots/clips, filterable by camera/class
   with **numbered pagination** (Prev/Next + "Page X of Y") and a **time filter** (quick
   presets 1 h/6 h/24 h/7 d/30 d/All or a custom From/To). Filters **auto-refresh**; the

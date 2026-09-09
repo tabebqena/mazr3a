@@ -12,7 +12,9 @@ const state = {
   me: null,
   settings: null,
   cameras: [],
-  live: { cam: null, playing: false, mode: '', sound: false },  // mode: '' | 'hls' | 'snap'
+  live: { cam: null, playing: false, mode: '', sound: false, imgLive: false },
+  // imgLive: the <img> is the current live display (HLS pre-roll poster OR
+  //           detect-snapshot fallback). mode: '' | 'hls' | 'snap'
   idleSec: 300,
 };
 
@@ -104,7 +106,7 @@ async function boot() {
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
-  state.idleSec = state.settings.stream_idle_timeout_s || 300;
+  state.idleSec = state.settings.stream_idle_timeout_s || 60;
   await loadCameras();
   window.addEventListener('hashchange', onRoute);
   onRoute();
@@ -113,6 +115,8 @@ async function boot() {
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
   const view = ['live', 'events', 'fire'].indexOf(raw) >= 0 ? raw : 'live';
+  // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
+  document.body.classList.toggle('live-full', view === 'live');
   if (view !== 'live') stopStream();           // only the Live view streams
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
   ['live', 'events', 'fire'].forEach(v =>
@@ -137,8 +141,13 @@ async function loadCameras() {
   $('#ev-cam').innerHTML = '<option value="">all cameras</option>' + camOpts;
   $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + camOpts;
 
-  const def = state.me.default_camera || data.default_camera
-    || (state.cameras.find(c => c.enabled) || {}).name || names[0];
+  // Reopen the LAST camera the user watched (persisted), else the default.
+  let def = null;
+  try { def = localStorage.getItem('portal.lastCam'); } catch (e) { /* ignore */ }
+  if (!def || names.indexOf(def) < 0) {
+    def = state.me.default_camera || data.default_camera
+      || (state.cameras.find(c => c.enabled) || {}).name || names[0];
+  }
   state.live.cam = names.indexOf(def) >= 0 ? def : names[0] || null;
   if (state.live.cam) $('#cam-select').value = state.live.cam;
 }
@@ -152,10 +161,20 @@ async function loadCameras() {
 // falls back to the detect-snapshot proxy (Frigate /api/<cam>/latest.jpg).
 
 function hlsFallback(cam, tok) {
+  /* HLS could not start -> the poster <img> keeps refreshing (~1 fps) as the
+     live detect-snapshot view (no audio). Stop any HLS work, hide the dead
+     <video>, and let the running poster poll continue under 'snap' mode. */
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
-  $('#live-status').textContent = 'HLS unavailable - snapshot mode (1 fps)';
-  startSnapshot(cam, tok);
+  if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
+  state.live.mode = 'snap';
+  const video = $('#live-video');
+  try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
+  $('#live-video').classList.add('hidden');
+  $('#live-img').classList.remove('hidden');
+  $('#live-sound').classList.add('hidden');   // JPEG fallback has no audio
+  $('#live-status').textContent = 'Live (snapshot ~1 fps)';
+  hideSpinner();
 }
 
 function resetIdle() {
@@ -194,11 +213,6 @@ function showVideo() {
   $('#live-video').classList.remove('hidden');
   $('#live-img').classList.add('hidden');
 }
-function showImage() {
-  $('#live-video').classList.add('hidden');
-  $('#live-img').classList.remove('hidden');
-}
-
 /* Live audio: the portal HLS carries AAC (go2rtc <cam>_portal transcode) but
    the <video> must start muted so browsers allow autoplay. Sound is opt-in via
    the #live-sound button; clicking it is a user gesture (always permitted), and
@@ -237,26 +251,32 @@ function startStream(cam) {
   const tok = ++liveTok;
   state.live.cam = cam;
   state.live.playing = true;
+  state.live.mode = 'hls';
+  state.live.imgLive = true;      // the <img> poster is the live display for now
   hideOverlay();
-  showSpinner();            // spinner until the first live frame arrives
-  startHls(cam, tok);
+  showSpinner();                  // poster image + spinner until the first HLS frame
+  scheduleFrame(cam, tok);        // show the freshest detect frame immediately
+  startHls(cam, tok);             // ...while HLS warms up underneath
   resetIdle();
 }
 
 function startHls(cam, tok) {
   state.live.mode = 'hls';
-  showVideo();
   const video = $('#live-video');
-  // Same-origin HLS through the portal (behind the session cookie):
-  // https://<portal>/api/live/<cam>/hls/stream.m3u8?src=<cam>
-  // The backend serves the <cam>_portal AAC source; still start muted so the
-  // browser permits autoplay, then restore the user's sound choice on play.
-  video.muted = true;
+  // Keep the <video> element visible UNDER the poster <img> (CSS z-index) so
+  // the browser actually starts decoding/playing while we wait; the poster is
+  // removed only when the first real HLS frame renders (video 'playing').
+  video.muted = true;                 // autoplay-safe; sound restored on play
+  $('#live-video').classList.remove('hidden');
   $('#live-sound').classList.remove('hidden');
   syncSoundUI();
+  // Same-origin HLS through the portal (behind the session cookie):
+  // https://<portal>/api/live/<cam>/hls/stream.m3u8?src=<cam>
+  // The backend serves the <cam>_portal AAC source.
   const url = '/api/live/' + encodeURIComponent(cam) +
     '/hls/stream.m3u8?src=' + encodeURIComponent(cam);
   $('#live-status').textContent = 'Connecting ' + cam + '…';
+  const onPlaying = () => firstHlsFrame(cam, tok);
 
   if (window.Hls && Hls.isSupported()) {
     // hls.js -> MediaSource in the page (Chrome/Firefox/Edge etc.)
@@ -266,20 +286,25 @@ function startHls(cam, tok) {
       backBufferLength: 30,
       maxLiveSyncPlaybackRate: 1.5,
     });
+    let netErrs = 0;              // give up after repeated network failures
+    video.addEventListener('playing', onPlaying, { once: true });
     hls.loadSource(url);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       if (state.live.playing && tok === liveTok && cam === state.live.cam) {
-        $('#live-status').textContent = 'Live (HLS)';
-        hideSpinner();
-        video.play().then(() => applyLiveSound()).catch(() => {});
+        video.play().catch(() => {});   // muted autoplay; 'playing' reveals it
       }
     });
     hls.on(Hls.Events.ERROR, (e, data) => {
       if (!data || !data.fatal) return;
-      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-      else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-      else hlsFallback(cam, tok);
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        if (++netErrs >= 6) hlsFallback(cam, tok);   // poster -> snapshot live
+        else hls.startLoad();
+      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        hls.recoverMediaError();
+      } else {
+        hlsFallback(cam, tok);
+      }
     });
     return;
   }
@@ -288,45 +313,48 @@ function startHls(cam, tok) {
     // Safari / iOS native HLS
     const onErr = () => hlsFallback(cam, tok);
     video.addEventListener('error', onErr, { once: true });
+    video.addEventListener('playing', onPlaying, { once: true });
     video.src = url;
-    video.play().then(() => {
-      if (state.live.playing && tok === liveTok && cam === state.live.cam) {
-        $('#live-status').textContent = 'Live (HLS)';
-        hideSpinner();
-        applyLiveSound();
-      }
-    }).catch(() => hlsFallback(cam, tok));
+    video.play().catch(() => hlsFallback(cam, tok));
     return;
   }
 
   $('#live-status').textContent = 'HLS unsupported in this browser';
-  startSnapshot(cam, tok);
+  hlsFallback(cam, tok);
 }
 
-function startSnapshot(cam, tok) {
-  if (!state.live.playing || tok !== liveTok || cam !== state.live.cam) return;
-  state.live.mode = 'snap';
-  showSpinner();            // spinner until the first detect frame loads
-  showImage();
-  $('#live-sound').classList.add('hidden');   // JPEG fallback has no audio
-  $('#live-status').textContent = 'Live (snapshot ~1 fps)';
-  scheduleFrame(cam, tok);
+/* The first real HLS video frame has rendered -> drop the poster <img> and
+   reveal the (already playing) <video>: no black gap between spinner/stream. */
+function firstHlsFrame(cam, tok) {
+  if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
+      || state.live.mode !== 'hls') return;
+  state.live.imgLive = false;
+  if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+  const img = $('#live-img');
+  if (img) { img.onload = null; img.onerror = null; }
+  showVideo();                        // hide poster, show the live video
+  hideSpinner();
+  $('#live-status').textContent = 'Live (HLS)';
+  applyLiveSound();
 }
 
+/* Refresh the <img> while it is the live display (HLS pre-roll poster OR the
+   detect-snapshot fallback). Self-schedules until imgLive turns off. */
 function scheduleFrame(cam, tok) {
   if (!state.live.playing || cam !== state.live.cam || tok !== liveTok
-      || state.live.mode !== 'snap') return;
+      || !state.live.imgLive) return;
   const img = $('#live-img');
+  $('#live-img').classList.remove('hidden');  // poster/snapshot on top
   img.onload = () => {
     if (state.live.playing && cam === state.live.cam && tok === liveTok
-        && state.live.mode === 'snap') {
-      hideSpinner();
+        && state.live.imgLive) {
+      if (state.live.mode === 'snap') hideSpinner();
       liveTimer = setTimeout(() => scheduleFrame(cam, tok), LIVE_POLL_MS);
     }
   };
   img.onerror = () => {
     if (state.live.playing && cam === state.live.cam && tok === liveTok
-        && state.live.mode === 'snap') {
+        && state.live.imgLive) {
       liveTimer = setTimeout(() => scheduleFrame(cam, tok), 3000);
     }
   };
@@ -336,6 +364,7 @@ function scheduleFrame(cam, tok) {
 function stopStream() {
   state.live.playing = false;
   state.live.mode = '';
+  state.live.imgLive = false;
   liveTok++;
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -357,11 +386,49 @@ function resume() {
   startStream(state.live.cam);
 }
 
-$('#cam-select').addEventListener('change', (e) => startStream(e.target.value));
+/* -------- camera switching: <select>, swipe/drag, remember the last one --- */
+function camNames() {
+  return state.cameras.map(c => c.name).filter(n => n);
+}
+function switchCam(step) {
+  const names = camNames();
+  if (names.length < 2) return;
+  const i = names.indexOf(state.live.cam);
+  const next = names[(i + step + names.length) % names.length];
+  if (next && next !== state.live.cam) {
+    rememberCam(next);
+    $('#cam-select').value = next;
+    startStream(next);
+  }
+}
+function rememberCam(cam) {
+  state.live.cam = cam;                 // startStream also sets it (idempotent)
+  try { localStorage.setItem('portal.lastCam', cam); } catch (e) { /* ignore */ }
+}
+
+$('#cam-select').addEventListener('change', (e) => {
+  if (e.target.value) { rememberCam(e.target.value); startStream(e.target.value); }
+});
 $('#overlay-resume').addEventListener('click', resume);
 $('#live-sound').addEventListener('click', (e) => {
   e.preventDefault();
   toggleLiveSound();
+});
+
+// Swipe (touch) / horizontal drag (mouse) on the live stage switches camera:
+// left swipe -> next camera, right swipe -> previous camera.
+const SWIPE_MIN_PX = 60;
+let swipeStart = null;
+$('#live-stage').addEventListener('pointerdown', (e) => {
+  swipeStart = { x: e.clientX, y: e.clientY, id: e.pointerId };
+}, { passive: true });
+window.addEventListener('pointerup', (e) => {
+  if (!swipeStart || swipeStart.id !== e.pointerId) return;
+  const dx = e.clientX - swipeStart.x;
+  const dy = e.clientY - swipeStart.y;
+  swipeStart = null;
+  if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy)) return;
+  switchCam(dx < 0 ? 1 : -1);           // left -> next, right -> previous
 });
 
 /* ---------------- shared time-range + pagination helpers ---------------- */

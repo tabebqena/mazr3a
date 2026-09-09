@@ -258,10 +258,11 @@ snapshots:
 # Motion detection sensitivity (Phase 1 2026-09-06 - slightly LESS sensitive
 # to cut spurious triggers from wind/grass/insects on the busy farm scenes,
 # which was firing detection on ~every frame. Baseline was stock Frigate:
-# threshold 25 / contour_area 10. Per-camera motion.mask polygons can be added
-# from the Frigate UI once always-busy regions are identified. cam01 got one on
-# 2026-09-07 for a continuously-moving roof object on the upper-left (see the
-# cam01 motion.mask below).)
+# threshold 25 / contour_area 10. Per-camera motion.mask polygons are drawn in
+# the Frigate UI once always-busy regions are identified. cam01 got its first
+# ones on 2026-09-07 for a continuously-moving roof object (see cam01
+# motion.mask below); on 2026-09-09 masks were added to cam02-05 + cam07-09
+# for further always-busy areas (each camera's motion.mask below).)
 #   threshold: 30     higher = fewer pixels count as motion (LESS sensitive)
 #   contour_area: 15  higher = motion must be a bigger blob (LESS sensitive)
 #   delta_alpha: 0.2  higher = background adapts faster (LESS sensitive)
@@ -339,6 +340,15 @@ cameras:
         # - horse
         # - sheep
         # - cow
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the 640x360
+    # detect frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 0.059,0.154,0.001,0.114,-0.001,0.002,0.996,0.004,0.999,0.226,0.786,0.226,0.572,0.184,0.461,0.188,0.338,0.176,0.228,0.174,0.12,0.18,0.073,0.208
     detect:
       enabled: true
       width: 640
@@ -362,6 +372,15 @@ cameras:
         # - horse
         # - sheep
         # - cow
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the 640x360
+    # detect frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 1,0.553,0.745,0.495,0.542,0.451,0.476,0.433,0.324,0.431,0.226,0.389,0.114,0.379,0.037,0.391,0.001,0.369,0.002,0.004,0.997,-0.002
     detect:
       enabled: true
       width: 640
@@ -379,6 +398,15 @@ cameras:
       track:
         - person
         - car
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the 640x360
+    # detect frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 1,0.325,0,0.367,0.002,0.002,1,0
     detect:
       enabled: true
       width: 640
@@ -396,6 +424,15 @@ cameras:
       track:
         - person
         - car
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the 640x360
+    # detect frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 0.002,0.194,0.406,0.112,0.552,0.092,0.687,0.038,0.774,0.024,0.883,0.032,0.991,0.044,0.996,0.004,0.003,0
     detect:
       enabled: true
       width: 640
@@ -430,6 +467,15 @@ cameras:
       track:
         - person
         - car
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the 640x360
+    # detect frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 0.883,0.012,0.835,0.293,0.577,0.253,0.287,0.15,0.175,0.142,0.063,0.124,0,0.126,0,0
     detect:
       enabled: true
       width: 640
@@ -455,6 +501,15 @@ cameras:
         - knife
         - truck
         # - dog
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the detect
+    # frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 0.681,0.168,0.899,0.162,1,0.16,0.994,0.004,0.001,0.008,0.003,0.212
     detect:
       enabled: true
       fps: 1
@@ -470,6 +525,15 @@ cameras:
         - car
         - motorcycle
         - truck
+    # ------------------------------------------------------------------
+    # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
+    # synced here verbatim from the host config. Motion inside the polygon is
+    # IGNORED so the detector no longer fires for that area (only genuine motion
+    # elsewhere triggers it). Coordinates are normalized 0..1 of the 640x360
+    # detect frame. Revisit if you miss detections.
+    # ------------------------------------------------------------------
+    motion:
+      mask: 0,0.431,0.632,0.413,0.996,0.379,0.998,0.004,0.004,0.002
     detect:
       enabled: true
       width: 640

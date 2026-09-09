@@ -314,6 +314,9 @@ video.media { width: 100%; display: block; background: #000; }
     width: auto; min-height: auto; padding: 5px 12px;
     align-self: flex-end;
   }
+  /* Live refresh (↻) sits at the END of the controls row, not next to the
+     camera select: margin-left:auto pushes it to the far right. */
+  #view-live .controls #live-refresh { margin-left: auto; }
   .time-custom {
     flex-direction: row; align-items: flex-end; padding-top: 0;
   }

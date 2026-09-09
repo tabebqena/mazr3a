@@ -13,13 +13,15 @@ const state = {
   settings: null,
   cameras: [],
   live: { cam: null, playing: false, mode: '', sound: false, imgLive: false },
-  // imgLive: the <img> is the current live display (HLS pre-roll poster OR
-  //           detect-snapshot fallback). mode: '' | 'hls' | 'snap'
+  // imgLive: the <img> is the poster shown while an HLS attempt is starting
+  //          (or the frozen last frame while an online camera auto-retries).
+  // mode: '' | 'hls' | 'offline'
   idleSec: 60,
 };
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live HLS
+const OFFLINE_CHECK_MS = 8000;    // how often to re-check an offline camera
 // True when this browser can play HLS at all (hls.js MSE or native Safari HLS).
 const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
   || (function () {
@@ -34,6 +36,7 @@ let liveTok = 0;             // guards stale async callbacks after switch/stop
 let curHls = null;           // active hls.js instance (destroy on stop/switch)
 let frameWatchTimer = null;  // watchdog: give up waiting for the first media
 let retryTimer = null;       // auto-retry: snapshot fallback -> HLS live
+let offlineTimer = null;     // periodic re-check while a camera is offline
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
 
@@ -163,46 +166,128 @@ async function loadCameras() {
   if (state.live.cam) $('#cam-select').value = state.live.cam;
 }
 
-/* ---------------- Live view: HLS (go2rtc) via hls.js w/ snapshot fallback ----- */
+/* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
 // go2rtc in this Frigate 0.17.2 build has no working MSE-over-WS and no HTTP
 // MSE endpoint; its tunnel-friendly live transport is HLS (master + ~0.5 s .ts
 // segments), proxied SAME-ORIGIN through the portal at
 //   /api/live/<cam>/hls/stream.m3u8?src=<cam>
-// hls.js plays it (MSE inside the page); Safari plays it natively. Any failure
-// falls back to the detect-snapshot proxy (Frigate /api/<cam>/latest.jpg).
+// hls.js plays it (MSE inside the page); Safari plays it natively. A poster
+// (the latest detect frame) shows while HLS starts. If HLS cannot start the
+// camera is classified from Frigate's online flag: OFFLINE -> a clean offline
+// state (no spinner, no snapshot feed); ONLINE -> HLS startup latency, so we
+// keep the frozen poster and auto-retry HLS in the background.
 
 function hlsFallback(cam, tok) {
-  /* HLS could not start -> the poster <img> keeps refreshing (~1 fps) as the
-     live detect-snapshot view (no audio). Stop any HLS work, hide the dead
-     <video>, let the running poster poll continue under 'snap' mode, and keep
-     auto-retrying to upgrade back to live HLS in the background. */
+  /* HLS could not start. Stop the attempt, then classify WHY:
+     - camera OFFLINE (Frigate online flag false) -> a clean "offline" state,
+       no spinner and NO ~1 fps snapshot feed;
+     - camera ONLINE but slow to start -> that is LATENCY, so we keep the last
+       frozen poster (no snapshot feed) and auto-retry HLS in the background.
+     Frigate's online flag (camera_fps) is authoritative, so HLS startup
+     latency is never mistaken for an offline camera. */
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
-  clearFrameWatch();          // no stale first-media watchdog
+  clearFrameWatch();                 // no stale first-media watchdog
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
-  state.live.mode = 'snap';
+  state.live.imgLive = false;        // freeze the poster; stop the poster poll
+  if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   const video = $('#live-video');
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
+  const img = $('#live-img');
+  if (img) { img.onload = null; img.onerror = null; }
   $('#live-video').classList.add('hidden');
-  $('#live-img').classList.remove('hidden');
-  $('#live-sound').classList.add('hidden');   // JPEG fallback has no audio
-  $('#live-status').textContent = 'Live (snapshot ~1 fps) - auto-retrying HLS\u2026';
+  $('#live-sound').classList.add('hidden');
   hideSpinner();
-  if (HLS_SUPPORTED) scheduleLiveRetry(cam);  // keep trying to upgrade to live
+  decideAfterHlsFail(cam, tok);
 }
 
-/* While stuck in the detect-snapshot fallback, keep trying to upgrade back to
-   real HLS live in the background - the snapshot <img> keeps refreshing at
-   ~1 fps and is never interrupted. Stops only when the view is stopped (idle
-   timeout, leaving Live, or switching camera). */
+async function decideAfterHlsFail(cam, tok) {
+  await fetchCameras();              // fresh Frigate online flags
+  if (!state.live.playing || cam !== state.live.cam
+      || state.live.mode !== 'hls') return;
+  if (!isOnline(cam)) { enterOffline(cam); return; }
+  // Camera is ONLINE -> just latency/startup: keep the frozen poster visible,
+  // no spinner, no snapshot feed, and auto-retry HLS in the background.
+  $('#live-img').classList.remove('hidden');
+  $('#live-status').textContent = 'HLS starting - auto-retrying\u2026';
+  scheduleLiveRetry(cam);
+}
+
+/* Refresh the camera list / online flags from the portal (/api/cameras). */
+async function fetchCameras() {
+  try {
+    const data = await api('/api/cameras');
+    const list = data.cameras || [];
+    if (list.length) {
+      state.cameras = list;
+      const sel = $('#cam-select');
+      if (sel) {
+        const cur = state.live.cam;
+        sel.innerHTML = list.map(c => {
+          const tag = c && !c.online ? ' (offline)' : '';
+          return '<option value="' + esc(c.name) + '">' + esc(c.name) + tag + '</option>';
+        }).join('');
+        if (cur) sel.value = cur;
+      }
+    }
+    return data;
+  } catch (e) { return null; }
+}
+/* Frigate online flag for a camera; unknown -> assume ONLINE so HLS startup
+   latency is never reported as an offline camera. */
+function isOnline(cam) {
+  const c = state.cameras.find(x => x.name === cam);
+  return c ? !!c.online : true;
+}
+
+/* Camera is offline: no spinner, no snapshot feed - just a clear offline
+   overlay. Auto re-checks periodically and starts live when the camera is
+   back online. */
+function enterOffline(cam) {
+  state.live.mode = 'offline';
+  state.live.imgLive = false;
+  state.live.playing = false;        // idle/activity semantics like "stopped"
+  liveTok++;
+  if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  clearFrameWatch();
+  if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
+  const video = $('#live-video');
+  try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
+  const img = $('#live-img');
+  if (img) { img.onload = null; img.onerror = null; }
+  $('#live-video').classList.add('hidden');
+  $('#live-img').classList.add('hidden');
+  $('#live-sound').classList.add('hidden');
+  hideSpinner();
+  $('#live-status').textContent = cam + ' is offline';
+  showOverlay('Camera ' + cam + ' is offline.');
+  if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = null; }
+  offlineTimer = setInterval(async () => {
+    const data = await fetchCameras();
+    if (state.live.mode !== 'offline') {        // view changed/stopped
+      clearInterval(offlineTimer); offlineTimer = null;
+      return;
+    }
+    if (data && state.live.cam === cam && isOnline(cam)) {
+      clearInterval(offlineTimer); offlineTimer = null;
+      startStream(cam);                          // camera is back -> live
+    }
+  }, OFFLINE_CHECK_MS);
+}
+
+/* While an ONLINE camera's HLS is slow/unavailable (latency), keep retrying to
+   upgrade to live in the background - the frozen poster stays up. Stops when
+   the view stops (idle, leaving Live, switching) or the camera is offline. */
 function scheduleLiveRetry(cam) {
-  if (retryTimer || !state.live.playing || !HLS_SUPPORTED) return;
+  if (retryTimer || !state.live.playing || !HLS_SUPPORTED
+      || state.live.imgLive) return;
   retryTimer = setTimeout(() => {
     retryTimer = null;
     if (!state.live.playing || state.live.cam !== cam
-        || state.live.mode !== 'snap') return;   // no longer in the fallback
+        || state.live.mode !== 'hls' || state.live.imgLive) return;
     $('#live-status').textContent = 'Upgrading to live HLS\u2026';
-    startHls(cam, liveTok);  // reuse liveTok so the snapshot <img> poll keeps running
+    startHls(cam, liveTok);   // background attempt; the frozen poster stays up
   }, SNAPSHOT_RETRY_MS);
 }
 
@@ -279,11 +364,12 @@ function startStream(cam) {
   stopStream();
   const tok = ++liveTok;
   state.live.cam = cam;
+  if (!isOnline(cam)) { enterOffline(cam); return; }   // offline: no spinner/feed
   state.live.playing = true;
   state.live.mode = 'hls';
-  state.live.imgLive = true;      // the <img> poster is the live display for now
+  state.live.imgLive = true;      // poster <img> shown while HLS warms up
   hideOverlay();
-  showSpinner();                  // poster image + spinner until the first HLS frame
+  showSpinner();                  // poster image + spinner until the first HLS media
   scheduleFrame(cam, tok);        // show the freshest detect frame immediately
   startHls(cam, tok);             // ...while HLS warms up underneath
   resetIdle();
@@ -293,25 +379,27 @@ function startStream(cam) {
    'playing' event (which fires before any frame exists and caused a black gap
    while go2rtc starts a camera on demand), and NOT on painted-frame detection
    (requestVideoFrameCallback / totalVideoFrames never fire for a <video> that
-   is still fully covered by the poster <img>, which wrongly sent every camera
-   to the snapshot fallback). Data-level signals - hls.js FRAG_BUFFERED and the
-   video 'loadeddata' event - fire as soon as real media is in the buffer, even
-   while the video sits under the poster. The poster + spinner stay up during
-   the true no-data latency window; a watchdog drops to the detect-snapshot
-   view if no media ever arrives. */
-const HLS_FIRST_FRAME_WAIT_MS = 15000;
+   is still fully covered by the poster <img>). Data-level signals - hls.js
+   FRAG_BUFFERED and the video 'loadeddata' event - fire as soon as real media
+   is in the buffer, even while the video sits under the poster. The poster +
+   spinner stay up during the true no-data latency window; if no media ever
+   arrives the watchdog classifies the camera (offline state vs online retry). */
+// Watchdog before classifying why HLS never delivered. It does NOT decide
+// offline by itself - decideAfterHlsFail consults Frigate's online flag, so a
+// shorter wait never mislabels slow (latency) cameras as offline.
+const HLS_FIRST_FRAME_WAIT_MS = 10000;
 function armFirstFrameWatch(cam, tok) {
-  if (frameWatchTimer || !state.live.imgLive) return;   // already waiting/done
-  frameWatchTimer = setTimeout(() => {         // watchdog: no media in time
+  if (frameWatchTimer) return;                  // already waiting/done
+  frameWatchTimer = setTimeout(() => {          // watchdog: no media in time
     frameWatchTimer = null;
     clearFrameWatch();
     if (state.live.playing && tok === liveTok && cam === state.live.cam
-        && state.live.mode === 'hls' && state.live.imgLive) hlsFallback(cam, tok);
+        && state.live.mode === 'hls') hlsFallback(cam, tok);
   }, HLS_FIRST_FRAME_WAIT_MS);
 }
 function firstMediaReady(cam, tok) {   // first real media buffered -> reveal
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-      || state.live.mode !== 'hls' || !state.live.imgLive) return;
+      || state.live.mode !== 'hls') return;
   firstHlsFrame(cam, tok);
 }
 function clearFrameWatch() {
@@ -360,7 +448,7 @@ function startHls(cam, tok) {
     hls.on(Hls.Events.ERROR, (e, data) => {
       if (!data || !data.fatal) return;
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-        if (++netErrs >= 6) hlsFallback(cam, tok);   // poster -> snapshot live
+        if (++netErrs >= 6) hlsFallback(cam, tok);   // classify: offline vs retry
         else hls.startLoad();
       } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
         hls.recoverMediaError();
@@ -402,17 +490,17 @@ function firstHlsFrame(cam, tok) {
   applyLiveSound();
 }
 
-/* Refresh the <img> while it is the live display (HLS pre-roll poster OR the
-   detect-snapshot fallback). Self-schedules until imgLive turns off. */
+/* Refresh the poster <img> while an HLS attempt is starting (imgLive true).
+   Self-schedules until the video reveals or the attempt fails (poster then
+   freezes - no persistent ~1 fps snapshot feed). */
 function scheduleFrame(cam, tok) {
   if (!state.live.playing || cam !== state.live.cam || tok !== liveTok
       || !state.live.imgLive) return;
   const img = $('#live-img');
-  $('#live-img').classList.remove('hidden');  // poster/snapshot on top
+  $('#live-img').classList.remove('hidden');  // poster above the warming video
   img.onload = () => {
     if (state.live.playing && cam === state.live.cam && tok === liveTok
         && state.live.imgLive) {
-      if (state.live.mode === 'snap') hideSpinner();
       liveTimer = setTimeout(() => scheduleFrame(cam, tok), LIVE_POLL_MS);
     }
   };
@@ -434,6 +522,7 @@ function stopStream() {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   clearFrameWatch();
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = null; }
   if (curHls) { curHls.destroy(); curHls = null; }
   const video = $('#live-video');
   try { video.pause(); } catch (e) { /* ignore */ }

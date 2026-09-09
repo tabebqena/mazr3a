@@ -21,6 +21,9 @@ from portal import auth, config as pconf, firestore, frigate
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
 COOKIE_NAME = "portal_session"
+# App/UI version, shown as the bottom-most version label in the SPA footer
+# (served to the client via /api/settings -> app_version). Bump on UI/API change.
+APP_VERSION = "0.3.0"
 _HTMX = None
 
 
@@ -49,7 +52,7 @@ app = FastAPI(
         "events/media, serves Firewatch fire evidence, and serves the Live view "
         "as same-origin HLS from Frigate's embedded go2rtc (via /api/live/<cam>/hls)."
     ),
-    version="0.2.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -153,6 +156,7 @@ async def settings(request: Request, user: dict = Depends(current_user)):
         "username": user["username"],
         "default_camera": default_cam,
         "stream_idle_timeout_s": pconf.geti(cfg, "STREAM_IDLE_TIMEOUT_S", 30),
+        "app_version": APP_VERSION,
     }
 
 

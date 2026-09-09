@@ -42,14 +42,42 @@
       <!-- Live: HLS (go2rtc, hls.js) with a detect-snapshot fallback -->
       <section id="view-live" class="view hidden">
         <div class="live-ctl">
-          <!-- Opens the camera picker. On phones the picker is a modal over
-               the live frame; on tablet/desktop an inline thumbnail row is
-               also shown below the frame. -->
+          <!-- Control row above the frame. The CURRENT CAMERA NAME is the FIRST
+               control: this button shows it and opens the picker (inline strip
+               on tablet/desktop, modal sheet on phones). Buttons are never
+               forced full width on phones - they size to their content and wrap
+               onto further rows when the screen is narrow. -->
           <button id="cam-picker" type="button"
                   title="Select camera" aria-label="Select camera"
                   aria-haspopup="dialog"></button>
+
+          <!-- Live audio toggle (moved off the frame into this row). Live HLS
+               audio is AAC (portal transcode); it starts muted so autoplay is
+               allowed - this button (a user gesture) turns sound on. Hidden in
+               the snapshot/offline states (no audio there). -->
+          <button id="live-sound" class="sound hidden" type="button"
+                  title="Enable sound" aria-label="Enable sound">&#128263;</button>
+
+          <!-- Save image: download the current visible frame as a JPEG. -->
+          <button id="live-shot" type="button"
+                  title="Save image (download the current frame)"
+                  aria-label="Save image">&#128247;</button>
+
+          <!-- Zoom controls: +/- step around the frame centre + a reset. When
+               zoomed, drag the picture to pan (and use the mouse wheel to zoom
+               on desktop). -->
+          <span class="zoom-ctl" role="group" aria-label="Zoom controls">
+            <button id="zoom-out" type="button" title="Zoom out"
+                    aria-label="Zoom out">&#8722;</button>
+            <button id="zoom-in" type="button" title="Zoom in"
+                    aria-label="Zoom in">&#43;</button>
+            <button id="zoom-reset" type="button" title="Reset zoom"
+                    aria-label="Reset zoom">reset</button>
+          </span>
+
           <!-- Restart the current live stream (retry HLS) without a page
-               reload - useful after a temporary snapshot fallback. -->
+               reload - useful after a temporary snapshot fallback. Kept as the
+               LAST control of the row, pushed to the far right. -->
           <button id="live-refresh" type="button"
                   title="Restart the live stream (retry HLS)"
                   aria-label="Restart live stream">&#8635;</button>
@@ -59,10 +87,6 @@
           <div id="live-spinner" class="spinner hidden" title="Connecting…"></div>
           <video id="live-video" autoplay muted playsinline class="hidden"></video>
           <img id="live-img" alt="live camera" class="hidden">
-          <!-- Live HLS audio is AAC (portal transcode); sound starts muted so
-               autoplay is allowed - clicking this toggles it (user gesture). -->
-          <button id="live-sound" class="sound hidden" type="button"
-                  title="Enable sound" aria-label="Enable sound">&#128263;</button>
           <div id="live-overlay" class="overlay hidden">
             <div class="overlay-card">
               <div id="overlay-msg">Stream paused.</div>
@@ -152,6 +176,12 @@
         </div>
       </section>
     </main>
+    <!-- Bottom-most version label: a tiny, fixed, non-interactive tag pinned to
+         the lowest corner of the screen on every view. Filled from /api/settings
+         (portal APP_VERSION); the hard-coded text is only a pre-script fallback. -->
+    <footer class="app-ver" title="Portal version">
+      v<span id="ver-no">0.3.0</span>
+    </footer>
   </div>
 
   <div id="global-err" class="toast hidden"></div>

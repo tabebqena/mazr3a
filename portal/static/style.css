@@ -160,19 +160,66 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
   background: var(--accent); color: #06210f; font-weight: 700; border: 0;
 }
 
-/* Live sound toggle: the HLS audio is AAC (portal transcode), but the video
-   starts muted so browsers allow autoplay - this button (a user gesture)
-   turns sound on. Hidden in the snapshot fallback (no audio there). */
-.sound {
-  position: absolute; right: 10px; bottom: 10px; z-index: 6;
-  width: auto; min-width: 0; min-height: 0; margin: 0;
-  padding: 8px 12px; font-size: 18px; line-height: 1;
-  background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.25);
-  color: #fff; border-radius: 20px;
+/* ================= LIVE CONTROL ROW (above the frame) =================
+   Order (DOM): camera name/picker (FIRST), sound toggle, save-image, the zoom
+   group (- / + / reset), and the refresh/restart button (LAST). Buttons here
+   are NEVER forced full width - even on phones they size to their content and
+   wrap onto extra rows on very narrow screens (this overrides the generic
+   `button { width: 100% }` rule). */
+.live-ctl {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px 8px; margin-bottom: 8px;
 }
-.sound:hover { background: rgba(0,0,0,.75); }
-.sound:active { transform: scale(.95); }
-.sound.sound-on { border-color: var(--accent); background: rgba(0,0,0,.7); }
+.live-ctl button {
+  width: auto; min-width: 0; min-height: var(--tap-h);
+  padding: 7px 12px; white-space: nowrap;
+}
+/* Camera name/picker (first control): flexes to fill the spare width (name with
+   ellipsis on narrow rows); clicking still opens the camera picker. */
+.live-ctl #cam-picker {
+  flex: 1 1 150px; min-width: 0; text-align: left;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* Compact square icon chips (sound / save / zoom +/-). */
+.live-ctl #live-sound,
+.live-ctl #live-shot,
+.live-ctl #zoom-out,
+.live-ctl #zoom-in {
+  flex: 0 0 auto; width: 46px; padding: 0;
+  text-align: center; font-size: 17px; line-height: 1;
+}
+/* Zoom group: the three small buttons joined as a segmented control. */
+.live-ctl .zoom-ctl {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--line); border-radius: 9px; padding: 2px;
+  background: var(--panel2);
+}
+.live-ctl .zoom-ctl button {
+  min-height: 38px; min-width: 38px; padding: 0;
+  border: 0; background: transparent; font-size: 17px; line-height: 1;
+}
+.live-ctl .zoom-ctl #zoom-reset {
+  min-width: 0; width: auto; padding: 0 9px; font-size: 12px;
+}
+.live-ctl button:disabled { opacity: .45; cursor: default; }
+.live-ctl button:active:not(:disabled) { transform: scale(.95); }
+/* The refresh (restart stream) button is the LAST control, pinned to the end. */
+.live-ctl #live-refresh { flex: 0 0 auto; font-size: 16px; }
+/* Sound toggle on-state (moved off the frame into the row). */
+.live-ctl #live-sound.sound-on {
+  border-color: var(--accent); background: rgba(255,255,255,.08);
+}
+
+/* Zoomed frame: the media transform is cosmetic (see app.js). While zoomed the
+   frame becomes a grab surface (drag = pan, mouse wheel = zoom) and touch
+   scrolling is disabled so the drag pans instead of scrolling the page. */
+.stage { touch-action: pan-y; }
+.stage video, .stage img { transform-origin: 50% 50%; }
+.stage.zoomed { cursor: grab; touch-action: none; }
+.stage.panning { cursor: grabbing; }
+.stage.zoomed video, .stage.zoomed img {
+  -webkit-user-select: none; user-select: none;
+}
 
 /* live loading spinner (hidden = .hidden) */
 .spinner {
@@ -211,19 +258,8 @@ body.live-full #view-live .stage { flex: 1 1 auto; aspect-ratio: auto; min-heigh
 body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
 
 /* ============ LIVE CAMERA PICKER (row of thumbnails + modal) ============ */
-/* Compact control bar above the live frame: the picker button (opens the
-   thumbnail picker / modal) plus the small restart button. */
-.live-ctl {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
-}
-.live-ctl #cam-picker {
-  flex: 1 1 auto; min-width: 0; width: auto; min-height: var(--tap-h);
-  text-align: left; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
-.live-ctl #live-refresh {
-  flex: 0 0 auto; width: auto; min-width: 0; padding: 10px 14px;
-}
+/* The control row + zoom/pan styles now live in the LIVE CONTROL ROW section
+   above; this section only styles the frame overlay label and the picker. */
 /* Current camera name, overlaid top-left on the live frame. */
 .cam-tag {
   position: absolute; top: 10px; left: 10px; z-index: 4;
@@ -387,6 +423,16 @@ video.media { width: 100%; display: block; background: #000; }
   margin: 0 auto; width: auto; max-width: 520px;
   background: #3a1414; color: #ffd9d9; border: 1px solid var(--red);
   padding: 12px 16px; border-radius: 10px; z-index: 60;
+}
+
+/* ================= BOTTOM-MOST VERSION LABEL =================
+   Tiny fixed tag pinned to the lowest corner of the screen on every view;
+   non-interactive (pointer-events: none) and under the toast layer. */
+.app-ver {
+  position: fixed; right: 10px; bottom: 6px; z-index: 40;
+  color: var(--muted); font-size: 11px; letter-spacing: .4px;
+  line-height: 1; opacity: .85;
+  pointer-events: none; -webkit-user-select: none; user-select: none;
 }
 
 /* ============================================================

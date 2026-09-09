@@ -133,6 +133,9 @@ async function boot() {
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
   state.idleSec = Math.max(15, parseInt(state.settings.stream_idle_timeout_s, 10) || 30);
+  // Bottom-most version label: server APP_VERSION (the HTML text is the fallback).
+  const vn = $('#ver-no');
+  if (vn && state.settings.app_version) vn.textContent = state.settings.app_version;
   await loadCameras();
   window.addEventListener('hashchange', onRoute);
   onRoute();
@@ -264,6 +267,7 @@ function isOnline(cam) {
    overlay. Auto re-checks periodically and starts live when the camera is
    back online. */
 function enterOffline(cam) {
+  resetZoom();                 // clear any zoom/pan from the live frame
   state.live.mode = 'offline';
   state.live.imgLive = false;
   state.live.playing = false;        // idle/activity semantics like "stopped"
@@ -688,12 +692,171 @@ function stopStream() {
   $('#live-sound').classList.add('hidden');
   hideSpinner();
   $('#live-status').textContent = '';
+  resetZoom();                 // a fresh camera / restart starts at 1x, no stale pan
 }
 
 function resume() {
   if (!state.live.cam) return;
   startStream(state.live.cam);
 }
+
+/* -------- live control row extras: save image + zoom & pan ----------------
+   The row above the frame holds (in DOM order): the camera name/picker (first),
+   the sound toggle, save-image, the zoom group (- / + / reset), and the refresh
+   (restart) button (last). Zoom scales whichever media is visible (the HLS
+   <video> or the poster <img>) about the frame centre via a CSS transform; once
+   zoomed the user can DRAG the picture to pan (desktop mouse wheel zooms too).
+   Zoom is cosmetic - "save image" always captures the FULL current frame. */
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 4;
+const ZOOM_STEP = 1.5;        // per click / wheel notch
+const zoom = { s: 1, tx: 0, ty: 0 };
+let panPt = null;             // {id, x, y} while the user drags a zoomed frame
+
+function liveStage() { return $('#live-stage'); }
+/* True when there is actually a picture on screen to zoom (a decoding video or
+   a loaded poster) - false for offline/paused states. */
+function zoomable() {
+  const v = $('#live-video'), im = $('#live-img');
+  if (v && !v.classList.contains('hidden') && v.videoWidth > 0) return true;
+  if (im && !im.classList.contains('hidden') && im.naturalWidth > 0) return true;
+  return false;
+}
+/* Intrinsic size of the currently visible media (drives the pan limits). */
+function mediaIntrinsic() {
+  const v = $('#live-video'), im = $('#live-img');
+  if (v && !v.classList.contains('hidden') && v.videoWidth > 0) {
+    return { w: v.videoWidth, h: v.videoHeight };
+  }
+  if (im && im.naturalWidth > 0) return { w: im.naturalWidth, h: im.naturalHeight };
+  return null;
+}
+function clampAxis(t, half) {
+  return half > 0 ? Math.max(-half, Math.min(half, t)) : 0;
+}
+/* Keep the pan inside the scaled picture: a zoomed-in frame must always cover
+   the whole stage, so the user can't drag past the content edge into blank. */
+function constrainZoomPan() {
+  const m = mediaIntrinsic(), st = liveStage();
+  if (!m || !st) return;
+  const W = st.clientWidth, H = st.clientHeight;
+  if (!W || !H) return;
+  const ar = m.w / m.h;
+  const dw = Math.min(W, H * ar);   // object-fit: contain display box, pre-scale
+  const dh = dw / ar;
+  zoom.tx = clampAxis(zoom.tx, (dw * zoom.s - W) / 2);
+  zoom.ty = clampAxis(zoom.ty, (dh * zoom.s - H) / 2);
+}
+function applyZoom() {
+  const v = $('#live-video'), im = $('#live-img');
+  const t = zoom.s > ZOOM_MIN
+    ? 'translate(' + zoom.tx + 'px,' + zoom.ty + 'px) scale(' + zoom.s + ')'
+    : 'none';
+  if (v) v.style.transform = t;
+  if (im) im.style.transform = t;
+  const zi = $('#zoom-in'), zo = $('#zoom-out'), zr = $('#zoom-reset');
+  if (zi) zi.disabled = zoom.s >= ZOOM_MAX;
+  if (zo) zo.disabled = zoom.s <= ZOOM_MIN;
+  if (zr) zr.disabled = zoom.s <= ZOOM_MIN;
+  const st = liveStage();
+  if (st) st.classList.toggle('zoomed', zoom.s > ZOOM_MIN);
+}
+function setZoom(s) {
+  s = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, s));
+  if (s <= ZOOM_MIN) { zoom.s = 1; zoom.tx = 0; zoom.ty = 0; }
+  else { zoom.s = s; constrainZoomPan(); }
+  applyZoom();
+}
+function zoomIn() { setZoom(zoom.s * ZOOM_STEP); }
+function zoomOut() { setZoom(zoom.s / ZOOM_STEP); }
+function resetZoom() { setZoom(ZOOM_MIN); }
+
+/* Drag-to-pan: only while zoomed (and only when a frame is really on screen);
+   pointer capture keeps the drag smooth even when it leaves the stage. */
+function onPanStart(e) {
+  if (zoom.s <= ZOOM_MIN || !zoomable()) return;
+  if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
+  const st = liveStage(); if (!st) return;
+  st.classList.add('panning');
+  panPt = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  try { st.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  e.preventDefault();
+}
+function onPanMove(e) {
+  if (!panPt || panPt.id !== e.pointerId) return;
+  zoom.tx += e.clientX - panPt.x;
+  zoom.ty += e.clientY - panPt.y;
+  panPt.x = e.clientX; panPt.y = e.clientY;
+  constrainZoomPan();
+  applyZoom();
+  e.preventDefault();
+}
+function onPanEnd(e) {
+  if (!panPt || panPt.id !== e.pointerId) return;
+  panPt = null;
+  const st = liveStage(); if (st) st.classList.remove('panning');
+}
+
+/* Save the CURRENT frame as a JPEG download. Priority: the live <video> (drawn
+   to a canvas at its intrinsic size - the best quality), then the poster <img>,
+   then a fresh detect snapshot if nothing is on screen yet. */
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+async function saveLiveImage() {
+  const cam = state.live.cam;
+  if (!cam) { toast('No camera selected'); return; }
+  const btn = $('#live-shot');
+  btn.disabled = true;
+  const name = cam + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+  const finish = (ok, msg) => {
+    btn.disabled = false;
+    toast(msg || (ok ? 'Image saved' : 'Could not save image'));
+  };
+  try {
+    const v = $('#live-video'), im = $('#live-img');
+    if (v && !v.classList.contains('hidden') && v.videoWidth > 0 && v.readyState >= 2) {
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+      if (!blob) throw new Error('frame capture returned no image');
+      downloadBlob(blob, name); finish(true); return;
+    }
+    let src = (im && !im.classList.contains('hidden') && im.src) ? im.src : null;
+    if (!src) src = '/api/live/' + encodeURIComponent(cam) + '/latest.jpg?t=' + Date.now();
+    const resp = await fetch(src, { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+    if (!blob.size) throw new Error('empty image');
+    downloadBlob(blob, name); finish(true);
+  } catch (e) {
+    finish(false, 'Save failed: ' + (e && e.message ? e.message : e));
+  }
+}
+
+/* ---- wiring: control-row buttons + stage pan & wheel zoom ---- */
+$('#live-shot').addEventListener('click', saveLiveImage);
+$('#zoom-in').addEventListener('click', zoomIn);
+$('#zoom-out').addEventListener('click', zoomOut);
+$('#zoom-reset').addEventListener('click', resetZoom);
+const stageEl = liveStage();
+if (stageEl) {
+  stageEl.addEventListener('pointerdown', onPanStart);
+  stageEl.addEventListener('pointermove', onPanMove);
+  stageEl.addEventListener('pointerup', onPanEnd);
+  stageEl.addEventListener('pointercancel', onPanEnd);
+  stageEl.addEventListener('wheel', (e) => {
+    if (!zoomable()) return;
+    e.preventDefault();
+    setZoom(zoom.s * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
+  }, { passive: false });
+}
+applyZoom();   // initial button disabled state (1x: zoom-out + reset disabled)
 
 /* -------- camera switching: thumbnail row / modal, prev + next buttons ---- */
 function camNames() {

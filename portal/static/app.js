@@ -19,11 +19,21 @@ const state = {
 };
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
+const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live HLS
+// True when this browser can play HLS at all (hls.js MSE or native Safari HLS).
+const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
+  || (function () {
+       try {
+         const v = document.createElement('video');
+         return !!(v.canPlayType && v.canPlayType('application/vnd.apple.mpegurl'));
+       } catch (e) { return false; }
+     })();
 let liveTimer = null;
 let idleTimer = null;
 let liveTok = 0;             // guards stale async callbacks after switch/stop
 let curHls = null;           // active hls.js instance (destroy on stop/switch)
 let frameWatchTimer = null;  // watchdog: give up waiting for the first media
+let retryTimer = null;       // auto-retry: snapshot fallback -> HLS live
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
 
@@ -164,9 +174,11 @@ async function loadCameras() {
 function hlsFallback(cam, tok) {
   /* HLS could not start -> the poster <img> keeps refreshing (~1 fps) as the
      live detect-snapshot view (no audio). Stop any HLS work, hide the dead
-     <video>, and let the running poster poll continue under 'snap' mode. */
+     <video>, let the running poster poll continue under 'snap' mode, and keep
+     auto-retrying to upgrade back to live HLS in the background. */
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
       || state.live.mode !== 'hls') return;
+  clearFrameWatch();          // no stale first-media watchdog
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   state.live.mode = 'snap';
   const video = $('#live-video');
@@ -174,8 +186,24 @@ function hlsFallback(cam, tok) {
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.remove('hidden');
   $('#live-sound').classList.add('hidden');   // JPEG fallback has no audio
-  $('#live-status').textContent = 'Live (snapshot ~1 fps) - tap \u21BB to retry';
+  $('#live-status').textContent = 'Live (snapshot ~1 fps) - auto-retrying HLS\u2026';
   hideSpinner();
+  if (HLS_SUPPORTED) scheduleLiveRetry(cam);  // keep trying to upgrade to live
+}
+
+/* While stuck in the detect-snapshot fallback, keep trying to upgrade back to
+   real HLS live in the background - the snapshot <img> keeps refreshing at
+   ~1 fps and is never interrupted. Stops only when the view is stopped (idle
+   timeout, leaving Live, or switching camera). */
+function scheduleLiveRetry(cam) {
+  if (retryTimer || !state.live.playing || !HLS_SUPPORTED) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (!state.live.playing || state.live.cam !== cam
+        || state.live.mode !== 'snap') return;   // no longer in the fallback
+    $('#live-status').textContent = 'Upgrading to live HLS\u2026';
+    startHls(cam, liveTok);  // reuse liveTok so the snapshot <img> poll keeps running
+  }, SNAPSHOT_RETRY_MS);
 }
 
 function resetIdle() {
@@ -405,6 +433,7 @@ function stopStream() {
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   clearFrameWatch();
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   if (curHls) { curHls.destroy(); curHls = null; }
   const video = $('#live-video');
   try { video.pause(); } catch (e) { /* ignore */ }

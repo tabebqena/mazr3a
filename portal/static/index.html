@@ -56,25 +56,29 @@
           <span class="live-tools">
             <!-- Live audio toggle. Live HLS audio is AAC (portal transcode);
                  it starts muted so autoplay is allowed - this button (a user
-                 gesture) turns sound on. Hidden in the snapshot/offline states
-                 (no audio there). -->
-            <button id="live-sound" class="sound hidden" type="button"
+                 gesture) turns sound on. The button is ALWAYS shown in the row;
+                 it is just DISABLED until a live stream is really playing audio
+                 (offline / interrupted / warming up = inactive, not hidden). -->
+            <button id="live-sound" class="sound" type="button" disabled
                     title="Enable sound" aria-label="Enable sound">&#128263;</button>
 
-            <!-- Save image: download the current visible frame as a JPEG. -->
-            <button id="live-shot" type="button"
+            <!-- Save image: download the current visible frame as a JPEG.
+                 Disabled while there is no frame on screen (offline / paused),
+                 otherwise always shown. -->
+            <button id="live-shot" type="button" disabled
                     title="Save image (download the current frame)"
                     aria-label="Save image">&#128247;</button>
 
             <!-- Zoom controls: +/- step around the frame centre + a reset. When
                  zoomed, drag the picture to pan (and use the mouse wheel to zoom
-                 on desktop). -->
+                 on desktop). The group is disabled whenever no frame is on
+                 screen (offline / interrupted). -->
             <span class="zoom-ctl" role="group" aria-label="Zoom controls">
-              <button id="zoom-out" type="button" title="Zoom out"
+              <button id="zoom-out" type="button" disabled title="Zoom out"
                       aria-label="Zoom out">&#8722;</button>
-              <button id="zoom-in" type="button" title="Zoom in"
+              <button id="zoom-in" type="button" disabled title="Zoom in"
                       aria-label="Zoom in">&#43;</button>
-              <button id="zoom-reset" type="button" title="Reset zoom"
+              <button id="zoom-reset" type="button" disabled title="Reset zoom"
                       aria-label="Reset zoom">reset</button>
             </span>
 
@@ -190,7 +194,7 @@
        /api/settings (portal APP_VERSION); the hard-coded text is only a
        pre-script fallback. -->
   <footer class="app-ver" title="Portal version">
-    v<span id="ver-no">0.3.2</span>
+    v<span id="ver-no">0.3.3</span>
   </footer>
 
   <!-- Fire evidence lightbox: clicking a fire card image opens this full-screen

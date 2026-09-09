@@ -216,8 +216,8 @@ function hlsFallback(cam, tok) {
   const img = $('#live-img');
   if (img) { img.onload = null; img.onerror = null; }
   $('#live-video').classList.add('hidden');
-  $('#live-sound').classList.add('hidden');
   hideSpinner();
+  syncLiveTools();      // no live video: sound off; save/zoom follow the frame
   decideAfterHlsFail(cam, tok);
 }
 
@@ -229,6 +229,7 @@ async function decideAfterHlsFail(cam, tok) {
   // Camera is ONLINE -> just latency/startup: keep the frozen poster visible,
   // no spinner, no snapshot feed, and auto-retry HLS in the background.
   $('#live-img').classList.remove('hidden');
+  syncLiveTools();      // frozen poster: save/zoom active, sound stays off
   $('#live-status').textContent = 'HLS starting - auto-retrying\u2026';
   scheduleLiveRetry(cam);
 }
@@ -283,8 +284,8 @@ function enterOffline(cam) {
   if (img) { img.onload = null; img.onerror = null; }
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.add('hidden');
-  $('#live-sound').classList.add('hidden');
   hideSpinner();
+  syncLiveTools();      // offline: no frame/no audio -> controls just disabled
   $('#live-status').textContent = cam + ' is offline';
   showOverlay('Camera ' + cam + ' is offline.');
   if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = null; }
@@ -376,14 +377,39 @@ function toggleLiveSound() {
     if (p && p.catch) p.catch(() => {});
   }
 }
+/* Live audio only exists once an HLS video has revealed and really buffered
+   media - during the warm-up poster, an auto-retry freeze, an interruption or
+   the offline state there is no sound to toggle. */
+function liveAudioActive() {
+  const v = $('#live-video');
+  return !!(state.live.playing && state.live.mode === 'hls'
+            && state.live.revealed && !state.live.imgLive
+            && v && !v.classList.contains('hidden') && v.readyState >= 2);
+}
+/* Reflect the REAL sound state (muted until live audio exists). The sound
+   button is never hidden - when offline / interrupted / warming up it is just
+   DISABLED so the row always shows the same controls. */
 function syncSoundUI() {
   const b = $('#live-sound');
   if (!b) return;
-  const on = !!state.live.sound;
+  const active = liveAudioActive();
+  const on = active && !!state.live.sound;
+  b.disabled = !active;
   b.textContent = on ? '\u{1F50A}' : '\u{1F507}';   // 🔊 / 🔇
-  b.title = on ? 'Mute' : 'Enable sound';
+  b.title = active ? (on ? 'Mute' : 'Enable sound')
+                   : 'Sound is available on the live stream';
   b.setAttribute('aria-label', b.title);
   b.classList.toggle('sound-on', on);
+}
+/* Central refresh for the row's media controls. They stay VISIBLE in every
+   state and are merely DISABLED while there is no usable media (offline /
+   interrupted / paused): save-image + zoom need a frame on screen, sound needs
+   live audio. Call on every stream-state transition and on poster frame load. */
+function syncLiveTools() {
+  const shot = $('#live-shot');
+  if (shot) shot.disabled = !(state.live.cam && zoomable());
+  applyZoom();          // zoom group gated on zoomable() (see below)
+  syncSoundUI();
 }
 
 function ensureLive() {
@@ -447,8 +473,7 @@ function startHls(cam, tok) {
   // real media is buffered (FRAG_BUFFERED / loadeddata -> firstMediaReady).
   video.muted = true;                 // autoplay-safe; sound restored on play
   $('#live-video').classList.remove('hidden');
-  $('#live-sound').classList.remove('hidden');
-  syncSoundUI();
+  syncSoundUI();      // sound button stays visible; enabled once live reveals
   // Same-origin HLS through the portal (behind the session cookie):
   // https://<portal>/api/live/<cam>/hls/stream.m3u8?src=<cam>
   // The backend serves the <cam>_portal AAC source.
@@ -538,6 +563,7 @@ function firstHlsFrame(cam, tok) {
   if (img) { img.onload = null; img.onerror = null; }
   showVideo();                        // hide poster, show the <video>
   hideSpinner();
+  syncLiveTools();      // real frame now live: save/zoom + sound become active
   $('#live-status').textContent = 'HLS starting\u2026';
   startPaintCheck(cam, tok);
 }
@@ -643,6 +669,7 @@ function blackRevert(cam, tok) {
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.remove('hidden');
   hideSpinner();
+  syncLiveTools();      // frozen poster still zoomable/savable; sound off
   $('#live-status').textContent = 'HLS starting - waiting for video\u2026';
   scheduleLiveRetry(cam, HLS_VIDEO_RETRY_MS);
 }
@@ -660,12 +687,14 @@ function scheduleFrame(cam, tok) {
         && state.live.imgLive) {
       liveTimer = setTimeout(() => scheduleFrame(cam, tok), LIVE_POLL_MS);
     }
+    syncLiveTools();   // poster frame arrived -> save/zoom become usable
   };
   img.onerror = () => {
     if (state.live.playing && cam === state.live.cam && tok === liveTok
         && state.live.imgLive) {
       liveTimer = setTimeout(() => scheduleFrame(cam, tok), 3000);
     }
+    syncLiveTools();   // no poster frame -> controls follow what is on screen
   };
   img.src = '/api/live/' + encodeURIComponent(cam) + '/latest.jpg?t=' + Date.now();
 }
@@ -690,8 +719,8 @@ function stopStream() {
   if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.add('hidden');
-  $('#live-sound').classList.add('hidden');
   hideSpinner();
+  syncLiveTools();      // stopped: no frame/no audio -> controls just disabled
   $('#live-status').textContent = '';
   resetZoom();                 // a fresh camera / restart starts at 1x, no stale pan
 }
@@ -755,12 +784,15 @@ function applyZoom() {
     : 'none';
   if (v) v.style.transform = t;
   if (im) im.style.transform = t;
+  // Zoom needs a real frame on screen: in offline/interrupted/paused states the
+  // whole group is DISABLED (still visible, just inactive).
+  const frame = zoomable();
   const zi = $('#zoom-in'), zo = $('#zoom-out'), zr = $('#zoom-reset');
-  if (zi) zi.disabled = zoom.s >= ZOOM_MAX;
-  if (zo) zo.disabled = zoom.s <= ZOOM_MIN;
-  if (zr) zr.disabled = zoom.s <= ZOOM_MIN;
+  if (zi) zi.disabled = !frame || zoom.s >= ZOOM_MAX;
+  if (zo) zo.disabled = !frame || zoom.s <= ZOOM_MIN;
+  if (zr) zr.disabled = !frame || zoom.s <= ZOOM_MIN;
   const st = liveStage();
-  if (st) st.classList.toggle('zoomed', zoom.s > ZOOM_MIN);
+  if (st) st.classList.toggle('zoomed', frame && zoom.s > ZOOM_MIN);
 }
 function setZoom(s) {
   s = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, s));
@@ -857,7 +889,7 @@ if (stageEl) {
     setZoom(zoom.s * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
   }, { passive: false });
 }
-applyZoom();   // initial button disabled state (1x: zoom-out + reset disabled)
+syncLiveTools();   // initial state: no frame/no audio yet -> row tools disabled
 
 /* -------- camera switching: thumbnail row / modal, prev + next buttons ---- */
 function camNames() {

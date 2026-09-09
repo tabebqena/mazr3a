@@ -106,26 +106,32 @@ nav a.active { color: var(--text); background: var(--panel2); }
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
 .view { padding-bottom: 8px; }
 
-/* Filter/search controls: stacked full-width on phones. */
+/* Filter/search bars (Events + Fire alerts): one compact horizontal toolbar.
+   Each "label + field" is a single item laid out INLINE (caption left of the
+   field) and auto-width - NEVER full width. When there is room they all share
+   one line; on narrow screens the bar wraps whole items (a field is never
+   separated from its caption). */
 .controls {
-  display: flex; flex-direction: column; gap: 10px;
-  margin-bottom: 14px;
+  display: flex; flex-flow: row wrap; align-items: flex-end;
+  gap: 8px 12px; margin-bottom: 14px;
 }
 .controls label {
-  display: flex; flex-direction: column; gap: 4px;
-  color: var(--muted); font-size: 13px;
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
+  color: var(--muted); font-size: 13px; white-space: nowrap;
+  min-height: var(--tap-h);
 }
-.controls label.check {
-  flex-direction: row; align-items: center; gap: 8px;
-  padding: 4px 0; min-height: var(--tap-h);
+.controls input:not([type="checkbox"]), .controls select {
+  width: auto; min-width: 130px;
 }
-.controls label.check input { width: auto; flex: 0 0 auto; }
-.controls button { align-self: stretch; }
-/* Custom From/To row: side-by-side text + field that fills the width. */
-.time-custom { display: flex; flex-direction: column; gap: 8px; }
-.time-custom label { flex-direction: row; align-items: center; gap: 8px; }
-.time-custom label::after { content: none; }
-.time-custom input { flex: 1 1 auto; min-width: 0; }
+.controls label.check { gap: 8px; }
+.controls label.check input { width: auto; min-width: 0; flex: 0 0 auto; }
+.controls button { width: auto; align-self: auto; white-space: nowrap; }
+/* Custom From/To: the wrap is transparent (display: contents) so its From/To
+   fields join the SAME single toolbar row as the other filters. The .hidden
+   class (JS toggle) still wins over this (display:none !important). */
+.time-custom { display: contents; }
+.time-custom label { flex-direction: row; }
+.time-custom input { min-width: 170px; }
 
 .status {
   color: var(--muted); font-size: 13px; margin: 4px 0 10px;
@@ -509,27 +515,11 @@ body.lb-open { overflow: hidden; }
   nav { order: 0; width: auto; flex: 1; overflow: visible; justify-content: flex-start; }
   nav a { flex: 0 0 auto; padding: 7px 13px; }
 
-  .controls {
-    flex-direction: row; flex-wrap: wrap; align-items: flex-end;
-    gap: 12px;
-  }
-  .controls label { width: auto; font-size: 12px; }
-  .controls input, .controls select {
-    width: auto; min-width: 150px; min-height: auto; padding: 9px 11px;
-  }
-  .controls input[type="datetime-local"] { min-width: 180px; }
-  .controls label.check { align-self: center; padding-top: 12px; min-height: auto; }
-  .controls button {
-    width: auto; min-height: auto; padding: 5px 12px;
-    align-self: flex-end;
-  }
-  /* Live refresh (↻) is right-aligned by the .live-ctl flex row (the picker
-     button flexes to fill, the refresh button sits at the far end). */
-  .time-custom {
-    flex-direction: row; align-items: flex-end; padding-top: 0;
-  }
-  .time-custom label { flex-direction: row; }
-  .time-custom input { min-height: auto; }
+  .controls { gap: 8px 14px; }
+  .controls label { min-height: auto; font-size: 12px; }
+  .controls input, .controls select { min-height: auto; padding: 8px 10px; }
+  .controls label.check { align-self: center; }
+  .controls button { min-height: auto; padding: 6px 14px; }
 
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 

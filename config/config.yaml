@@ -270,7 +270,7 @@ snapshots:
 # ------------------------------------------------------------------
 motion:
   threshold: 30
-  contour_area: 15
+  contour_area: 20
   delta_alpha: 0.2
   improve_contrast: false
 

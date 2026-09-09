@@ -15,11 +15,15 @@
 # (logs to config/cleanup_media.conf -> LOG_FILE)
 */30 * * * * /home/dr/frigate/scripts/cleanup_media.sh >> /dev/null 2>&1
 
-# CPU temperature watchdog (python) - every 10 minutes
-# Debounced Telegram alert: only when the CPU stays >= MAX_TEMP for MIN_HITS
-# samples >= MIN_INTERVAL minutes apart (tunables in config/telegram.conf;
-# debounce state persists in machine-monitor.state).
-*/10 * * * * /usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py >> /dev/null 2>&1
+# CPU temperature watchdog (python) - EVERY MINUTE (was */10)
+# Two-tier Telegram alert (tunables in config/telegram.conf):
+#   * CRITICAL: any single sample >= CRITICAL_TEMP (default 80 °C) alerts at once.
+#   * WARM: MIN_HITS samples >= MAX_TEMP within MIN_WINDOW_MIN alert (default
+#     72 °C, 3 in 240 min). History persists in machine-monitor.state.
+# Every-minute sampling is REQUIRED: this host's hot spikes last ~1 min and a
+# 10-min cadence missed the 83 °C peak (2026-09-08). If you edit this file's
+# cadence, re-apply the whole crontab (crontab scripts/crontab.sample).
+* * * * * /usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py >> /dev/null 2>&1
 
 # Daily machine health report (python) - 08:00 every day
 # (Telegram summary of host + Frigate state, per-camera online/offline)

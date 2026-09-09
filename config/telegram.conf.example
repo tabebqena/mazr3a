@@ -1,4 +1,4 @@
-# ============================================================
+g# ============================================================
 # Telegram alerting - credentials & tunables (TEMPLATE).
 #
 # Copy to telegram.conf and EDIT THE VALUES, then deploy it to
@@ -40,21 +40,32 @@ BOT_TOKEN=CHANGE_ME
 CHAT_ID=CHANGE_ME
 
 # ------------------------------------------------------------------
-# machine-monitor.py tunables (CPU-temperature watchdog).
+# machine-monitor.py tunables (CPU-temperature watchdog, run EVERY minute).
 #
-#   MAX_TEMP      CPU temp in °C at/above which the watchdog starts counting.
-#   MIN_HITS      number of samples that must all be at/above MAX_TEMP...
-#   MIN_INTERVAL  ...with at least this many MINUTES between samples, before
-#                 an alert is sent.
+# Two alert tiers:
+#   CRITICAL_TEMP  any SINGLE sample at/above this (°C) alerts immediately -
+#                  catches the brief 80+ °C spikes this host shows during
+#                  heavy Frigate bursts.      (default 80)
+#   MAX_TEMP       WARM tier threshold (°C): a sample at/above it is counted.
+#                                                              (default 72)
+#   MIN_HITS       WARM fires once MIN_HITS samples >= MAX_TEMP have occurred
+#                  within the last MIN_WINDOW_MIN minutes. Cool samples do NOT
+#                  reset the count - they just age out of the window.
+#                                                              (default 3)
+#   MIN_WINDOW_MIN rolling window (minutes) for the WARM count.  (default 240)
+#   COOLDOWN_MIN   quiet time (minutes) after any alert before the next may
+#                  fire - stops message storms during a long hot spell.
+#                                                              (default 60)
 #
-# Defaults if a key is unset: MAX_TEMP=75, MIN_HITS=3, MIN_INTERVAL=30 ->
-# the script collects sensors 3 times with 30 minutes in between; only when
-# the max sensor temperature is still above MAX_TEMP does it send (a single
-# transient spike is ignored).
+# Defaults if a key is unset: MAX_TEMP=72, MIN_HITS=3, MIN_WINDOW_MIN=240,
+# CRITICAL_TEMP=80, COOLDOWN_MIN=60. Example values that warned on the
+# 2026-09-08 recording (repeated 74-83 °C hourly spikes, zero old-style alerts):
 # ------------------------------------------------------------------
-MAX_TEMP=75
+MAX_TEMP=72
 MIN_HITS=3
-MIN_INTERVAL=30
+MIN_WINDOW_MIN=240
+CRITICAL_TEMP=80
+COOLDOWN_MIN=60
 
 # ------------------------------------------------------------------
 # telegram-bot tunables (on-demand /status command responder - docker

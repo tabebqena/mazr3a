@@ -1,52 +1,45 @@
 #!/usr/bin/env python3
-"""firewatch.py - farm fire/smoke watchdog for the Frigate NVR stack.
+"""firewatch.py - farm fire/smoke watchdog for the Frigate NVR stack (v3).
 
-Runs as the `firewatch` Docker service (docker-compose.yml). It polls each
+Runs as the `firewatch` Docker service (docker-compose.yml). It reads each
 camera's ALREADY-DECODED detect frame from Frigate's REST API
-(GET /api/<camera>/latest.jpg - no extra ffmpeg decode), runs a small
-fire/smoke YOLO model via OpenVINO, and sends a Telegram PHOTO alert on a
-sustained detection (min consecutive hits above a score threshold, with a
-per-camera cooldown to prevent spam).
+(GET /api/<cam>/latest.jpg - no extra ffmpeg decode), runs a fire/smoke YOLO
+model via OpenVINO, and sends a Telegram PHOTO alert for a confirmed fire.
 
-Evidence store (2026-09-08, see plans/firewatch-evidence-store.md; sqlite rework
-in plans/firewatch-sqlite-evidence-store.md): EVERY poll that is marked fire (a
-detection above SCORE_THRESHOLD) is ALSO persisted - the frame as a JPEG under
-<STORE_DIR>/<cam>/ and its metadata (camera, timestamp, best score, per-box
-detections, the JPEG path) in a single WAL-mode SQLite DB at
-<STORE_DIR>/firewatch.db - INDEPENDENT of the MIN_HITS/HITS_WINDOW alert gate
-and cooldown, so a real fire that never accumulates enough hits still leaves a
-durable record. This replaces the old per-frame .json sidecar. STORE_DIR
-defaults to /media/firewatch (a read-write mount of the git-ignored host
-./media tree added in docker-compose.yml); STORE_ENABLED=false reverts to the
-old send-only behavior.
+v3 (2026-09-09, plans/firewatch-motion-gate-bonus.md - ESTABLISHED SPEC):
+firewatch now fuses two signals - the fire model's per-box confidence AND a
+motion signal measured on frames pulled ~MOTION_GAP_S apart:
+  * Motion is a GATE on running the model: a batched two-frame motion sweep
+    decides which cameras get an inference (motion gate passed or a periodic
+    BASELINE_EVERY_S run); quiet cameras are skipped (CPU saved).
+  * Motion is an EVIDENCE TIER in the score (SPATIAL AGREEMENT): a fire box
+    that sits NEAR motion (flicker) is a moving fire - it confirms at the low
+    bar SCORE_THRESHOLD with a MOTION_BONUS. A fire box with NO nearby motion
+    gets no bonus and must clear the high bar SCORE_HIGH.
+  * CONFIRMATION: a camera that gets a hit is promoted to a dense FOLLOW-UP
+    (every FOLLOWUP_GAP_S) and alerts on MIN_HITS confirms within HITS_WINDOW.
+  * COOLDOWN is per camera after ANY follow-up session ends (alert or not):
+    COOLDOWN_S after a confirmed alert, COOLDOWN_NOALERT_S after an
+    unconfirmed exit.
+  * Evidence store keeps TWO images per fire-marked frame: the ORIGINAL JPEG
+    (what the model scored; canonical frames.jpg_path) and an ANNOTATED twin
+    (<base>_annotated.jpg, red boxes + label + score). frames.annotated_path
+    records the annotated file (nullable, guarded ALTER).
+MOTION_ENABLED=false restores the previous score-only polling behaviour
+(run_legacy).
 
-Design notes
-------------
-- Frigate's own person/car/animal detection (config/config.yaml) is NOT
-  touched; this watcher is fully out-of-band (see plans/fire-detection.md).
-- firewatch.py lives in ./firewatch (the service folder); code/config/model
-  live on runtime mounts (./firewatch, ./scripts, ./config, ./models are
-  mounted read-only into the container) so edits need no image rebuild.
-- The watcher is stdlib + openvino + numpy + Pillow only. telegram_notify is
-  imported from the shared ./scripts directory (mounted at /scripts), which
-  still ships alongside because firewatch.py and scripts/ are siblings.
-- Motion gate + score bonus (2026-09-09, plans/firewatch-motion-gate-bonus.md):
-  firewatch now combines the fire model's confidence with MOTION measured inside
-  each detection's fire box (frame diff between consecutive polls of the same
-  camera). A box must be moving to count toward MIN_HITS (the gate - static
-  sun/glint false positives are suppressed) and a moving box gets a score bonus
-  (promotes small flickering fires over the alert bar). MOTION_ENABLED=false
-  restores the previous score-only behaviour exactly.
+Robustness (spec 13): the daemon while-loop is the only unbounded loop; every
+pass sleeps a bounded TICK; every external call has a hard timeout; every
+per-camera operation is exception-isolated at the camera boundary; timers use
+time.monotonic(); SIGTERM/SIGINT set a stop flag checked each tick; the
+evidence store is best-effort and never stops the loop.
 
-Model assumption (see plans/fire-detection.md section 5.1)
-----------------------------------------------------------
-The model under MODEL_DIR is an OpenVINO IR export of a fire/smoke YOLOv8n
-(single output tensor [1, 4+nc, N] or [1, N, 4+nc], xywh boxes in input
-pixels, class scores 0..1). The decoder also handles an already-sigmoided
-output. labelmap.txt lists one class per line (typically: fire, smoke).
+Evidence store background: SQLite (WAL) at <STORE_DIR>/firewatch.db holds one
+`frames` row + per-box `detections` rows per stored frame; JPEGs stay as plain
+files under <STORE_DIR>/<cam>/ (see plans/firewatch-sqlite-evidence-store.md).
+STORE_ENABLED=false reverts to send-only behaviour.
 
-Usage
------
+Usage:
   python firewatch.py            # run the polling loop
   python firewatch.py --once     # single pass over all cameras, then exit
   python firewatch.py --dry-run  # like --once but print instead of sending
@@ -55,6 +48,8 @@ Usage
 import collections
 import io
 import os
+import signal
+import socket
 import sqlite3
 import sys
 import time
@@ -63,25 +58,27 @@ import urllib.request
 
 import numpy as np
 
-# firewatch.py now lives in firewatch/, while the shared helpers (telegram_notify.py)
-# stay in the sibling scripts/ dir. Make both importable: in the container firewatch.py
-# is mounted at /firewatch and scripts/ at /scripts (repo-root siblings), so the same
-# relative walk works here and locally.
+# firewatch.py lives in firewatch/, shared helpers (telegram_notify.py) stay in
+# the sibling scripts/ dir; make both importable (container mounts mirror this).
 _FW_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, _FW_DIR)
 sys.path.insert(0, os.path.join(os.path.dirname(_FW_DIR), "scripts"))
 import telegram_notify as tg  # noqa: E402
 
-# Pillow is only used to overlay detection boxes on the alert snapshot; it is
-# a hard dependency of the firewatch image (see firewatch/requirements.txt).
-from PIL import Image, ImageDraw, ImageFont
+# Pillow is only used to overlay boxes + blur grayscale frames.
+from PIL import Image, ImageDraw, ImageFilter, ImageFont  # noqa: E402
 
 CONF_PATH = os.environ.get("FIREWATCH_CONF", "/config/firewatch.conf")
 LOG = lambda *a: print(time.strftime("[%Y-%m-%d %H:%M:%S]"), *a, flush=True)  # noqa: E731
+_STOP = [False]  # set by SIGTERM/SIGINT -> clean, prompt shutdown (spec 13.G)
+
+
+def _sig_stop(signum, frame):  # noqa: ARG001 - signal handler
+    _STOP[0] = True
 
 
 # ---------------------------------------------------------------------------
-# tiny KEY=VALUE conf reader with typed defaults (mirrors telegram_notify.load_conf)
+# tiny KEY=VALUE conf reader with typed defaults
 # ---------------------------------------------------------------------------
 def _raw_conf(path):
     cfg = {}
@@ -99,8 +96,7 @@ def _raw_conf(path):
 
 
 def _get(raw, key, default=""):
-    value = os.environ.get(key) or raw.get(key) or default
-    return str(value).strip()
+    return str(os.environ.get(key) or raw.get(key) or default).strip()
 
 
 def _getf(raw, key, default):
@@ -119,11 +115,15 @@ def _geti(raw, key, default):
 
 def _getb(raw, key, default):
     return _get(raw, key, "true" if default else "false").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+        "1", "true", "yes", "on")
+
+
+def _clampf(v, lo, hi, default):
+    """Clamp a float config value into [lo, hi]; fall back to `default`."""
+    v = float(v)
+    if not (lo <= v <= hi):
+        return default
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,6 @@ class FireModel:
         shape = list(self._input.shape)
         if len(shape) != 4:
             raise RuntimeError(f"unexpected input shape {shape}")
-        # OpenVINO reports NCHW for most CV models; handle NHWC defensively.
         if shape[1] in (1, 3) and shape[1] < shape[3]:
             _, self.height, self.width, self.ch = shape
         else:
@@ -158,22 +157,17 @@ class FireModel:
         self.input_name = self._input.any_name
         self.output_name = self._output.any_name
 
-        # class name -> index from labelmap (e.g. fire=0, other=1, smoke=2).
-        # labelmap_path is optional: when omitted, labelmap.txt inside model_dir
-        # is used (the container passes only MODEL_DIR).
         self.labels = []
         labelmap = labelmap_path or os.path.join(model_dir, "labelmap.txt")
         if labelmap and os.path.isfile(labelmap):
             with open(labelmap, encoding="utf-8") as fh:
                 self.labels = [ln.strip() for ln in fh if ln.strip()]
         if not self.labels:
-            # fallback guess: first two outputs after xywh are fire/smoke
             self.labels = ["fire", "smoke"]
         self.nc = len(self.labels)
         LOG(f"model {xml_path}: input {self.width}x{self.height} ch={self.ch} "
             f"output {list(self._output.shape)} classes={self.labels}")
 
-    # -- preprocess ------------------------------------------------------
     @staticmethod
     def _letterbox(img, size):
         """Resize keeping aspect ratio, pad with 114 (ultralytics style)."""
@@ -186,7 +180,6 @@ class FireModel:
         arr = np.asarray(canvas, dtype=np.float32) / 255.0
         return np.transpose(arr, (2, 0, 1))[None], scale, (size - nw) // 2, (size - nh) // 2
 
-    # -- postprocess -----------------------------------------------------
     @staticmethod
     def _iou(a, b):
         ax1, ay1, ax2, ay2 = a
@@ -207,15 +200,14 @@ class FireModel:
         data = np.asarray(out)
         if data.ndim == 3:
             data = data[0]
-        # orient so rows are candidate detections: [N, C]
         if data.ndim == 2 and data.shape[0] == 4 + self.nc and data.shape[1] > data.shape[0]:
             data = data.T
         cols = data.shape[1]
         raw_cols = 4 + self.nc
         if cols == raw_cols:
-            mode = "raw"   # per-class scores with cxcywh boxes ([1,4+nc,N] or [1,N,4+nc])
+            mode = "raw"
         elif cols == 6:
-            mode = "e2e"   # end-to-end NMS: x1,y1,x2,y2,score,class_id ([1,N,6]) - YOLO26
+            mode = "e2e"   # YOLO26 end-to-end NMS
         else:
             raise RuntimeError(
                 f"model output has {cols} cols; expected {raw_cols} (raw per-class) "
@@ -224,14 +216,11 @@ class FireModel:
 
         dets = []
         if mode == "raw":
-            boxes = data[:, :4].astype(np.float32)  # cxcywh in input pixels
-            scores = data[:, 4 : 4 + self.nc].astype(np.float32)
-            # ultralytics exports may leave class logits raw - sigmoid when needed
+            boxes = data[:, :4].astype(np.float32)
+            scores = data[:, 4:4 + self.nc].astype(np.float32)
             if np.nanmax(scores) > 1.0:
                 scores = 1.0 / (1.0 + np.exp(-scores))
             for ci in range(self.nc):
-                # allowed is a lowercase name set; compare case-insensitively so
-                # models with labels like "Fire" still match the "fire" track.
                 if allowed and self.labels[ci].lower() not in allowed:
                     continue
                 idx = np.where(scores[:, ci] >= score_thresh)[0]
@@ -241,14 +230,11 @@ class FireModel:
                     y1 = (cy - bh / 2 - pad_y) / scale
                     x2 = (cx + bw / 2 - pad_x) / scale
                     y2 = (cy + bh / 2 - pad_y) / scale
-                    dets.append(
-                        {
-                            "label": self.labels[ci],
-                            "score": float(scores[i, ci]),
-                            "box": (max(0.0, x1), max(0.0, y1), x2, y2),
-                        }
-                    )
-        else:  # e2e: rows are already x1,y1,x2,y2 (input pixels) + score + class id
+                    dets.append({
+                        "label": self.labels[ci], "score": float(scores[i, ci]),
+                        "box": (max(0.0, x1), max(0.0, y1), x2, y2),
+                    })
+        else:
             xyxy = data[:, :4].astype(np.float32)
             confs = data[:, 4].astype(np.float32)
             cids = np.clip(data[:, 5].astype(np.int64), 0, self.nc - 1)
@@ -257,16 +243,12 @@ class FireModel:
                 if allowed and label.lower() not in allowed:
                     continue
                 x1, y1, x2, y2 = xyxy[i]
-                dets.append(
-                    {
-                        "label": label,
-                        "score": float(confs[i]),
-                        "box": (max(0.0, (x1 - pad_x) / scale),
-                                max(0.0, (y1 - pad_y) / scale),
-                                (x2 - pad_x) / scale,
-                                (y2 - pad_y) / scale),
-                    }
-                )
+                dets.append({
+                    "label": label, "score": float(confs[i]),
+                    "box": (max(0.0, (x1 - pad_x) / scale),
+                            max(0.0, (y1 - pad_y) / scale),
+                            (x2 - pad_x) / scale, (y2 - pad_y) / scale),
+                })
 
         # simple NMS across classes
         dets.sort(key=lambda d: d["score"], reverse=True)
@@ -281,16 +263,16 @@ class FireModel:
 # snapshot + alert helpers
 # ---------------------------------------------------------------------------
 def fetch_frame(api, camera, timeout=10):
-    """Return (jpeg_bytes) for a camera's latest detect frame."""
+    """Return (jpeg_bytes) for a camera's latest detect frame (bounded by timeout)."""
     url = f"{api}/api/{camera}/latest.jpg"
     req = urllib.request.Request(url, headers={"Accept": "image/jpeg"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
 
-def overlay_boxes(jpeg_bytes, dets, model_hw=None):
-    """Return JPEG bytes with red boxes + labels overlaid (no-op without PIL)."""
-    if Image is None or not dets:
+def overlay_boxes(jpeg_bytes, dets, model_hw=None):  # noqa: ARG001 - API compat
+    """Return JPEG bytes with red boxes + labels overlaid."""
+    if not dets:
         return jpeg_bytes
     img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img)
@@ -308,94 +290,135 @@ def overlay_boxes(jpeg_bytes, dets, model_hw=None):
     return buf.getvalue()
 
 
-# ---------------------------------------------------------------------------
-# motion gate + score bonus (2026-09-09, plans/firewatch-motion-gate-bonus.md)
-# ---------------------------------------------------------------------------
-def _box_motion_frac(mask, box, margin=0.5):
-    """Fraction of 'changed' (True) pixels inside `box`, expanded on each side
-    by `margin` (a fraction of the box's own width/height), clipped to the
-    frame. Returns 0.0 for a zero/one-pixel box or an out-of-frame region."""
+def _decode(img_bytes):
+    """Decode JPEG bytes to an RGB PIL image. May raise (caller isolates)."""
+    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+
+def _gray(img_rgb):
+    """Grayscale uint8 array of a decoded frame."""
+    return np.asarray(img_rgb.convert("L"), dtype=np.uint8)
+
+
+def _blur_gray(gray, radius):
+    """Gaussian-blur a grayscale array (PIL-backed; radius >= 0.5)."""
+    if radius <= 0.0:
+        return gray
+    return np.asarray(Image.fromarray(gray).filter(ImageFilter.GaussianBlur(radius)),
+                      dtype=np.uint8)
+
+
+def _morph_open(mask):
+    """3x3 morphological open (erode then dilate) - drops 1px speckles.
+
+    Pure numpy (no scipy/cv2 dependency): min/max over a padded 3x3 window.
+    """
+    h, w = mask.shape
+    pad = np.pad(mask, 1)
+    eroded = np.ones((h, w), dtype=bool)
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            eroded &= pad[dy:dy + h, dx:dx + w]
+    pad2 = np.pad(eroded, 1)
+    opened = np.zeros((h, w), dtype=bool)
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            opened |= pad2[dy:dy + h, dx:dx + w]
+    return opened
+
+
+def _changed_mask(a_gray, b_gray, px_diff, blur_radius):
+    """Denoised motion mask: |blur(A) - blur(B)| > px_diff, speckles opened out."""
+    a = _blur_gray(a_gray, blur_radius).astype(np.int16)
+    b = _blur_gray(b_gray, blur_radius).astype(np.int16)
+    m = np.abs(a - b) > px_diff
+    return _morph_open(m)
+
+
+def _adaptive_px(base, night_extra, night_luma, mean_luma):
+    """Day/night pixel-diff: raise the threshold when it is dark (ISO/IR noise)."""
+    return base + (night_extra if mean_luma < night_luma else 0.0)
+
+
+def _expanded_region(mask, box, margin):
+    """Boolean region of `mask` inside `box` expanded by margin (x box size) per side."""
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
     if w <= 1 or h <= 1:
-        return 0.0
+        return None
     ax1 = max(0, int(x1 - w * margin))
     ay1 = max(0, int(y1 - h * margin))
     ax2 = min(mask.shape[1], int(x2 + w * margin) + 1)
     ay2 = min(mask.shape[0], int(y2 + h * margin) + 1)
-    region = mask[ay1:ay2, ax1:ax2]
-    return float(region.mean()) if region.size else 0.0
+    if ax2 <= ax1 or ay2 <= ay1:
+        return None
+    return mask[ay1:ay2, ax1:ax2]
 
 
-def motion_gate(dets, cur_gray, prev_gray, threshold, gate_frac, margin,
-                px_diff, bonus, no_motion_score):
-    """Apply the motion gate + score bonus to one poll's raw model detections.
+def _region_stats(mask, box, margin):
+    """(changed_fraction, changed_count) inside the expanded region of `box`."""
+    region = _expanded_region(mask, box, margin)
+    if region is None:
+        return 0.0, 0
+    cnt = int(region.sum())
+    return (cnt / region.size if region.size else 0.0), cnt
 
-    A box's `motion_frac` = fraction of pixels that changed between the previous
-    poll's frame and this one, measured inside the box (expanded by `margin`);
-    `motion_present` = motion_frac >= gate_frac. Its effective score
-    `eff = min(1, raw + (bonus if motion_present else 0))` - the BONUS.
 
+def classify_sample(dets, cur_mask, prev_masks, margin, near_frac, near_min_px,
+                    bonus, bar, high):
+    """Spatial-agreement classification of one sample's raw detections (spec 6).
+
+    A box is `near` motion when, inside the box expanded by `margin`, the
+    changed-pixel fraction >= near_frac OR the changed count >= near_min_px
+    (small/distant boxes), OR a previous mask (hotspot younger than the ring)
+    shows >= near_min_px changed pixels AND the current frame still shows any
+    change (>= 1 px) there - so a purely stale hotspot never grants a bonus.
+
+    eff = min(1, raw + (bonus if near else 0)).
     Returns (marked, hit, n_candidates, n_static):
-      marked       detections (raw 'score' kept for store/overlay, plus 'eff' and
-                   'motion' keys) whose effective score >= threshold. These are
-                   the fire-marked frames to persist/overlay. Static boxes with
-                   raw >= threshold land here too (kept as evidence for review)
-                   but do NOT count as hits.
-      hit          True when any box crossed the ALERT gate this poll (motion
-                   present and eff >= threshold, OR raw >= no_motion_score) ->
-                   contributes 1 to the MIN_HITS/HITS_WINDOW accumulator.
-      n_candidates number of raw detections the model returned (>= SCORE_FLOOR).
-      n_static     number of marked-but-static boxes (evidence kept, gate held).
-
-    First poll after start/error has no previous frame (prev_gray None or a
-    different shape): no motion can be judged, so the OLD score-only rule is used
-    for that single poll (hit when raw >= threshold). Such a poll cannot alert
-    alone (MIN_HITS >= 3), so a static false positive can never accumulate.
+      marked      boxes with eff >= bar (stored as evidence)
+      hit         True if any box confirms: near and eff >= bar,
+                  OR (no motion) raw >= high
+      n_static    marked-but-not-confirm boxes (static 0.5-0.85, evidence only)
     """
-    no_baseline = prev_gray is None or prev_gray.shape != cur_gray.shape
-    mask = None
-    if not no_baseline:
-        mask = (np.abs(cur_gray.astype(np.int16)
-                       - prev_gray.astype(np.int16)) > px_diff)
     marked, hit = [], False
     n_static = 0
+    prev_masks = prev_masks or []
     for d in dets:
         raw = d["score"]
+        near = False
+        if cur_mask is not None:
+            frac0, cnt0 = _region_stats(cur_mask, d["box"], margin)
+            near = frac0 >= near_frac or cnt0 >= near_min_px
+            if not near and cnt0 >= 1:            # minimal current change required
+                for pm in prev_masks:
+                    if pm is None:
+                        continue
+                    _, pc = _region_stats(pm, d["box"], margin)
+                    if pc >= near_min_px:
+                        near = True
+                        break
+        eff = min(1.0, raw + (bonus if near else 0.0))
         box = dict(d)
-        if no_baseline:
-            # old score-only rule on the (no-baseline) first poll: no motion can
-            # be judged, so hit exactly when the raw score clears the bar.
-            box["eff"], box["motion"] = raw, False
-            if raw >= threshold:
-                marked.append(box)
-                hit = True
-            continue
-        moving = _box_motion_frac(mask, d["box"], margin) >= gate_frac
-        eff = min(1.0, raw + (bonus if moving else 0.0))
         box["eff"] = eff
-        box["motion"] = moving
-        if eff >= threshold:
+        box["near"] = near
+        if eff >= bar:
             marked.append(box)
-            if moving or raw >= no_motion_score:
+            if near or raw >= high:
                 hit = True
             else:
-                n_static += 1  # static evidence: stored but gated out of alerts
-        # else: below the bar and not moving -> ignored entirely
+                n_static += 1
+        # raw below the evidence bar (with no near bonus) -> ignored
     return marked, hit, len(dets), n_static
 
 
-def motion_tag(enabled, marked):
-    """Short motion/effective-score tag appended to hit/alert log lines."""
-    if not enabled or not marked:
-        return ""
-    moving = sum(1 for d in marked if d.get("motion"))
-    eff = max(d.get("eff", d["score"]) for d in marked)
-    return f" [motion {moving}/{len(marked)}, eff {eff:.2f}]"
+def best_of(boxes):
+    """The marked box with the highest effective score (used for log/alert/store)."""
+    return max(boxes, key=lambda b: b.get("eff", b["score"]))
 
 
 # ---------------------------------------------------------------------------
-# main loop
+# main loop + alert helpers (single-pass and legacy score-only polling)
 # ---------------------------------------------------------------------------
 def build_caption(camera, dets, track_smoke):
     ts = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -404,9 +427,19 @@ def build_caption(camera, dets, track_smoke):
         top = "💨 SMOKE WATCH"
     lines = [f"<b>{top}</b>", f"<b>Camera:</b> {tg.esc_html(camera)}",
              f"<b>Time:</b> {tg.esc_html(ts)}"]
-    for d in sorted(dets, key=lambda x: x["score"], reverse=True)[:5]:
-        lines.append(f"• {tg.esc_html(d['label'])} {d['score']:.2f}")
+    for d in sorted(dets, key=lambda x: x.get("eff", x["score"]), reverse=True)[:5]:
+        lines.append(f"• {tg.esc_html(d['label'])} {d['score']:.2f}"
+                     + (" (motion)" if d.get("near") else ""))
     return "\n".join(lines)
+
+
+def send_alert(cfg, cam, jpg, dets, track_smoke):
+    text = build_caption(cam, dets, track_smoke)
+    try:
+        tg.send_telegram_photo(cfg, jpg, text)
+        LOG(f"ALERT sent for {cam}")
+    except Exception as exc:  # noqa: BLE001 - Telegram failure must not stop the loop
+        LOG(f"ALERT FAILED for {cam}: {exc}")
 
 
 def run_once(cfg, model, dry=False):
@@ -418,7 +451,7 @@ def run_once(cfg, model, dry=False):
     for cam in cameras:
         try:
             raw = fetch_frame(api, cam)
-            img = Image.open(io.BytesIO(raw)).convert("RGB")
+            img = _decode(raw)
             dets = model.detect(img, score_thresh=threshold, allowed=allowed)
             line = f"{cam}: {len(dets)} fire" if not track_smoke else \
                 f"{cam}: {sum(1 for d in dets if d['label']=='fire')} fire / " \
@@ -428,10 +461,6 @@ def run_once(cfg, model, dry=False):
                 if dry:
                     print(build_caption(cam, dets, track_smoke))
                     continue
-                # Evidence store: persist every fire-marked frame (JPEG file +
-                # SQLite metadata row) even with no hit accumulation or in a
-                # single-pass run. Single-pass mode alerts on every fire-marked
-                # frame, so the stored frame is tagged alerted.
                 store_fire_frame(cfg, cam, raw, dets, alerted=True)
                 jpg = overlay_boxes(raw, dets)
                 send_alert(cfg, cam, jpg, dets, track_smoke)
@@ -442,35 +471,25 @@ def run_once(cfg, model, dry=False):
     return True
 
 
-def send_alert(cfg, cam, jpg, dets, track_smoke):
-    text = build_caption(cam, dets, track_smoke)
-    try:
-        tg.send_telegram_photo(cfg, jpg, text)
-        LOG(f"ALERT sent for {cam}")
-    except Exception as exc:  # noqa: BLE001
-        LOG(f"ALERT FAILED for {cam}: {exc}")
-
-
 # ---------------------------------------------------------------------------
-# SQLite evidence store (2026-09-08 sqlite rework, see
-# plans/firewatch-sqlite-evidence-store.md). The JPEG frame stays a plain file
-# on disk; only the metadata that used to live in a per-frame .json sidecar
-# (camera, timestamp, best score, threshold, per-box detections, image PATH)
-# goes into one WAL-mode SQLite DB - no image BLOBs (user decision).
+# SQLite evidence store (WAL). JPEGs stay plain files; DB rows hold paths.
+# v3: every stored frame writes TWO files - the ORIGINAL (frames.jpg_path,
+# canonical) and an ANNOTATED twin (frames.annotated_path, nullable).
 # ---------------------------------------------------------------------------
-_STORE_CONN = None          # cached sqlite3 connection (loop is single-threaded)
-_STORE_LAST_PRUNE = 0.0     # throttle for the optional retention sweep
+_STORE_CONN = None
+_STORE_LAST_PRUNE = 0.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     camera          TEXT    NOT NULL,
-    captured_at     REAL    NOT NULL,   -- UTC epoch seconds (time.time())
-    ts_utc          TEXT    NOT NULL,   -- UTC 'YYYY-MM-DD HH:MM:SS' (readable)
-    jpg_path        TEXT    NOT NULL,   -- absolute path of the stored JPEG
+    captured_at     REAL    NOT NULL,
+    ts_utc          TEXT    NOT NULL,
+    jpg_path        TEXT    NOT NULL,
+    annotated_path  TEXT,
     best_score      REAL    NOT NULL,
     score_threshold REAL    NOT NULL,
-    alerted         INTEGER NOT NULL DEFAULT 0  -- 1 = this poll also produced a Telegram alert
+    alerted         INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS detections (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -490,7 +509,6 @@ CREATE INDEX IF NOT EXISTS idx_detections_label  ON detections(label);
 
 
 def _store_db_path(cfg):
-    """Absolute path of the evidence SQLite DB (WAL mode)."""
     store_dir = _get(cfg, "STORE_DIR", "")
     if not store_dir:
         return None
@@ -498,12 +516,7 @@ def _store_db_path(cfg):
 
 
 def _store_conn(cfg):
-    """Return the cached WAL-mode evidence connection, creating schema once.
-
-    Re-opens transparently if the DB file is missing/pruned (e.g. the host
-    media cleanup removed firewatch.db mid-run) - the next poll recreates the
-    file + schema.
-    """
+    """Return the cached WAL-mode evidence connection (schema + guarded migration)."""
     global _STORE_CONN
     if _STORE_CONN is not None:
         try:
@@ -516,38 +529,29 @@ def _store_conn(cfg):
             return None
         store_dir = os.path.dirname(db_path) or "."
         os.makedirs(store_dir, exist_ok=True)
-        conn = sqlite3.connect(db_path)
-        # WAL: readers never block this single writer and each commit does far
-        # fewer fsyncs than the rollback journal - right for a high-frequency
-        # fire-marked-frame append log. synchronous=NORMAL matches (durable to
-        # process/OS crash, safe on the journaled host filesystem).
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")   # spec 13.E / review 4.1
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
-        # Migration (2026-09-08, portal change): `frames` gained `alerted`.
-        # CREATE TABLE IF NOT EXISTS does NOT alter an existing table, so add
-        # the column for DBs created before this change. Idempotent - safe to
-        # run on every open (duplicate-column error is swallowed).
-        try:
-            conn.execute(
-                "ALTER TABLE frames ADD COLUMN "
-                "alerted INTEGER NOT NULL DEFAULT 0"
-            )
-        except sqlite3.Error:
-            pass  # column already present (fresh DB or migrated earlier)
+        # guarded idempotent migrations (existing DBs created before v3)
+        for col, ddl in (
+            ("alerted", "ALTER TABLE frames ADD COLUMN "
+                        "alerted INTEGER NOT NULL DEFAULT 0"),
+            ("annotated_path", "ALTER TABLE frames ADD COLUMN "
+                               "annotated_path TEXT"),
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.Error:
+                pass  # column already present
         _STORE_CONN = conn
     return _STORE_CONN
 
 
 def _prune_store(cfg, conn):
-    """Optional retention: STORE_RETENTION_DAYS > 0 deletes old frame records.
-
-    Runs at most once a minute. Frames are cascade-deleted WITH their detection
-    rows. Only DB rows are removed - the JPEG files stay (the host media
-    cleanup owns file purging) and the DB keeps its high-water size until a
-    manual VACUUM (see plans/firewatch-sqlite-evidence-store.md).
-    """
+    """Optional retention: STORE_RETENTION_DAYS > 0 prunes old frame rows."""
     global _STORE_LAST_PRUNE
     days = _getf(cfg, "STORE_RETENTION_DAYS", 0)
     if days <= 0:
@@ -564,24 +568,14 @@ def _prune_store(cfg, conn):
 
 
 def store_fire_frame(cfg, cam, jpeg_bytes, dets, alerted=False):
-    """Best-effort persist a fire-marked frame: JPEG file + SQLite metadata.
+    """Best-effort persist a fire-marked frame: TWO JPEGs + one DB row.
 
-    Runs on EVERY poll where a fire/smoke detection exists above SCORE_THRESHOLD
-    (dets non-empty), INDEPENDENT of the MIN_HITS/HITS_WINDOW alert gate and the
-    per-camera cooldown - so a real fire that never accumulates enough hits (or
-    keeps re-hitting inside cooldown) still leaves a durable record on disk.
-    `alerted` (param) tags whether THIS poll also crossed the alert gate and
-    produced a Telegram alert (the caller evaluates the gate BEFORE storing); a
-    downstream portal uses it to separate real alerts from raw fire evidence.
-
-    Writes, per fire-marked frame:
-      <STORE_DIR>/<cam>/YYYYMMDD_HHMMSS_<ms>_<cam>_conf<best>.jpg   (raw frame;
-      the image itself stays on disk - only its PATH goes into SQLite)
-      plus one `frames` row (camera, timestamps, jpg_path, best score, score
-      threshold, alerted) and one `detections` row per box in the WAL-mode DB at
-      <STORE_DIR>/<STORE_DB|firewatch.db> - the old .json sidecar is gone. See
-      plans/firewatch-sqlite-evidence-store.md. Never raises (keeps the loop
-      alive); failures are logged and skipped.
+    Writes <STORE_DIR>/<cam>/<base>.jpg (the ORIGINAL bytes the model scored,
+    canonical frames.jpg_path) and <STORE_DIR>/<cam>/<base>_annotated.jpg (red
+    boxes + label + score overlay), then one `frames` row (jpg_path,
+    annotated_path, best effective score, alerted) + `detections` rows in the
+    WAL DB. Never raises (keeps the loop alive); failures are logged/skipped
+    and the connection is dropped so the next poll reopens it.
     """
     if not _getb(cfg, "STORE_ENABLED", True):
         return
@@ -589,20 +583,20 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets, alerted=False):
     if not store_dir:
         return
     try:
-        # 1) image file - same bytes sent to Telegram; kept on disk (no BLOB
-        #    columns in the DB, per user decision).
         cam_dir = os.path.join(store_dir, cam)
         os.makedirs(cam_dir, exist_ok=True)
         now = time.time()
         stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime(now))
-        best = max(d["score"] for d in dets)
+        best = max((d.get("eff", d["score"]) for d in dets), default=0.0)
         base = f"{stamp}_{int(now % 1 * 1000):03d}_{cam}_conf{best:.2f}"
-        jpg_path = os.path.join(cam_dir, base + ".jpg")
-        with open(jpg_path, "wb") as fh:
+        raw_path = os.path.join(cam_dir, base + ".jpg")
+        ann_path = os.path.join(cam_dir, base + "_annotated.jpg")
+        with open(raw_path, "wb") as fh:
             fh.write(jpeg_bytes)
+        ann_bytes = overlay_boxes(jpeg_bytes, dets)
+        with open(ann_path, "wb") as fh:
+            fh.write(ann_bytes)
 
-        # 2) metadata (the old .json sidecar) -> SQLite (WAL). JPEG first so a
-        #    DB hiccup never leaves a row pointing at a missing file.
         conn = _store_conn(cfg)
         if conn is None:
             LOG(f"{cam}: store SKIPPED (no STORE_DIR/STORE_DB path)")
@@ -610,10 +604,11 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets, alerted=False):
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO frames (camera, captured_at, ts_utc, jpg_path, "
-            "best_score, score_threshold, alerted) VALUES (?,?,?,?,?,?,?)",
+            "annotated_path, best_score, score_threshold, alerted) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (cam, now,
              time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
-             jpg_path, round(best, 4),
+             raw_path, ann_path, round(best, 4),
              _getf(cfg, "SCORE_THRESHOLD", 0.5),
              1 if alerted else 0),
         )
@@ -624,173 +619,471 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets, alerted=False):
             [(frame_id, d["label"], round(d["score"], 4),
               round(d["box"][0], 1), round(d["box"][1], 1),
               round(d["box"][2], 1), round(d["box"][3], 1))
-             for d in sorted(dets, key=lambda x: x["score"], reverse=True)],
+             for d in sorted(dets, key=lambda x: x.get("eff", x["score"]),
+                             reverse=True)],
         )
         conn.commit()
         _prune_store(cfg, conn)
         LOG(f"{cam}: stored fire frame #{frame_id} "
-            f"{os.path.basename(jpg_path)} (conf {best:.2f}, "
+            f"{os.path.basename(raw_path)} (conf {best:.2f}, "
             f"{len(jpeg_bytes) // 1024} KB, {len(dets)} detections)")
     except Exception as exc:  # noqa: BLE001 - evidence store must never kill loop
         global _STORE_CONN
-        _STORE_CONN = None  # drop a possibly-stale conn; next poll reopens it
+        _STORE_CONN = None
         LOG(f"{cam}: store FAILED: {exc}")
 
 
-def run_forever(cfg, model):
-    api = _get(cfg, "FRIGATE_API", "http://frigate:5000").rstrip("/")
+def _close_store():
+    global _STORE_CONN
+    if _STORE_CONN is not None:
+        try:
+            _STORE_CONN.close()
+        except sqlite3.Error:
+            pass
+        _STORE_CONN = None
+
+
+# ---------------------------------------------------------------------------
+# v3 scheduler settings (resolved + clamped once)
+# ---------------------------------------------------------------------------
+class S:
+    """Resolved, clamped tunables + per-camera shared objects (no global drift)."""
+    pass
+
+
+def _resolve_settings(cfg, cameras, threshold):
+    s = S()
+    s.api = _get(cfg, "FRIGATE_API", "http://frigate:5000").rstrip("/")
+    s.cameras = cameras
+    s.allowed = {"fire"} if not _getb(cfg, "TRACK_SMOKE", False) else {"fire", "smoke"}
+    s.motion_enabled = _getb(cfg, "MOTION_ENABLED", False)
+    s.poll_interval = max(1.0, _getf(cfg, "POLL_INTERVAL_S", 15))
+    s.gap_s = _clampf(_getf(cfg, "MOTION_GAP_S", 1.5), 0.2, 60, 1.5)
+    s.gap_min = _clampf(_getf(cfg, "MOTION_GAP_MIN_S", 0.5), 0.0, s.gap_s, 0.5)
+    s.gap_max = _clampf(_getf(cfg, "MOTION_GAP_MAX_S", 5.0), s.gap_s, 120, 5.0)
+    s.fetch_to = _clampf(_getf(cfg, "MOTION_FETCH_TIMEOUT_S", 1.0), 0.2, 10, 1.0)
+    k = int(_geti(cfg, "MOTION_DENOISE_KERNEL", 3))
+    s.blur_radius = max(0.0, (k - 1) / 2.0)
+    s.px_diff = max(1.0, _getf(cfg, "MOTION_PIXEL_DIFF", 18))
+    s.night_luma = _clampf(_getf(cfg, "MOTION_NIGHT_LUMA", 25), 0, 255, 25)
+    s.night_extra = max(0.0, _getf(cfg, "MOTION_PIXEL_DIFF_NIGHT", 26) - s.px_diff)
+    s.frame_frac = _clampf(_getf(cfg, "MOTION_FRAME_FRAC", 0.0015), 0.0, 1.0, 0.0015)
+    s.frame_frac_max = _clampf(_getf(cfg, "MOTION_FRAME_FRAC_MAX", 0.20), s.frame_frac,
+                               1.0, 0.20)
+    s.persist_turns = max(0, int(_geti(cfg, "MOTION_PERSIST_TURNS", 2)))
+    s.floor = _clampf(_getf(cfg, "SCORE_FLOOR", 0.35), 0.0, threshold, 0.35)
+    s.baseline_every = max(10.0, _getf(cfg, "BASELINE_EVERY_S", 120))
+    s.margin = _clampf(_getf(cfg, "MOTION_MARGIN", 0.5), 0.0, 4.0, 0.5)
+    s.near_frac = _clampf(_getf(cfg, "MOTION_NEAR_FRAC", 0.02), 0.0, 1.0, 0.02)
+    s.near_min_px = max(1, int(_geti(cfg, "MOTION_NEAR_MIN_PX", 15)))
+    s.bonus = _clampf(_getf(cfg, "MOTION_BONUS", 0.15), 0.0, 0.9, 0.15)
+    s.bar = threshold                                  # SCORE_THRESHOLD
+    s.high = _clampf(_getf(cfg, "SCORE_HIGH", 0.85), s.bar, 1.0, 0.85)
+    s.followup_gap = max(1.0, _getf(cfg, "FOLLOWUP_GAP_S", 5))
+    s.followup_max_s = max(s.followup_gap, _getf(cfg, "FOLLOWUP_MAX_S", 90))
+    s.min_hits = max(1, int(_geti(cfg, "MIN_HITS", 3)))
+    s.window = max(s.min_hits, int(_geti(cfg, "HITS_WINDOW", 4)))
+    s.cooldown = max(0.0, _getf(cfg, "COOLDOWN_S", 300))
+    s.cooldown_noalert = max(0.0, _getf(cfg, "COOLDOWN_NOALERT_S", 60))
+    s.death_turns = max(1, int(_geti(cfg, "FOLLOW_DEATH_TURNS", 4)))
+    s.tick_min = 0.25
+    s.heartbeat_s = max(60.0, _getf(cfg, "HEARTBEAT_S", 300))
+    return s
+
+
+def _new_state(s, cameras):
+    st = {}
+    for c in cameras:
+        st[c] = {
+            "mode": "IDLE",            # IDLE | FOLLOW | COOL
+            "down": False,
+            "mask_ring": collections.deque(maxlen=max(1, s.persist_turns)),
+            "last_model": 0.0,         # monotonic when the model last ran
+            "cool_until": 0.0,
+            "next_follow": 0.0,
+            "follow_until": 0.0,
+            "empty_run": 0,
+            "hits": collections.deque(maxlen=s.window),
+            "fire_cams": 0,
+        }
+    return st
+
+
+def _cam_err(cam, s, st, exc):
+    """Log a camera error once per episode; camera goes DOWN; masks reset."""
+    st["down"] = True
+    st["mask_ring"].clear()
+    if not st.get("_err_logged"):
+        st["_err_logged"] = True
+        LOG(f"{cam}: error: {exc}")
+    st["err_count"] = st.get("err_count", 0) + 1
+
+
+def _cam_ok(cam, s, st):
+    if st["down"]:
+        LOG(f"{cam}: back online")
+    st["down"] = False
+    st["_err_logged"] = False
+
+
+# ---------------------------------------------------------------------------
+# v3 scheduler: batched two-frame sweep -> spatial agreement -> follow-up
+# ---------------------------------------------------------------------------
+def _motion_of(s, a_bytes, b_bytes):
+    """(mask, mean_luma) for a valid A/B pair (None-safe per caller)."""
+    a = _gray(_decode(a_bytes))
+    b = _gray(_decode(b_bytes))
+    if a.shape != b.shape:
+        return None, float(b.mean())
+    px = _adaptive_px(s.px_diff, s.night_extra, s.night_luma, float(b.mean()))
+    mask = _changed_mask(a, b, px, s.blur_radius)
+    return mask, float(b.mean())
+
+
+def _classify_dets(s, dets, cur_mask, st):
+    return classify_sample(
+        dets, cur_mask, list(st["mask_ring"]), s.margin, s.near_frac,
+        s.near_min_px, s.bonus, s.bar, s.high)
+
+
+def _store(cfg, cam, bytes_, boxes, alerted):
+    if boxes:
+        store_fire_frame(cfg, cam, bytes_, boxes, alerted=alerted)
+
+
+def _enter_cool(st, now, secs):
+    st["mode"] = "COOL"
+    st["cool_until"] = now + secs
+    st["hits"].clear()
+    st["mask_ring"].clear()
+    st["empty_run"] = 0
+
+
+def _end_follow(cam, s, st, cfg, alerted, now):
+    if alerted:
+        LOG(f"{cam}: follow-up ended - ALERT (cooldown {s.cooldown:g}s)")
+        _enter_cool(st, now, s.cooldown)
+    else:
+        LOG(f"{cam}: follow-up ended, NO alert (cooldown {s.cooldown_noalert:g}s)")
+        _enter_cool(st, now, s.cooldown_noalert)
+
+
+def _send_alert_frame(cfg, cam, s, jpeg_bytes, boxes, track_smoke):
+    jpg = overlay_boxes(jpeg_bytes, boxes)
+    send_alert(cfg, cam, jpg, boxes, track_smoke)
+
+
+def run_legacy(cfg, model):
+    """Pre-v3 score-only polling (MOTION_ENABLED=false): detect every poll at
+    SCORE_THRESHOLD, MIN_HITS/HITS_WINDOW accumulation, cooldown after alert."""
+    s0 = S()
+    s0.api = _get(cfg, "FRIGATE_API", "http://frigate:5000").rstrip("/")
+    s0.fetch_to = _clampf(_getf(cfg, "MOTION_FETCH_TIMEOUT_S", 10.0), 0.2, 30, 10.0)
     cameras = [c.strip() for c in _get(cfg, "CAMERAS", "").split(",") if c.strip()]
-    interval = _getf(cfg, "POLL_INTERVAL_S", 15)
+    interval = max(1.0, _getf(cfg, "POLL_INTERVAL_S", 15))
     threshold = _getf(cfg, "SCORE_THRESHOLD", 0.5)
     min_hits = max(1, _geti(cfg, "MIN_HITS", 3))
-    cooldown = _getf(cfg, "COOLDOWN_S", 300)
+    window = max(min_hits, _geti(cfg, "HITS_WINDOW", 0))
+    cooldown = max(0.0, _getf(cfg, "COOLDOWN_S", 300))
     track_smoke = _getb(cfg, "TRACK_SMOKE", False)
     allowed = {"fire"} if not track_smoke else {"fire", "smoke"}
-    # Motion gate + score bonus (2026-09-09, plans/firewatch-motion-gate-bonus.md):
-    # combine the fire score with motion inside each detection's fire box (frame
-    # diff between polls). MOTION_ENABLED=false -> previous score-only behaviour.
-    motion_enabled = _getb(cfg, "MOTION_ENABLED", False)
-    floor = _getf(cfg, "SCORE_FLOOR", threshold)  # raw detect floor (<= threshold)
-    gate_frac = _getf(cfg, "MOTION_GATE_FRAC", 0.05)
-    margin = _getf(cfg, "MOTION_MARGIN", 0.5)
-    px_diff = _getf(cfg, "MOTION_PIXEL_DIFF", 15)
-    bonus = _getf(cfg, "MOTION_BONUS", 0.15)
-    no_motion_score = _getf(cfg, "SCORE_NO_MOTION", 0.85)
     enabled = _getb(cfg, "ENABLED", True)
-    # Liveness heartbeat (2026-09-09, plans/firewatch-heartbeat-logging.md): a
-    # healthy watcher with nothing on fire logs NOTHING between events, so it is
-    # indistinguishable from a dead/hung one in `docker logs`. Every HEARTBEAT_S
-    # seconds print one summary line (cams OK / fire-marked cams this sweep) to
-    # prove the loop is alive. Default 300s, clamped to >=60s to prevent spam.
     heartbeat_s = max(60.0, _getf(cfg, "HEARTBEAT_S", 300))
-    # Sliding-window gate (2026-09-06 fix, see plans/fire-detection.md): alert
-    # when the last `window` polls contain >= MIN_HITS fire/smoke hits.
-    # window == MIN_HITS means strictly-consecutive (old behavior); window >
-    # MIN_HITS tolerates the intermittent single-frame misses a close-up fire
-    # causes (auto-exposure/white-balance swings dip the conf below threshold on
-    # some polls), so a real fire still alerts instead of resetting forever.
-    window = max(min_hits, _geti(cfg, "HITS_WINDOW", 0))
-    if not cameras:
-        LOG("ERROR: CAMERAS list empty - exiting")
-        sys.exit(2)
-
     state = {c: {"recent": collections.deque(maxlen=window),
-                 "last_alert": 0.0, "down": False, "prev": None}
+                 "last_alert": 0.0, "down": False}
              for c in cameras}
-    mot = ""
-    if motion_enabled:
-        mot = (f", motion=gate+bonus (floor {floor:g}, gate {gate_frac:g}, "
-               f"margin {margin:g}, px {px_diff:g}, bonus {bonus:g}, "
-               f"no_motion>={no_motion_score:g})")
-    LOG(f"started: {len(cameras)} cameras, sweep every {interval}s, "
-        f"min_hits={min_hits} in window {window}, cooldown={cooldown}s, "
-        f"smoke={track_smoke}, enabled={enabled}, heartbeat={heartbeat_s:g}s"
-        + mot)
-    sweep = 0
+    LOG(f"legacy started: {len(cameras)} cameras every {interval}s, "
+        f"min_hits={min_hits}/{window}, cooldown={cooldown:g}s, smoke={track_smoke}")
     last_hb = time.monotonic()
+    sweep = 0
     while True:
+        if _STOP[0]:
+            break
         if not enabled:
             LOG("disabled (ENABLED=false) - sleeping 60s")
-            time.sleep(60)
+            _bounded_sleep(60)
             continue
         sweep += 1
-        up = 0
-        fire_cams = 0
+        up = fire_cams = 0
         for cam in cameras:
             st = state[cam]
             try:
-                raw = fetch_frame(api, cam)
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-                # Motion gate needs the grayscale frame diffed against the last
-                # successful poll's frame for THIS camera (see motion_gate).
-                cur_gray = np.asarray(img.convert("L"), dtype=np.uint8)
-                if motion_enabled:
-                    dets = model.detect(img, score_thresh=floor, allowed=allowed)
-                    marked, hit, n_cands, n_static = motion_gate(
-                        dets, cur_gray, st["prev"], threshold,
-                        gate_frac, margin, px_diff, bonus, no_motion_score)
-                else:
-                    dets = model.detect(img, score_thresh=threshold,
-                                        allowed=allowed)
-                    marked, hit, n_cands, n_static = dets, bool(dets), 0, 0
-                st["prev"] = cur_gray   # baseline for the NEXT poll's diff
+                raw = fetch_frame(s0.api, cam, timeout=s0.fetch_to)
+                img = _decode(raw)
+                dets = model.detect(img, score_thresh=threshold, allowed=allowed)
                 up += 1
                 if st["down"]:
                     LOG(f"{cam}: back online")
                     st["down"] = False
                 prev_hits = sum(st["recent"])
-                st["recent"].append(1 if hit else 0)
+                st["recent"].append(1 if dets else 0)
                 hits = sum(st["recent"])
                 now = time.monotonic()
-                in_cooldown = now - st["last_alert"] < cooldown
-                if hit:
+                in_cd = now - st["last_alert"] < cooldown
+                if dets:
                     fire_cams += 1
-                    best = max(d["score"] for d in marked)
-                    will_alert = hits >= min_hits and not in_cooldown
-                    # Evidence store: persist EVERY fire-marked frame (JPEG +
-                    # SQLite metadata) independent of the MIN_HITS alert gate /
-                    # cooldown (a real fire below the accumulation bar still
-                    # leaves a durable record). The gate is evaluated BEFORE
-                    # storing so the frame's `alerted` column reflects whether
-                    # THIS poll also crossed the gate and produced a Telegram
-                    # alert (the portal uses alerted vs raw evidence frames).
-                    store_fire_frame(cfg, cam, raw, marked, alerted=will_alert)
+                    best = max(d["score"] for d in dets)
+                    will_alert = hits >= min_hits and not in_cd
+                    store_fire_frame(cfg, cam, raw, dets, alerted=will_alert)
                     if will_alert:
                         st["last_alert"] = now
                         st["recent"].clear()
-                        LOG(f"{cam}: ALERT ({hits} fire in last {window} "
-                            f"polls, conf {best:.2f})"
-                            + motion_tag(motion_enabled, marked))
-                        jpg = overlay_boxes(raw, marked)
-                        send_alert(cfg, cam, jpg, marked, track_smoke)
+                        LOG(f"{cam}: ALERT ({hits} fire in last {window} polls, "
+                            f"conf {best:.2f})")
+                        jpg = overlay_boxes(raw, dets)
+                        send_alert(cfg, cam, jpg, dets, track_smoke)
                     else:
                         LOG(f"{cam}: fire-hit {hits}/{min_hits} in last "
                             f"{window} polls (conf {best:.2f})"
-                            + motion_tag(motion_enabled, marked)
-                            + (" [cooldown]" if in_cooldown else ""))
-                elif marked:
-                    # Fire-marked evidence but NO box crossed the motion gate
-                    # this poll (static lookalike in the 0.5-0.85 FP band):
-                    # keep the durable evidence record (alerted=0) and say so.
-                    fire_cams += 1
-                    best = max(d["score"] for d in marked)
-                    store_fire_frame(cfg, cam, raw, marked, alerted=False)
-                    LOG(f"{cam}: stored {len(marked)} fire box(es) "
-                        f"conf {best:.2f}, NO motion - not counted "
-                        f"({n_static} static)")
-                elif n_cands:
-                    # Raw candidates existed but none crossed the alert bar
-                    # (static and/or below threshold) - no hit this poll.
-                    LOG(f"{cam}: {n_cands} fire candidate(s) below the "
-                        f"alert bar (no hit)")
+                            + (" [cooldown]" if in_cd else ""))
                 elif hits == 0 and prev_hits:
-                    # window drained to zero: the fire has been gone long enough
                     LOG(f"{cam}: cleared after {prev_hits} recent hits")
             except urllib.error.HTTPError as exc:
                 st["recent"].clear()
-                st["prev"] = None
                 if not st["down"]:
-                    # Mark down + log once per episode (not every 15s sweep),
-                    # mirroring the generic-error branch below - so a long
-                    # Frigate outage can't flood the log, and the next
-                    # successful poll logs "back online".
                     st["down"] = True
                     LOG(f"{cam}: HTTP {exc.code}")
-            except Exception as exc:  # noqa: BLE001 - keep the loop alive
+            except Exception as exc:  # noqa: BLE001
                 st["recent"].clear()
-                st["prev"] = None
                 if not st["down"]:
                     LOG(f"{cam}: error: {exc}")
                     st["down"] = True
         now = time.monotonic()
         if now - last_hb >= heartbeat_s:
             last_hb = now
-            LOG(f"heartbeat: {up}/{len(cameras)} cams OK, "
-                f"{fire_cams} fire-marked camera(s) this sweep "
-                f"(sweep #{sweep}, every {interval:g}s)")
-        time.sleep(interval)
+            LOG(f"heartbeat: {up}/{len(cameras)} cams OK, {fire_cams} fire-marked "
+                f"(sweep #{sweep})")
+        _bounded_sleep(interval)
+    _close_store()
+    LOG("firewatch stopped (legacy)")
 
 
+def _bounded_sleep(secs):
+    """Sleep up to `secs` in small slices, returning early on SIGTERM/SIGINT."""
+    end = time.monotonic() + max(0.0, secs)
+    while not _STOP[0]:
+        left = end - time.monotonic()
+        if left <= 0:
+            break
+        time.sleep(min(0.25, left))
+
+
+def _do_sweep(s, cfg, model, state):
+    """Batched two-frame motion sweep over all cameras (spec 4/5)."""
+    track_smoke = "smoke" in s.allowed
+    # --- 1) fetch frame A for every camera (short timeout) ---
+    a_start = time.monotonic()
+    aframes, tA = {}, {}
+    for cam in s.cameras:
+        st = state[cam]
+        if st["mode"] == "FOLLOW":
+            continue  # FOLLOW cameras are densely sampled, not double-swept
+        try:
+            aframes[cam] = fetch_frame(s.api, cam, timeout=s.fetch_to)
+            tA[cam] = time.monotonic()
+        except Exception as exc:  # noqa: BLE001 - per-camera isolation
+            _cam_err(cam, s, st, exc)
+    # --- 2) sleep the rest of MOTION_GAP_S once (not once per camera) ---
+    elapsed = time.monotonic() - a_start
+    if s.gap_s > elapsed:
+        _bounded_sleep(s.gap_s - elapsed)
+    if _STOP[0]:
+        return
+    # --- 3) fetch frame B for every camera that gave an A (no in-sweep retry) ---
+    bframes, tB = {}, {}
+    for cam in aframes:
+        st = state[cam]
+        try:
+            bframes[cam] = fetch_frame(s.api, cam, timeout=s.fetch_to)
+            tB[cam] = time.monotonic()
+        except Exception as exc:  # noqa: BLE001
+            _cam_err(cam, s, st, exc)
+    # --- 4) per camera: gap sanity -> motion -> model or skip ---
+    now = time.monotonic()
+    for cam in bframes:
+        st = state[cam]
+        _cam_ok(cam, s, st)
+        gap = tB[cam] - tA[cam]
+        gap_ok = s.gap_min <= gap <= s.gap_max
+        b_bytes = bframes[cam]
+        try:
+            mask, mean = _motion_of(s, aframes[cam], b_bytes)
+            if mask is None:  # resolution changed -> unusable this cycle
+                gap_ok = False
+            frac = float(mask.mean()) if mask is not None else 0.0
+            motion = gap_ok and s.frame_frac <= frac <= s.frame_frac_max
+            baseline_due = (now - st["last_model"]) >= s.baseline_every
+            if not (motion or baseline_due):
+                if gap_ok and mask is not None:
+                    st["mask_ring"].append(mask)
+                continue  # SKIP MODEL (spec 5.3) - log counted below by heartbeat
+            st["last_model"] = now
+            img = _decode(b_bytes)
+            dets = model.detect(img, score_thresh=s.floor, allowed=s.allowed)
+            # a global change (> FRAME_FRAC_MAX) is NOT usable motion, even on a
+            # baseline run (spec 5.3) - only local change can grant the bonus
+            cur_mask = mask if (gap_ok and frac <= s.frame_frac_max) else None
+            marked, hit, _n, n_static = _classify_dets(s, dets, cur_mask, st)
+            if gap_ok and mask is not None:
+                st["mask_ring"].append(mask)
+            if marked:
+                _store(cfg, cam, b_bytes, marked, alerted=False)
+                best = best_of(marked)
+                if hit:
+                    if st["mode"] == "IDLE":
+                        _promote_follow(cam, s, st, now)
+                        LOG(f"{cam}: hit -> FOLLOW-UP (conf {best.get('eff', best['score']):.2f})")
+                    else:
+                        LOG(f"{cam}: hit during "
+                            + ("COOL" if st["mode"] == "COOL" else "FOLLOW")
+                            + f" (conf {best.get('eff', best['score']):.2f}, stored)")
+                else:
+                    LOG(f"{cam}: stored {len(marked)} box(es) "
+                        f"eff {best.get('eff', best['score']):.2f}, no hit "
+                        f"({n_static} static)")
+        except Exception as exc:  # noqa: BLE001 - isolate the whole camera turn
+            _cam_err(cam, s, st, exc)
+
+
+def _promote_follow(cam, s, st, now):
+    st["mode"] = "FOLLOW"
+    st["follow_until"] = now + s.followup_max_s
+    st["hits"].clear()
+    st["hits"].append(1)          # the promoting hit already counts as sample 1
+    st["empty_run"] = 0
+    st["next_follow"] = now + s.followup_gap
+
+
+def _do_follow_sample(cam, s, cfg, model, st, state):  # noqa: ARG001
+    """One dense FOLLOW-UP sample: A/B pair -> model always -> count confirms."""
+    track_smoke = "smoke" in s.allowed
+    now = time.monotonic()
+    if st["mode"] != "FOLLOW":
+        return
+    try:
+        a_bytes = fetch_frame(s.api, cam, timeout=s.fetch_to)
+        tA = time.monotonic()
+        _bounded_sleep(s.gap_s)
+        if _STOP[0]:
+            return
+        b_bytes = fetch_frame(s.api, cam, timeout=s.fetch_to)
+        tB = time.monotonic()
+        _cam_ok(cam, s, st)
+        gap = tB - tA
+        gap_ok = s.gap_min <= gap <= s.gap_max
+        mask, _mean = _motion_of(s, a_bytes, b_bytes)
+        if mask is None:
+            gap_ok = False
+        frac = float(mask.mean()) if mask is not None else 0.0
+        motion = gap_ok and s.frame_frac <= frac <= s.frame_frac_max
+        cur_mask = mask if (gap_ok and frac <= s.frame_frac_max) else None
+        st["last_model"] = time.monotonic()
+        img = _decode(b_bytes)
+        dets = model.detect(img, score_thresh=s.floor, allowed=s.allowed)
+        marked, hit, _n, _ns = _classify_dets(s, dets, cur_mask, st)
+        if gap_ok and mask is not None:
+            st["mask_ring"].append(mask)
+        now = time.monotonic()
+        st["hits"].append(1 if hit else 0)
+        st["empty_run"] = 0 if marked else st["empty_run"] + 1
+        if marked:
+            will_alert = sum(st["hits"]) >= s.min_hits
+            _store(cfg, cam, b_bytes, marked, alerted=will_alert)
+            best = best_of(marked)
+            LOG(f"{cam}: follow conf {best.get('eff', best['score']):.2f} "
+                f"hits {sum(st['hits'])}/{s.min_hits}")
+            if will_alert:
+                _send_alert_frame(cfg, cam, s, b_bytes, marked, track_smoke)
+                _end_follow(cam, s, st, cfg, True, now)
+                return
+        # no alert yet: keep sampling until timeout or the signal dies
+        if now >= st["follow_until"] or st["empty_run"] >= s.death_turns:
+            _end_follow(cam, s, st, cfg, False, now)
+            return
+        st["next_follow"] = time.monotonic() + s.followup_gap
+    except Exception as exc:  # noqa: BLE001 - per-camera isolation
+        _cam_err(cam, s, st, exc)
+        st["next_follow"] = time.monotonic() + s.followup_gap
+
+
+def run_forever(cfg, model):
+    api0 = _get(cfg, "FRIGATE_API", "http://frigate:5000").rstrip("/")
+    cameras = [c.strip() for c in _get(cfg, "CAMERAS", "").split(",") if c.strip()]
+    if not cameras:
+        LOG("ERROR: CAMERAS list empty - exiting")
+        sys.exit(2)
+    threshold = _getf(cfg, "SCORE_THRESHOLD", 0.5)
+    s = _resolve_settings(cfg, cameras, threshold)
+    s.api = api0
+    if not s.motion_enabled:
+        run_legacy(cfg, model)
+        return
+    enabled = _getb(cfg, "ENABLED", True)
+    state = _new_state(s, cameras)
+    signal.signal(signal.SIGTERM, _sig_stop)
+    signal.signal(signal.SIGINT, _sig_stop)
+
+    LOG(f"started (v3): {len(cameras)} cameras, sweep {s.poll_interval:g}s, "
+        f"gap {s.gap_s:g}s, floor {s.floor:g}, bonus {s.bonus:g} @ {s.bar:g} / "
+        f"no-motion >= {s.high:g}, follow every {s.followup_gap:g}s, "
+        f"min_hits {s.min_hits}/{s.window}, cooldown {s.cooldown:g}s / "
+        f"noalert {s.cooldown_noalert:g}s, baseline {s.baseline_every:g}s, "
+        f"heartbeat {s.heartbeat_s:g}s")
+
+    next_sweep = time.monotonic()
+    last_hb = time.monotonic()
+    sweep = 0
+    try:
+        while not _STOP[0]:
+            now = time.monotonic()
+            if not enabled:
+                LOG("disabled (ENABLED=false) - sleeping 60s")
+                _bounded_sleep(60)
+                continue
+            # --- state transitions ---
+            for cam in cameras:
+                st = state[cam]
+                if st["mode"] == "COOL" and now >= st["cool_until"]:
+                    st["mode"] = "IDLE"
+                elif st["mode"] == "FOLLOW" and now >= st["follow_until"]:
+                    _end_follow(cam, s, st, cfg, False, now)
+            # --- sweep when due ---
+            if time.monotonic() >= next_sweep:
+                sweep += 1
+                _do_sweep(s, cfg, model, state)
+                next_sweep = time.monotonic() + s.poll_interval
+            # --- dense follow-up samples due between sweeps ---
+            now = time.monotonic()
+            for cam in cameras:
+                st = state[cam]
+                if st["mode"] == "FOLLOW" and now >= st["next_follow"]:
+                    _do_follow_sample(cam, s, cfg, model, st, state)
+                    if _STOP[0]:
+                        break
+            # --- heartbeat / liveness ---
+            now = time.monotonic()
+            if now - last_hb >= s.heartbeat_s:
+                last_hb = now
+                modes = {}
+                for c in cameras:
+                    m = state[c]["mode"]
+                    modes[m] = modes.get(m, 0) + 1
+                LOG(f"heartbeat: modes={modes} (sweep #{sweep}, "
+                    f"every {s.poll_interval:g}s)")
+            # --- bounded sleep until the next due event (never busy-spin) ---
+            nxt = next_sweep
+            for cam in cameras:
+                st = state[cam]
+                if st["mode"] == "FOLLOW" and st["next_follow"] < nxt:
+                    nxt = st["next_follow"]
+            wait = max(s.tick_min, min(1.0, nxt - time.monotonic()))
+            _bounded_sleep(wait)
+    finally:
+        _close_store()
+        LOG("firewatch stopped (v3)")
+
+
+# ---------------------------------------------------------------------------
 def main():
     args = set(sys.argv[1:])
     raw = _raw_conf(CONF_PATH)
@@ -798,13 +1091,16 @@ def main():
         LOG(f"ERROR: no config at {CONF_PATH} - aborting")
         return 2
 
-    # Telegram creds come from the SAME git-ignored telegram.conf the cron
-    # scripts use (mounted at /config/telegram.conf in the container).
+    # global socket backstop (spec 13.A): no call can ever block forever
+    try:
+        socket.setdefaulttimeout(30)
+    except (OSError, ValueError):
+        pass
+
     telegram_path = os.environ.get("TELEGRAM_CONF", _get(raw, "TELEGRAM_CONF",
                                                          "/config/telegram.conf"))
     cfg = tg.load_conf(telegram_path)
-    # merge firewatch tunables into cfg so helpers can read camera config too
-    cfg.update(raw)
+    cfg.update(raw)   # merge firewatch tunables so helpers read camera config too
 
     try:
         model = FireModel(_get(raw, "MODEL_DIR", "/models/fire"))

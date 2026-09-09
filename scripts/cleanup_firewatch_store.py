@@ -6,9 +6,10 @@ Runs INSIDE the firewatch container from the host crontab (scripts/crontab.sampl
     */30 * * * * /usr/bin/docker exec firewatch python /scripts/cleanup_firewatch_store.py
 
 The WAL-mode SQLite evidence DB (frames/detections) is the source of truth: every
-stored firewatch JPEG is referenced by a frames.jpg_path row. This script therefore
-never scans/glob-deletes the store tree - it only removes files that belong to a row
-it is deleting - so it can never touch Frigate recordings/clips/exports that share the
+stored firewatch frame references its JPEGs via frames.jpg_path (the original) and
+frames.annotated_path (the annotated twin). This script therefore never scans/glob-
+deletes the store tree - it only removes the files that belong to a row it is
+deleting - so it can never touch Frigate recordings/clips/exports that share the
 host ./media mount.
 
 It does two things:
@@ -129,20 +130,27 @@ def main():
     conn.execute("PRAGMA busy_timeout=10000")  # firewatch may be mid-write (WAL)
     conn.execute("PRAGMA foreign_keys=ON")
     rows = conn.execute(
-        "SELECT id, captured_at, jpg_path FROM frames "
+        "SELECT id, captured_at, jpg_path, annotated_path FROM frames "
         "ORDER BY captured_at ASC, id ASC"
     ).fetchall()  # oldest first
+
+    def refs(r):
+        """All on-disk files a frame row references (raw + annotated twin)."""
+        paths = [r[2]]
+        if r[3]:
+            paths.append(r[3])
+        return paths
 
     expired = [r for r in rows if r[1] < cutoff]
     kept = [r for r in rows if r[1] >= cutoff]
 
     # image cap against the REMAINING (post-expiry) images, oldest first
-    total = sum(file_bytes(r[2]) for r in kept)
+    total = sum(file_bytes(p) for r in kept for p in refs(r))
     cap_del = []
     for r in kept:                      # already oldest-first
         if total <= cap_bytes:
             break
-        total -= file_bytes(r[2])
+        total -= sum(file_bytes(p) for p in refs(r))
         cap_del.append(r)
 
     doomed = {r[0]: r for r in expired}
@@ -150,7 +158,7 @@ def main():
         doomed.setdefault(r[0], r)
     delete_ids = sorted(doomed)
 
-    stored_bytes = sum(file_bytes(r[2]) for r in rows)
+    stored_bytes = sum(file_bytes(p) for r in rows for p in refs(r))
     log(f"cleanup: db={db_path} max_images={max_gb:g}GiB({fmt_bytes(cap_bytes)}) "
         f"expire={expire_days}d stored_frames={len(rows)} "
         f"image_bytes={fmt_bytes(stored_bytes)} "
@@ -173,21 +181,21 @@ def main():
         conn.execute(f"DELETE FROM frames WHERE id IN ({ph})", delete_ids)
         conn.commit()
 
-    # remove the JPEGs that belonged to the deleted rows
+    # remove BOTH JPEGs (raw + annotated twin) that belonged to the deleted rows
     unlinked = 0
     for i in delete_ids:
-        p = doomed[i][2]
-        try:
-            if os.path.isfile(p):
-                os.remove(p)
-                unlinked += 1
-        except OSError:
-            pass
+        for p in refs(doomed[i]):
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+                    unlinked += 1
+            except OSError:
+                pass
 
     # best-effort: rmdir now-empty per-camera dirs (only succeeds when empty, so
     # it can never remove a directory that still holds Frigate/non-evidence files)
     removed_dirs = 0
-    parents = {os.path.dirname(doomed[i][2]) for i in delete_ids}
+    parents = {os.path.dirname(p) for i in delete_ids for p in refs(doomed[i])}
     for d in sorted(parents):
         try:
             os.rmdir(d)

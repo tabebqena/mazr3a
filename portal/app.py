@@ -12,7 +12,7 @@ from fastapi import (
     Depends, FastAPI, HTTPException, Request, Response,
 )
 from fastapi.responses import (
-    FileResponse, JSONResponse, StreamingResponse,
+    FileResponse, HTMLResponse, JSONResponse, StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 
@@ -21,9 +21,12 @@ from portal import auth, config as pconf, firestore, frigate
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
 COOKIE_NAME = "portal_session"
-# App/UI version, shown as the bottom-most version label in the SPA footer
-# (served to the client via /api/settings -> app_version). Bump on UI/API change.
-# Should be updated with each update to the portal SPA (static/app.js) so the client can detect a new version.
+# App/UI version - the SINGLE source of truth, shown as the bottom-most version
+# label in the SPA footer. It is (a) injected into the served index.html at the
+# {{ APP_VERSION }} token (see _render_index below, so the pre-JS fallback label
+# never drifts from this constant) and (b) served to the client via
+# /api/settings -> app_version (app.js re-fills #ver-no after boot). Bump on
+# UI/API change; no other copy of the number should be kept in the front-end.
 APP_VERSION = "0.3.4"
 _HTMX = None
 
@@ -104,9 +107,23 @@ def _frigate_base(request: Request):
 # --------------------------------------------------------------------------
 # app / static
 # --------------------------------------------------------------------------
+# index.html carries a {{ APP_VERSION }} token as the fallback text of the
+# bottom-most version label. This route substitutes APP_VERSION (the single
+# source of truth above) on every request, so the label always matches the
+# running build without a hard-coded copy in the static HTML to keep in sync.
+def _render_index() -> str:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return html.replace("{{ APP_VERSION }}", APP_VERSION)
+
+
 @app.get("/", include_in_schema=False)
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # no-cache: the page carries the live APP_VERSION - always revalidate so a
+    # bumped version is shown immediately instead of a stale cached copy.
+    return HTMLResponse(
+        content=_render_index(),
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

@@ -30,6 +30,13 @@ Design notes
 - The watcher is stdlib + openvino + numpy + Pillow only. telegram_notify is
   imported from the shared ./scripts directory (mounted at /scripts), which
   still ships alongside because firewatch.py and scripts/ are siblings.
+- Motion gate + score bonus (2026-09-09, plans/firewatch-motion-gate-bonus.md):
+  firewatch now combines the fire model's confidence with MOTION measured inside
+  each detection's fire box (frame diff between consecutive polls of the same
+  camera). A box must be moving to count toward MIN_HITS (the gate - static
+  sun/glint false positives are suppressed) and a moving box gets a score bonus
+  (promotes small flickering fires over the alert bar). MOTION_ENABLED=false
+  restores the previous score-only behaviour exactly.
 
 Model assumption (see plans/fire-detection.md section 5.1)
 ----------------------------------------------------------
@@ -302,6 +309,92 @@ def overlay_boxes(jpeg_bytes, dets, model_hw=None):
 
 
 # ---------------------------------------------------------------------------
+# motion gate + score bonus (2026-09-09, plans/firewatch-motion-gate-bonus.md)
+# ---------------------------------------------------------------------------
+def _box_motion_frac(mask, box, margin=0.5):
+    """Fraction of 'changed' (True) pixels inside `box`, expanded on each side
+    by `margin` (a fraction of the box's own width/height), clipped to the
+    frame. Returns 0.0 for a zero/one-pixel box or an out-of-frame region."""
+    x1, y1, x2, y2 = box
+    w, h = x2 - x1, y2 - y1
+    if w <= 1 or h <= 1:
+        return 0.0
+    ax1 = max(0, int(x1 - w * margin))
+    ay1 = max(0, int(y1 - h * margin))
+    ax2 = min(mask.shape[1], int(x2 + w * margin) + 1)
+    ay2 = min(mask.shape[0], int(y2 + h * margin) + 1)
+    region = mask[ay1:ay2, ax1:ax2]
+    return float(region.mean()) if region.size else 0.0
+
+
+def motion_gate(dets, cur_gray, prev_gray, threshold, gate_frac, margin,
+                px_diff, bonus, no_motion_score):
+    """Apply the motion gate + score bonus to one poll's raw model detections.
+
+    A box's `motion_frac` = fraction of pixels that changed between the previous
+    poll's frame and this one, measured inside the box (expanded by `margin`);
+    `motion_present` = motion_frac >= gate_frac. Its effective score
+    `eff = min(1, raw + (bonus if motion_present else 0))` - the BONUS.
+
+    Returns (marked, hit, n_candidates, n_static):
+      marked       detections (raw 'score' kept for store/overlay, plus 'eff' and
+                   'motion' keys) whose effective score >= threshold. These are
+                   the fire-marked frames to persist/overlay. Static boxes with
+                   raw >= threshold land here too (kept as evidence for review)
+                   but do NOT count as hits.
+      hit          True when any box crossed the ALERT gate this poll (motion
+                   present and eff >= threshold, OR raw >= no_motion_score) ->
+                   contributes 1 to the MIN_HITS/HITS_WINDOW accumulator.
+      n_candidates number of raw detections the model returned (>= SCORE_FLOOR).
+      n_static     number of marked-but-static boxes (evidence kept, gate held).
+
+    First poll after start/error has no previous frame (prev_gray None or a
+    different shape): no motion can be judged, so the OLD score-only rule is used
+    for that single poll (hit when raw >= threshold). Such a poll cannot alert
+    alone (MIN_HITS >= 3), so a static false positive can never accumulate.
+    """
+    no_baseline = prev_gray is None or prev_gray.shape != cur_gray.shape
+    mask = None
+    if not no_baseline:
+        mask = (np.abs(cur_gray.astype(np.int16)
+                       - prev_gray.astype(np.int16)) > px_diff)
+    marked, hit = [], False
+    n_static = 0
+    for d in dets:
+        raw = d["score"]
+        box = dict(d)
+        if no_baseline:
+            # old score-only rule on the (no-baseline) first poll: no motion can
+            # be judged, so hit exactly when the raw score clears the bar.
+            box["eff"], box["motion"] = raw, False
+            if raw >= threshold:
+                marked.append(box)
+                hit = True
+            continue
+        moving = _box_motion_frac(mask, d["box"], margin) >= gate_frac
+        eff = min(1.0, raw + (bonus if moving else 0.0))
+        box["eff"] = eff
+        box["motion"] = moving
+        if eff >= threshold:
+            marked.append(box)
+            if moving or raw >= no_motion_score:
+                hit = True
+            else:
+                n_static += 1  # static evidence: stored but gated out of alerts
+        # else: below the bar and not moving -> ignored entirely
+    return marked, hit, len(dets), n_static
+
+
+def motion_tag(enabled, marked):
+    """Short motion/effective-score tag appended to hit/alert log lines."""
+    if not enabled or not marked:
+        return ""
+    moving = sum(1 for d in marked if d.get("motion"))
+    eff = max(d.get("eff", d["score"]) for d in marked)
+    return f" [motion {moving}/{len(marked)}, eff {eff:.2f}]"
+
+
+# ---------------------------------------------------------------------------
 # main loop
 # ---------------------------------------------------------------------------
 def build_caption(camera, dets, track_smoke):
@@ -553,6 +646,16 @@ def run_forever(cfg, model):
     cooldown = _getf(cfg, "COOLDOWN_S", 300)
     track_smoke = _getb(cfg, "TRACK_SMOKE", False)
     allowed = {"fire"} if not track_smoke else {"fire", "smoke"}
+    # Motion gate + score bonus (2026-09-09, plans/firewatch-motion-gate-bonus.md):
+    # combine the fire score with motion inside each detection's fire box (frame
+    # diff between polls). MOTION_ENABLED=false -> previous score-only behaviour.
+    motion_enabled = _getb(cfg, "MOTION_ENABLED", False)
+    floor = _getf(cfg, "SCORE_FLOOR", threshold)  # raw detect floor (<= threshold)
+    gate_frac = _getf(cfg, "MOTION_GATE_FRAC", 0.05)
+    margin = _getf(cfg, "MOTION_MARGIN", 0.5)
+    px_diff = _getf(cfg, "MOTION_PIXEL_DIFF", 15)
+    bonus = _getf(cfg, "MOTION_BONUS", 0.15)
+    no_motion_score = _getf(cfg, "SCORE_NO_MOTION", 0.85)
     enabled = _getb(cfg, "ENABLED", True)
     # Liveness heartbeat (2026-09-09, plans/firewatch-heartbeat-logging.md): a
     # healthy watcher with nothing on fire logs NOTHING between events, so it is
@@ -572,11 +675,17 @@ def run_forever(cfg, model):
         sys.exit(2)
 
     state = {c: {"recent": collections.deque(maxlen=window),
-                 "last_alert": 0.0, "down": False}
+                 "last_alert": 0.0, "down": False, "prev": None}
              for c in cameras}
+    mot = ""
+    if motion_enabled:
+        mot = (f", motion=gate+bonus (floor {floor:g}, gate {gate_frac:g}, "
+               f"margin {margin:g}, px {px_diff:g}, bonus {bonus:g}, "
+               f"no_motion>={no_motion_score:g})")
     LOG(f"started: {len(cameras)} cameras, sweep every {interval}s, "
         f"min_hits={min_hits} in window {window}, cooldown={cooldown}s, "
-        f"smoke={track_smoke}, enabled={enabled}, heartbeat={heartbeat_s:g}s")
+        f"smoke={track_smoke}, enabled={enabled}, heartbeat={heartbeat_s:g}s"
+        + mot)
     sweep = 0
     last_hb = time.monotonic()
     while True:
@@ -592,18 +701,32 @@ def run_forever(cfg, model):
             try:
                 raw = fetch_frame(api, cam)
                 img = Image.open(io.BytesIO(raw)).convert("RGB")
-                dets = model.detect(img, score_thresh=threshold, allowed=allowed)
+                # Motion gate needs the grayscale frame diffed against the last
+                # successful poll's frame for THIS camera (see motion_gate).
+                cur_gray = np.asarray(img.convert("L"), dtype=np.uint8)
+                if motion_enabled:
+                    dets = model.detect(img, score_thresh=floor, allowed=allowed)
+                    marked, hit, n_cands, n_static = motion_gate(
+                        dets, cur_gray, st["prev"], threshold,
+                        gate_frac, margin, px_diff, bonus, no_motion_score)
+                else:
+                    dets = model.detect(img, score_thresh=threshold,
+                                        allowed=allowed)
+                    marked, hit, n_cands, n_static = dets, bool(dets), 0, 0
+                st["prev"] = cur_gray   # baseline for the NEXT poll's diff
                 up += 1
                 if st["down"]:
                     LOG(f"{cam}: back online")
                     st["down"] = False
                 prev_hits = sum(st["recent"])
-                st["recent"].append(1 if dets else 0)
+                st["recent"].append(1 if hit else 0)
                 hits = sum(st["recent"])
                 now = time.monotonic()
                 in_cooldown = now - st["last_alert"] < cooldown
-                if dets:
+                if hit:
                     fire_cams += 1
+                    best = max(d["score"] for d in marked)
+                    will_alert = hits >= min_hits and not in_cooldown
                     # Evidence store: persist EVERY fire-marked frame (JPEG +
                     # SQLite metadata) independent of the MIN_HITS alert gate /
                     # cooldown (a real fire below the accumulation bar still
@@ -611,25 +734,41 @@ def run_forever(cfg, model):
                     # storing so the frame's `alerted` column reflects whether
                     # THIS poll also crossed the gate and produced a Telegram
                     # alert (the portal uses alerted vs raw evidence frames).
-                    best = max(d["score"] for d in dets)
-                    will_alert = hits >= min_hits and not in_cooldown
-                    store_fire_frame(cfg, cam, raw, dets, alerted=will_alert)
+                    store_fire_frame(cfg, cam, raw, marked, alerted=will_alert)
                     if will_alert:
                         st["last_alert"] = now
                         st["recent"].clear()
                         LOG(f"{cam}: ALERT ({hits} fire in last {window} "
-                            f"polls, conf {best:.2f})")
-                        jpg = overlay_boxes(raw, dets)
-                        send_alert(cfg, cam, jpg, dets, track_smoke)
+                            f"polls, conf {best:.2f})"
+                            + motion_tag(motion_enabled, marked))
+                        jpg = overlay_boxes(raw, marked)
+                        send_alert(cfg, cam, jpg, marked, track_smoke)
                     else:
                         LOG(f"{cam}: fire-hit {hits}/{min_hits} in last "
                             f"{window} polls (conf {best:.2f})"
+                            + motion_tag(motion_enabled, marked)
                             + (" [cooldown]" if in_cooldown else ""))
+                elif marked:
+                    # Fire-marked evidence but NO box crossed the motion gate
+                    # this poll (static lookalike in the 0.5-0.85 FP band):
+                    # keep the durable evidence record (alerted=0) and say so.
+                    fire_cams += 1
+                    best = max(d["score"] for d in marked)
+                    store_fire_frame(cfg, cam, raw, marked, alerted=False)
+                    LOG(f"{cam}: stored {len(marked)} fire box(es) "
+                        f"conf {best:.2f}, NO motion - not counted "
+                        f"({n_static} static)")
+                elif n_cands:
+                    # Raw candidates existed but none crossed the alert bar
+                    # (static and/or below threshold) - no hit this poll.
+                    LOG(f"{cam}: {n_cands} fire candidate(s) below the "
+                        f"alert bar (no hit)")
                 elif hits == 0 and prev_hits:
                     # window drained to zero: the fire has been gone long enough
                     LOG(f"{cam}: cleared after {prev_hits} recent hits")
             except urllib.error.HTTPError as exc:
                 st["recent"].clear()
+                st["prev"] = None
                 if not st["down"]:
                     # Mark down + log once per episode (not every 15s sweep),
                     # mirroring the generic-error branch below - so a long
@@ -639,6 +778,7 @@ def run_forever(cfg, model):
                     LOG(f"{cam}: HTTP {exc.code}")
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
                 st["recent"].clear()
+                st["prev"] = None
                 if not st["down"]:
                     LOG(f"{cam}: error: {exc}")
                     st["down"] = True

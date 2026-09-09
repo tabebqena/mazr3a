@@ -51,6 +51,7 @@ let paintCheck = null;       // post-reveal: confirm frames really render
 let stallWatch = null;       // post-Live: restart if no new frame (black/frozen)
 
 let fwDets = {};             // fire frame id -> detections (for box overlay)
+let fwMeta = {};             // fire frame id -> full record (for the lightbox)
 
 /* ---------------- helpers ---------------- */
 function esc(s) {
@@ -1157,6 +1158,7 @@ let fwPages = 1;
 function reloadFire() {
   fwPage = 1;
   fwDets = {};
+  fwMeta = {};
   loadFire();
 }
 $('#fw-refresh').addEventListener('click', reloadFire);
@@ -1215,6 +1217,7 @@ async function loadFire() {
 
 function fireCard(f) {
   fwDets[f.id] = f.detections || [];
+  fwMeta[f.id] = f;
   const labels = [...new Set((f.detections || []).map(d => d.label))];
   const labelTags = labels.map(l => {
     const c = String(l).toLowerCase();
@@ -1252,6 +1255,77 @@ function drawFireBoxes(img) {
       'width:' + Math.max(0, x2 - x1) + '%;height:' + Math.max(0, y2 - y1) + '%"></div>';
   }).join('');
 }
+
+/* -------- fire evidence lightbox: click a card image to view it larger ----- */
+function openFireLightbox(id) {
+  const f = fwMeta[id];
+  if (!f) return;
+  const img = $('#fw-lb-img');
+  const labels = [...new Set((f.detections || []).map(d => d.label))];
+  const labelTags = labels.map(l => {
+    const c = String(l).toLowerCase();
+    return '<span class="tag ' + (c === 'smoke' ? 'smoke' : 'fire') + '">' + esc(l) + '</span>';
+  }).join(' ');
+  $('#fw-lb-title').textContent = 'Fire evidence #' + id;
+  $('#fw-lb-meta').innerHTML =
+    (f.alerted ? '<span class="tag alerted">alerted</span>'
+               : '<span class="tag fire">detection</span>') +
+    labelTags +
+    '<span>best ' + Number(f.best_score).toFixed(2) + '</span>' +
+    '<span class="tag">' + esc(f.camera || '') + '</span>' +
+    '<span class="muted">' + esc(f.ts_utc || '') + '</span>';
+  // Clear, then load the (cached) image; the detection/smoke boxes are drawn
+  // once the natural size is known so the percentages map onto the full image.
+  $('#fw-lb-boxes').innerHTML = '';
+  img.onload = () => drawFireLightboxBoxes(img, id);
+  img.onerror = () => { img.onload = null; img.onerror = null; };
+  $('#fw-lightbox').classList.remove('hidden');
+  document.body.classList.add('lb-open');
+  img.src = '/api/fire/' + id + '/image.jpg';
+  if (img.complete) drawFireLightboxBoxes(img, id);   // served from cache
+}
+
+function drawFireLightboxBoxes(img, id) {
+  const boxes = $('#fw-lb-boxes');
+  if (!boxes || !id) return;
+  boxes.innerHTML = '';
+  if (!img.complete || !img.naturalWidth) return;
+  const nw = img.naturalWidth || 640;
+  const nh = img.naturalHeight || 360;
+  boxes.innerHTML = (fwDets[id] || []).map(d => {
+    const x1 = d.x1 / nw * 100, y1 = d.y1 / nh * 100;
+    const x2 = d.x2 / nw * 100, y2 = d.y2 / nh * 100;
+    const cls = String(d.label).toLowerCase() === 'smoke' ? 'smoke' : '';
+    return '<div class="fw-box ' + cls + '" style="left:' + x1 + '%;top:' + y1 + '%;' +
+      'width:' + Math.max(0, x2 - x1) + '%;height:' + Math.max(0, y2 - y1) + '%"></div>';
+  }).join('');
+}
+
+function closeFireLightbox() {
+  const lb = $('#fw-lightbox');
+  if (!lb || lb.classList.contains('hidden')) return;
+  lb.classList.add('hidden');
+  document.body.classList.remove('lb-open');
+  const img = $('#fw-lb-img');
+  img.onload = null;
+  img.onerror = null;
+  img.removeAttribute('src');
+  $('#fw-lb-boxes').innerHTML = '';
+}
+
+// Fire card images open the lightbox (delegated so it survives every re-render;
+// clicks reach the <img> because the .fw-overlays layer is pointer-events:none).
+$('#fw-list').addEventListener('click', (e) => {
+  const img = e.target.closest('.fw-img');
+  if (img && img.dataset.id) openFireLightbox(img.dataset.id);
+});
+$('#fw-lb-close').addEventListener('click', closeFireLightbox);
+$('#fw-lightbox').addEventListener('click', (e) => {
+  if (e.target.closest('[data-fw-close]')) closeFireLightbox();   // backdrop tap
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeFireLightbox();
+});
 
 /* ---------------- start ---------------- */
 boot();

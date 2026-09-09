@@ -176,12 +176,38 @@
         </div>
       </section>
     </main>
-    <!-- Bottom-most version label: a tiny, fixed, non-interactive tag pinned to
-         the lowest corner of the screen on every view. Filled from /api/settings
-         (portal APP_VERSION); the hard-coded text is only a pre-script fallback. -->
-    <footer class="app-ver" title="Portal version">
-      v<span id="ver-no">0.3.0</span>
-    </footer>
+  </div>
+
+  <!-- Bottom-most version label: a tiny, fixed, non-interactive tag pinned to
+       the lowest corner of the screen on EVERY screen - the login view and the
+       loading state (when the app content is not loaded yet) as well as every
+       app view. It is a direct <body> child (NOT inside #app), so showing the
+       login view or a not-yet-loaded app never hides it. Filled from
+       /api/settings (portal APP_VERSION); the hard-coded text is only a
+       pre-script fallback. -->
+  <footer class="app-ver" title="Portal version">
+    v<span id="ver-no">0.3.0</span>
+  </footer>
+
+  <!-- Fire evidence lightbox: clicking a fire card image opens this full-screen
+       view of the evidence JPEG as large as fits, with the detection/smoke
+       boxes redrawn at full size plus the record's metadata. -->
+  <div id="fw-lightbox" class="fw-lightbox hidden" role="dialog"
+       aria-modal="true" aria-label="Fire evidence - larger view">
+    <div class="fw-backdrop" data-fw-close></div>
+    <div class="fw-lb-card">
+      <div class="fw-lb-head">
+        <span id="fw-lb-title">Fire evidence</span>
+        <button id="fw-lb-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="fw-lb-body">
+        <div class="fw-lb-frame">
+          <img id="fw-lb-img" alt="fire evidence - larger view">
+          <div id="fw-lb-boxes" class="fw-lb-boxes"></div>
+        </div>
+        <div id="fw-lb-meta" class="fw-lb-meta"></div>
+      </div>
+    </div>
   </div>
 
   <div id="global-err" class="toast hidden"></div>

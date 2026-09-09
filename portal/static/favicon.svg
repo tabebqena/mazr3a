@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!-- mazr3a CCTV favicon: security-camera mark on the portal's dark card
-       with the green accent (--accent #35c26f) and a red live/record dot. -->
+       with the green accent #35c26f and a red live/record dot. -->
   <rect width="64" height="64" rx="14" fill="#0b0e12"/>
   <rect x="8" y="8" width="48" height="48" rx="11" fill="#141920" stroke="#2a3441" stroke-width="2"/>
 

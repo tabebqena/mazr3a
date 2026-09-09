@@ -33,7 +33,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.3.11"
+APP_VERSION = "0.3.12"
 _HTMX = None
 
 
@@ -493,29 +493,24 @@ async def fire_image(frame_id: int, request: Request,
 
 
 # --------------------------------------------------------------------------
-# Admin-only Debug tab: last log messages of every container.
+# Admin-only Debug tab: last log messages of containers.
 #
 # The portal container itself has no Docker access; it pulls on demand from the
 # read-only `logs` sidecar (scripts/container_logs.py, compose service `logs`)
 # over the internal compose network. The sidecar owns the host Docker socket
 # and stays idle - it is queried only when the admin opens the Debug tab.
+#
+# Two admin-only endpoints: /api/admin/containers (lightweight list, no logs,
+# used to populate the UI's container dropdown) and /api/admin/logs, which
+# returns log tails either for ONE selected container (?name=<c>) or for every
+# container when no name is given (the Debug tab's "All containers" option).
 # --------------------------------------------------------------------------
 def _logs_base(request: Request):
     return pconf.get(_cfg(request), "LOGS_API", "http://logs:8090").rstrip("/")
 
 
-@app.get("/api/admin/logs")
-async def admin_logs(request: Request, tail: int = 200,
-                     admin: dict = Depends(current_admin)):
-    """Debug tab: last `tail` log lines of every container (admin only).
-
-    Returns each container with its merged stdout+stderr tail (timestamps).
-    503 = logs sidecar unreachable; 502 = sidecar/docker error; a per-container
-    `error` field records failures fetching that one container's logs.
-    """
-    client = request.app.state.client
-    base = _logs_base(request)
-    tail = max(1, min(2000, tail))
+async def _sidecar_containers(client, base):
+    """Fetch the sidecar's container list; raise 503/502 on transport/HTTP errors."""
     try:
         resp = await client.get(base + "/api/containers", timeout=8.0)
     except Exception as exc:
@@ -525,9 +520,51 @@ async def admin_logs(request: Request, tail: int = 200,
         raise HTTPException(status_code=502,
                             detail=f"logs sidecar error: HTTP {resp.status_code}")
     try:
-        containers = (resp.json() or {}).get("containers") or []
+        return (resp.json() or {}).get("containers") or []
     except Exception:
-        containers = []
+        return []
+
+
+@app.get("/api/admin/containers")
+async def admin_containers(request: Request,
+                           admin: dict = Depends(current_admin)):
+    """Debug tab: lightweight list of every container (admin only, no logs).
+
+    Feeds the front-end's "Container" dropdown. 503 = sidecar unreachable;
+    502 = sidecar/docker error.
+    """
+    client = request.app.state.client
+    base = _logs_base(request)
+    containers = await _sidecar_containers(client, base)
+    return {"containers": containers}
+
+
+@app.get("/api/admin/logs")
+async def admin_logs(request: Request, tail: int = 200,
+                     name: Optional[str] = None,
+                     admin: dict = Depends(current_admin)):
+    """Debug tab: last `tail` log lines of one container or every container.
+
+    `name` selects a single container (the UI's per-container view); without
+    it every container is returned (the "All containers" view). Each container
+    carries its merged stdout+stderr tail (timestamps). 503 = logs sidecar
+    unreachable; 502 = sidecar/docker error; a per-container `error` field
+    records failures fetching that one container's logs.
+    """
+    client = request.app.state.client
+    base = _logs_base(request)
+    tail = max(1, min(2000, tail))
+    containers = await _sidecar_containers(client, base)
+    if name:
+        # Focus on the selected container only. If it vanished between the list
+        # and the logs fetch, keep a stub entry so the UI can show an error
+        # instead of silently rendering nothing.
+        needle = name.strip().lower()
+        containers = [c for c in containers
+                      if (c.get("name") or "").lower() == needle]
+        if not containers:
+            containers = [{"name": name.strip(), "state": "?",
+                           "status": "", "image": ""}]
     result = []
     for c in containers:
         entry = {
@@ -549,4 +586,5 @@ async def admin_logs(request: Request, tail: int = 200,
         except Exception as exc:
             entry["error"] = str(exc)
         result.append(entry)
-    return {"tail": tail, "containers": result}
+    return {"tail": tail, "name": (name.strip() if name else None),
+            "containers": result}

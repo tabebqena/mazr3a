@@ -1385,11 +1385,26 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeFireLightbox();
 });
 
-/* ---------------- admin Debug: last logs of all containers ---------------- */
+/* ---------------- admin Debug: logs of containers (selectable) ---------------- */
 /* The read-only `logs` sidecar stays idle; the portal pulls its container
-   list + log tails ONLY when this tab is opened (and on Refresh / tail change). */
+   list + log tails ONLY when this tab is opened (and on Refresh / tail or
+   container change). The Container dropdown lets the admin view ONE container's
+   logs instead of every container at once ("All containers" is the default). */
 function isAdmin() {
   return !!(state.me && state.me.is_admin);
+}
+
+/* Fill the Container dropdown from /api/admin/containers (no log tails pulled
+   just to build the list). Keeps the previously selected container when it
+   still exists; otherwise falls back to "All containers". */
+async function refreshContainerSelect() {
+  const sel = $('#dbg-container');
+  const prev = sel ? sel.value : '';
+  const data = await api('/api/admin/containers');
+  const list = (data && data.containers) || [];
+  sel.innerHTML = '<option value="">All containers</option>' +
+    list.map(c => '<option value="' + esc(c.name) + '">' + esc(c.name) + '</option>').join('');
+  sel.value = (prev && list.some(c => c.name === prev)) ? prev : '';
 }
 
 async function loadDebug() {
@@ -1399,15 +1414,22 @@ async function loadDebug() {
     box.innerHTML = '<div class="empty">Admin only</div>';
     return;
   }
-  const sel = $('#dbg-tail');
-  const tail = parseInt(sel && sel.value, 10) || 200;
   st.textContent = 'Loading container logs\u2026';
   box.innerHTML = '';
   try {
-    const data = await api('/api/admin/logs?tail=' + tail);
+    await refreshContainerSelect();        // fresh container list for the dropdown
+    const tailSel = $('#dbg-tail');
+    const tail = parseInt(tailSel && tailSel.value, 10) || 200;
+    const sel = $('#dbg-container');
+    const name = sel ? (sel.value || '') : '';
+    let url = '/api/admin/logs?tail=' + tail;
+    if (name) url += '&name=' + encodeURIComponent(name);
+    const data = await api(url);
     renderDebug(data);
-    st.textContent = (data.containers ? data.containers.length : 0)
-      + ' container(s) \u00b7 last ' + data.tail + ' lines each';
+    const n = (data.containers ? data.containers.length : 0);
+    st.textContent = name
+      ? 'container \u2018' + name + '\u2019 \u00b7 last ' + data.tail + ' lines'
+      : n + ' container(s) \u00b7 last ' + data.tail + ' lines each';
   } catch (e) {
     st.textContent = '';
     box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
@@ -1441,6 +1463,7 @@ function dbgCard(c) {
 
 $('#dbg-refresh').addEventListener('click', loadDebug);
 $('#dbg-tail').addEventListener('change', loadDebug);
+$('#dbg-container').addEventListener('change', loadDebug);
 
 /* ---------------- start ---------------- */
 boot();

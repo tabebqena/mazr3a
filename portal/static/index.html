@@ -192,11 +192,19 @@
         </div>
       </section>
 
-      <!-- Admin-only Debug: last log messages of every container. Pulled on
-           demand from the read-only `logs` sidecar when this tab opens (the
-           sidecar stays idle; there is no polling). Visible only to admin. -->
+      <!-- Admin-only Debug: last log messages of containers. Pulled on demand
+           from the read-only `logs` sidecar when this tab opens (the sidecar
+           stays idle; there is no polling). Visible only to admin.
+           The Container dropdown (populated by app.js from
+           /api/admin/containers) picks a single container; "All containers"
+           keeps the stacked per-container view. -->
       <section id="view-debug" class="view hidden">
         <div class="controls">
+          <label>Container
+            <select id="dbg-container" title="Pick a container (All containers shows every container)">
+              <option value="">All containers</option>
+            </select>
+          </label>
           <label>Lines
             <select id="dbg-tail">
               <option value="100">100</option>

@@ -1,8 +1,10 @@
 /* ============================================================
    mazr3a CCTV portal - MOBILE-FIRST responsive theme.
    Base rules = phones (single column, full width, tap targets).
-   Larger screens are progressively enhanced with min-width
-   media queries (>=640 tablet, >=1024 desktop).
+   Larger screens are progressively enhanced with width+height
+   media queries (>=640x560 tablet, >=1024x560 desktop): a phone
+   held in LANDSCAPE is wide but short, so the min-height guard
+   keeps it in the mobile layout (no inline camera strip).
    ============================================================ */
 :root {
   --bg: #0b0e12;
@@ -493,10 +495,13 @@ body.lb-open { overflow: hidden; }
 }
 
 /* ============================================================
-   TABLETS / SMALL DESKTOP (>=640px)
+   TABLETS / SMALL DESKTOP (>=640px wide AND >=560px tall)
    Controls flow into a row; grids get 2 columns.
+   min-height guard: a phone held in landscape is wide but short,
+   so it must NOT reach this block (else the inline camera strip
+   shows and the full-bleed live stage collapses to a tiny band).
    ============================================================ */
-@media (min-width: 640px) {
+@media (min-width: 640px) and (min-height: 560px) {
   body { font-size: 15px; }
   main { padding: 18px; }
 
@@ -544,10 +549,10 @@ body.lb-open { overflow: hidden; }
 }
 
 /* ============================================================
-   DESKTOP (>=1024px)
+   DESKTOP (>=1024px wide AND >=560px tall)
    More columns + a little more breathing room.
    ============================================================ */
-@media (min-width: 1024px) {
+@media (min-width: 1024px) and (min-height: 560px) {
   main { padding: 22px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
   .toast { left: 50%; right: auto; transform: translateX(-50%); }

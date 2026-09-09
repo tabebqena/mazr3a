@@ -23,7 +23,8 @@ CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
 COOKIE_NAME = "portal_session"
 # App/UI version, shown as the bottom-most version label in the SPA footer
 # (served to the client via /api/settings -> app_version). Bump on UI/API change.
-APP_VERSION = "0.3.0"
+# Should be updated with each update to the portal SPA (static/app.js) so the client can detect a new version.
+APP_VERSION = "0.3.1"
 _HTMX = None
 
 

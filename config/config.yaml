@@ -128,12 +128,21 @@ ffmpeg:
 # input width/height) is built from THIS top-level `model:` block,
 # with the detector's flat `model_path:` overriding only the path.
 #
-# MODEL: YOLO11n (Ultralytics COCO 80-class) exported to NMS-free ONNX
-# @640 - replaces the bundled ssdlite_mobilenet_v2 (weak at 300x300;
-# see plans/replace-coco-with-yolo-on-igpu.md). Frigate 0.17.2 OpenVINO
-# detector with model_type: yolo-generic routes to post_process_yolo(),
-# which decodes the raw [1,84,8400] output (cxcywh + class scores) and
-# applies its own NMS - no OpenVINO IR conversion needed.
+# MODEL: YOLO11s (Ultralytics COCO 80-class) exported to NMS-free ONNX
+# @640 (2026-09-10) - upgraded from YOLO11n for better person/car/animal
+# accuracy on small/distant subjects (a known weak spot on the farm
+# scenes). Frigate 0.17.2 OpenVINO detector with model_type: yolo-generic
+# routes to post_process_yolo(), which decodes the raw [1,84,8400] output
+# (cxcywh + class scores) and applies its own NMS - no OpenVINO IR
+# conversion needed.
+#
+# Headroom check (2026-09-10 decision, plans/better-coco-model-on-igpu.md):
+# the detector must serve ~10 inferences/sec worst case (10 cameras x
+# detect.fps 1). YOLO11n on the iGPU measured 19.5 ms (50 FPS); YOLO11s
+# is ~3.4x the GFLOPs -> expect ~60-70 ms (~14-17 FPS), still above the
+# ~10 fps demand. YOLO11m / YOLOv8m were ruled out as over-budget (they
+# would drop detect frames when several cameras fire together).
+# yolo11n.onnx is kept in models/coco/ as the rollback (revert the path).
 #
 # width/height MUST match the export imgsz (640) or the detector
 # crashes with the 320-vs-300 style shape error. input_tensor: nchw +
@@ -147,7 +156,7 @@ ffmpeg:
 # ------------------------------------------------------------------
 model:
   model_type: yolo-generic
-  path: /models/coco/yolo11n.onnx
+  path: /models/coco/yolo11s.onnx
   labelmap_path: /models/coco/labelmap.txt
   width: 640
   height: 640
@@ -160,17 +169,20 @@ model:
 # config come from the top-level `model:` block above.
 # device: GPU (iGPU UHD 630) - inference offloaded off the CPU cores to
 # reduce host CPU load/thermals (2026-09-09). The iGPU is slightly
-# SLOWER than the CPU for YOLO11n@640 (~19.5ms vs ~17ms avg, plans/
-# replace-coco-with-yolo-on-igpu.md §Results), so watch /api/stats that
-# sum(detection_fps) still tracks sum(process_fps); revert to device: CPU
-# if the iGPU cannot keep up when all 10 cameras fire simultaneously.
+# SLOWER than the CPU per-inference, but with YOLO11s@640 (2026-09-10)
+# the GPU keeps inference off the CPU cores while still serving the
+# ~10 fps aggregate detect demand with headroom. Watch /api/stats that
+# sum(detection_fps) still tracks sum(process_fps) and that detector
+# inference_speed stays under the ~100 ms frame budget; revert the model
+# path to yolo11n.onnx if it cannot keep up when all 10 cameras fire
+# simultaneously.
 # OpenVINO compiles the ONNX on the GPU at startup (~3s one-off).
 # ------------------------------------------------------------------
 detectors:
   ov:
     type: openvino
     device: GPU
-    model_path: /models/coco/yolo11n.onnx
+    model_path: /models/coco/yolo11s.onnx
 
 # ------------------------------------------------------------------
 # Objects to track and detection thresholds

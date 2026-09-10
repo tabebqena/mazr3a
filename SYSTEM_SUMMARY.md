@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v3` |
+| Summary version | `v4` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.3.15` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -73,7 +73,7 @@ with `docker compose up -d` / `docker compose down`.
 | Image | `ghcr.io/blakeblackshear/frigate:stable` |
 | Purpose | Camera ingest, OpenVINO detection, event-only recording, snapshots, live restream (go2rtc), MQTT event publish |
 | Dev files | [`config/config.yaml`](config/config.yaml) (Frigate 0.17 config), [`models/coco/`](models/coco/) (ONNX + labelmap), [`docker-compose.yml`](docker-compose.yml) |
-| Actual active model | `models/coco/yolo11n.onnx` (COCO 80-class, `yolo-generic`, 640×640) |
+| Actual active model | `models/coco/yolo11s.onnx` (COCO 80-class, `yolo-generic`, 640×640, iGPU); `yolo11n.onnx` is the rollback |
 | Credentials | `.env` → `{FRIGATE_*}` placeholders (git-ignored) |
 | Ports | `5000` HTTP UI/API · `8971` TLS UI · `8554` RTSP restream · `8555` tcp+udp WebRTC |
 | Volumes | `./config:/config` · `./media:/media/frigate` · `./models:/models:ro` · tmpfs `/tmp/cache` (1 GB) |

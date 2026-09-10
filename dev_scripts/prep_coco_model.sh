@@ -2,7 +2,8 @@
 # ============================================================
 # Export Ultralytics COCO YOLO candidates to the NMS-free ONNX
 # files Frigate's OpenVINO detector (model_type: yolo-generic)
-# expects at models/coco/ (yolo11n.onnx + yolov8s.onnx).
+# expects at models/coco/ (yolo11s.onnx ACTIVE + yolo11n.onnx rollback +
+# yolov8s.onnx retained alternative).
 #
 # No OpenVINO IR conversion is needed: Frigate 0.17.2 loads the
 # .onnx directly and post-processes it (verified vs v0.17.2 source).
@@ -12,9 +13,11 @@
 # (.venv/) already has ultralytics 8.4.140; `onnx` is added if missing.
 #
 # Usage:
-#   ./dev_scripts/prep_coco_model.sh [imgsz]
-# Example:
-#   ./dev_scripts/prep_coco_model.sh 640
+#   ./dev_scripts/prep_coco_model.sh [imgsz] [models]
+#   models = comma-separated Ultralytics model names (default: all three)
+# Examples:
+#   ./dev_scripts/prep_coco_model.sh 640              # export all
+#   ./dev_scripts/prep_coco_model.sh 640 yolo11s      # export only yolo11s
 # ============================================================
 set -euo pipefail
 
@@ -23,6 +26,10 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEST_DIR="${ROOT_DIR}/models/coco"
 
 IMGSZ="${1:-640}"
+# Which Ultralytics models to export (comma-separated). Defaults to the full set
+# kept in models/coco/. Pass a subset to add/refresh one model WITHOUT rewriting
+# the other git-tracked .onnx files (avoids noisy binary diffs on re-export).
+MODELS="${2:-yolo11n,yolov8s,yolo11s}"
 
 # Prefer the workspace venv if it has ultralytics, else any python3.
 PY="${ROOT_DIR}/.venv/bin/python"
@@ -43,14 +50,15 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "=============================================================="
-echo "1) export yolo11n + yolov8s -> NMS-free ONNX @ ${IMGSZ}"
-"$PY" - "$IMGSZ" "$WORK" "$DEST_DIR" <<'PY'
+echo "1) export ${MODELS} -> NMS-free ONNX @ ${IMGSZ}"
+"$PY" - "$IMGSZ" "$WORK" "$DEST_DIR" "$MODELS" <<'PY'
 import os, shutil, sys
 from ultralytics import YOLO
 
 imgsz, work, dest = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+names = [n.strip() for n in sys.argv[4].split(",") if n.strip()]
 os.chdir(work)
-for name in ["yolo11n", "yolov8s"]:
+for name in names:
     model = YOLO(f"{name}.pt")          # downloads pretrained weights on first use
     names = model.names
     chk = [names[0], names[2], names[16], names[17], names[18], names[19]]
@@ -83,6 +91,8 @@ echo "IMPORTANT:"
 echo "  - Files in ${DEST_DIR} are git-TRACKED (self-contained git deploy, 2026-09-06)."
 echo "  - Commit any new export + push, then deploy_all.sh ships it (host git pull)."
 echo "  - A models/coco/* change restarts the frigate service in deploy_all.sh."
-echo "  - Host benchmark (container path /models/coco/):"
-echo "      docker exec frigate /openvino/benchmark_app -m /models/coco/yolo11n.onnx -d CPU -api sync"
-echo "      docker exec frigate /openvino/benchmark_app -m /models/coco/yolov8s.onnx -d CPU -api sync"
+echo "  - Host benchmark (container path /models/coco/); the live detector device"
+echo "    is GPU (iGPU), so benchmark with -d GPU:"
+echo "      docker exec frigate /openvino/benchmark_app -m /models/coco/yolo11s.onnx -d GPU -api sync"
+echo "      docker exec frigate /openvino/benchmark_app -m /models/coco/yolo11n.onnx -d GPU -api sync"
+echo "      docker exec frigate /openvino/benchmark_app -m /models/coco/yolov8s.onnx -d GPU -api sync"

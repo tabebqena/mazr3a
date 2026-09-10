@@ -36,7 +36,10 @@
         <a data-view="live" href="#/live">Live</a>
         <a data-view="events" href="#/events">Events</a>
         <a data-view="fire" href="#/fire">Fire alerts</a>
-        <a data-view="scenes" href="#/scenes">Scenes</a>
+        <!-- Episodes = the cross-camera person stories scenereader builds from
+             Frigate's own captures (narrative in English AND Arabic). -->
+        <a data-view="episodes" href="#/episodes">Episodes</a>
+        <a data-view="scenes" href="#/scenes">Scene log</a>
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
@@ -238,6 +241,31 @@
           <button id="sc-prev" type="button">&#8249; Prev</button>
           <span id="sc-pageno" class="pageno"></span>
           <button id="sc-next" type="button">Next &#8250;</button>
+        </div>
+      </section>
+
+      <!-- scenereader EPISODES: the cross-camera person stories.
+           Each episode is ONE narrative built from ordered place visits, written
+           deterministically in BOTH English and Arabic (no model involved), with
+           the supporting captures underneath. "Process now" only ASKS the
+           service for a caption batch - the service still applies its idle
+           governor, so the button can never force a hot host to work. -->
+      <section id="view-episodes" class="view hidden">
+        <div class="controls">
+          <label>Day <select id="ep-day"></select></label>
+          <label>Camera <select id="ep-cam"></select></label>
+          <button id="ep-refresh" type="button" title="Reload episodes">Refresh</button>
+          <button id="ep-drain" type="button"
+                  title="Ask scenereader for a caption batch now (it still waits for the host to be idle)">
+            Process now
+          </button>
+        </div>
+        <div id="ep-status" class="status"></div>
+        <div id="ep-list" class="grid"></div>
+        <div id="ep-pager" class="pager hidden">
+          <button id="ep-prev" type="button">&#8249; Prev</button>
+          <span id="ep-pageno" class="pageno"></span>
+          <button id="ep-next" type="button">Next &#8250;</button>
         </div>
       </section>
 

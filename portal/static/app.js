@@ -167,7 +167,7 @@ async function boot() {
 
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
-  const VIEWS = ['live', 'events', 'fire', 'scenes', 'debug'];
+  const VIEWS = ['live', 'events', 'fire', 'episodes', 'scenes', 'debug'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
   // Debug is admin-only: a non-admin who lands on #/debug falls back to Live.
   if (view === 'debug' && !(state.me && state.me.is_admin)) view = 'live';
@@ -179,6 +179,7 @@ function onRoute() {
   if (view === 'live') ensureLive();
   else if (view === 'events') loadEvents();
   else if (view === 'fire') reloadFire();   // page-based: reset to page 1 on entry
+  else if (view === 'episodes') reloadEpisodes();  // page-based: reset to page 1
   else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
 }
@@ -210,6 +211,7 @@ function refreshCamSelects() {
   $('#ev-cam').innerHTML = '<option value="">all cameras</option>' + opts;
   $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + opts;
   $('#sc-cam').innerHTML = '<option value="">all cameras</option>' + opts;
+  $('#ep-cam').innerHTML = '<option value="">all cameras</option>' + opts;
 }
 
 /* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
@@ -1635,6 +1637,136 @@ $('#fw-lightbox').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeFireLightbox();
 });
+
+/* ------------- scenereader EPISODES (cross-camera person stories) ----------
+   One card per episode: the narrative in English AND the same narrative in
+   Arabic. Both are composed DETERMINISTICALLY by scenereader from the same
+   facts (no model), so the two languages can never disagree. Underneath are the
+   ordered supporting captures, served by the EXISTING Frigate snapshot proxy.
+   "Process now" only ASKS the service for a caption batch; the service still
+   applies its idle governor, so the button can never force a hot host to work. */
+const EP_LIMIT = 20;
+let epPage = 1;
+let epPages = 1;
+
+function epClock(epoch) {
+  if (!epoch) return '';
+  return new Date(epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function reloadEpisodes() {
+  epPage = 1;
+  loadEpisodes();
+}
+$('#ep-refresh').addEventListener('click', reloadEpisodes);
+$('#ep-cam').addEventListener('change', reloadEpisodes);
+$('#ep-day').addEventListener('change', reloadEpisodes);
+$('#ep-prev').addEventListener('click', () => {
+  if (epPage > 1) { epPage--; loadEpisodes(); }
+});
+$('#ep-next').addEventListener('click', () => {
+  if (epPage < epPages) { epPage++; loadEpisodes(); }
+});
+$('#ep-drain').addEventListener('click', async () => {
+  const st = $('#ep-status');
+  const btn = $('#ep-drain');
+  btn.disabled = true;
+  try {
+    // Plain fetch (POST + cookie) so this does not depend on the api() helper's
+    // option signature.
+    const r = await fetch('/api/scenereader/drain', {
+      method: 'POST', credentials: 'same-origin',
+    });
+    st.textContent = r.ok
+      ? 'Caption batch requested - it runs as soon as the host is idle.'
+      : 'Could not request a batch (HTTP ' + r.status + ').';
+  } catch (err) {
+    st.textContent = 'Could not request a batch: ' + err;
+  } finally {
+    setTimeout(() => { btn.disabled = false; }, 3000);
+  }
+});
+
+function fillEpisodeDays(days) {
+  const sel = $('#ep-day');
+  const cur = sel.value;
+  const html = '<option value="">all days</option>' +
+    days.map(d => '<option value="' + esc(d) + '">' + esc(d) + '</option>').join('');
+  if (sel.dataset.filled !== html) {
+    sel.innerHTML = html;
+    sel.dataset.filled = html;
+    sel.value = cur;
+  }
+}
+
+function episodeCard(e) {
+  const visits = (e.visits || []).map(v => {
+    const mins = v.duration_s ? Math.max(1, Math.round(v.duration_s / 60)) : 0;
+    return '<a class="ep-visit" href="' + esc(v.image_url || '#') + '" '
+      + 'target="_blank" rel="noopener">'
+      + (v.image_url ? '<img src="' + esc(v.image_url) + '" alt="" loading="lazy">' : '')
+      + '<span class="ep-visit-meta">' + esc(v.place || v.camera || '')
+      + ' &middot; ' + esc(v.camera || '') + ' &middot; ' + esc(epClock(v.enter_time))
+      + (mins ? ' &middot; ' + mins + ' min' : '') + '</span>'
+      + (v.description_vlm
+        ? '<span class="ep-visit-cap">' + esc(v.description_vlm) + '</span>' : '')
+      + '</a>';
+  }).join('');
+  const tags = '<span class="tag">' + esc(e.anon_name || '') + '</span>'
+    + (e.person_name ? '<span class="tag">' + esc(e.person_name) + '</span>' : '')
+    + '<span class="tag">' + esc(e.day || '') + '</span>'
+    + ((typeof e.link_confidence === 'number' && e.link_confidence < 0.99)
+      ? '<span class="tag" title="confidence that this is one person across cameras">'
+        + 'link ' + Math.round(e.link_confidence * 100) + '%</span>'
+      : '');
+  return '<div class="card ep-card">'
+    + '<div class="ep-head">' + tags + '</div>'
+    + '<div class="ep-narrative">' + esc(e.narrative || '') + '</div>'
+    + (e.narrative_ar
+      ? '<div class="ep-narrative ep-ar" dir="rtl" lang="ar">'
+        + esc(e.narrative_ar) + '</div>'
+      : '')
+    + '<div class="ep-visits">' + visits + '</div>'
+    + '</div>';
+}
+
+async function loadEpisodes() {
+  const box = $('#ep-list');
+  const st = $('#ep-status');
+  const pager = $('#ep-pager');
+  st.textContent = 'Loading…';
+  const p = new URLSearchParams({
+    limit: String(EP_LIMIT),
+    offset: String((epPage - 1) * EP_LIMIT),
+    with_visits: '1',
+  });
+  const cam = $('#ep-cam').value; if (cam) p.set('camera', cam);
+  const day = $('#ep-day').value; if (day) p.set('day', day);
+  try {
+    const data = await api('/api/episodes?' + p.toString());
+    const total = data.total || 0;
+    epPages = Math.max(1, Math.ceil(total / EP_LIMIT));
+    if (epPage > epPages) epPage = epPages;
+    fillEpisodeDays(data.days || []);
+    st.textContent = (total ? total + ' episode(s)' : '')
+      + (data.note ? ' — ' + data.note : '');
+    if (!data.items || !data.items.length) {
+      box.innerHTML = '<div class="empty">No episodes yet. They appear once '
+        + 'person captures are linked across cameras — check that '
+        + '<b>CAMERA_PLACES</b> and <b>ADJACENCY</b> are filled in '
+        + '<code>config/places.conf</code>.</div>';
+      pager.classList.add('hidden');
+      return;
+    }
+    pager.classList.remove('hidden');
+    $('#ep-pageno').textContent = 'Page ' + epPage + ' of ' + epPages;
+    box.innerHTML = data.items.map(episodeCard).join('');
+  } catch (err) {
+    st.textContent = 'Failed: ' + err;
+    box.innerHTML = '';
+    pager.classList.add('hidden');
+  }
+}
 
 /* ------------- scenewatch scene descriptions (paged + time-filtered) ---------
    One row per captioned frame (scenewatch's two-frame motion gate; `reason`

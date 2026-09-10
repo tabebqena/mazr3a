@@ -602,6 +602,34 @@ body.lb-open { overflow: hidden; }
   .toast { left: 50%; right: auto; transform: translateX(-50%); }
 }
 
+/* ============ EPISODES TAB (scenereader cross-camera stories) ============
+   One card per episode: the narrative (English), the same narrative in Arabic
+   (RTL), and the ordered supporting captures as small thumbnails. */
+.ep-card { grid-column: 1 / -1; }          /* the narrative needs the full row */
+.ep-head { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0; }
+.ep-narrative {
+  padding: 8px 12px 4px; line-height: 1.45;
+  font-size: 0.98rem;
+}
+.ep-ar {
+  direction: rtl; text-align: right;
+  color: #cfe6d6;                      /* slightly dimmer: a second rendering */
+  border-top: 1px solid #223a2a;
+}
+.ep-visits {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 8px 12px 12px;
+}
+.ep-visit {
+  display: flex; flex-direction: column; width: 150px;
+  text-decoration: none; color: inherit;
+  background: #0d1a14; border: 1px solid #1d3a2a; border-radius: 6px;
+  overflow: hidden;
+}
+.ep-visit img { width: 100%; height: 84px; object-fit: cover; display: block; }
+.ep-visit-meta { font-size: 0.72rem; padding: 4px 6px 0; opacity: 0.85; }
+.ep-visit-cap { font-size: 0.72rem; padding: 2px 6px 6px; opacity: 0.7; }
+
 /* ================= SCENES TAB (scenewatch captions) =================
    Reuses .grid / .card / .thumb / .meta / .tag and the fire-evidence lightbox
    chrome (.fw-lightbox / .fw-lb-*); only the caption text, the no-image

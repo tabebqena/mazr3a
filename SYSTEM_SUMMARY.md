@@ -400,10 +400,24 @@ Developer scripts of note (local, not deployed):
 | [`dev_scripts/test_fire_model.py`](dev_scripts/test_fire_model.py) | Local fire-model benchmark |
 | Other `dev_scripts/*` | dataset build / analysis helpers |
 
-Workflow:
+Workflow (**the orchestrator runs on the DEV MACHINE, not the host** — it SSHes to
+`ssh.mazr3a.garden` and does everything there as `dr`, the clone owner):
 1. Edit + commit locally, then `git push origin master`.
-2. Run `./dev_scripts/deploy_all.sh` (host syncs to `origin/master`; every service is restarted).
+2. Run `./dev_scripts/deploy_all.sh` **from the dev machine**. Remotely it does
+   `git pull --ff-only origin master` → `docker compose up -d --build` →
+   `docker compose restart`. Needs `DEPLOY_SSH_USER`/`DEPLOY_SSH_PASS` (prompts if
+   unset) and never pushes for you.
 3. The script verifies stack state, effective Frigate config, `firewatch.py --check` and a `--dry-run` pass.
+
+> **A dirty host file blocks the pull.** `git pull --ff-only` refuses when an
+> incoming commit touches a file that is also modified on the host. Editing
+> Frigate in its UI rewrites `config/config.yaml` on the host, so that file must
+> be backed up and brought in line before deploying (see
+> [`plans/event-scene-reader.md`](plans/event-scene-reader.md) §20.0/§20.6).
+>
+> **Model prep and runtime checks run ON THE HOST** (they write to / read the
+> bind-mounted `models/`): `dev_scripts/prep_scene_model_llamacpp.sh`,
+> `dev_scripts/prep_scene_model.sh`, and the `docker compose exec … --check` probes.
 
 > **scenereader deploy prerequisite:** the models are **not** in git. On the host
 > fetch the small default (`bash dev_scripts/prep_scene_model_llamacpp.sh`) plus

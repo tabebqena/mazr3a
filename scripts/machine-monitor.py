@@ -41,6 +41,15 @@ it falls back to keeping the state in memory and sampling every minute within
 the SAME run until it can decide, so a real over-temp still alerts even without
 a usable state file.
 
+Every alert (and the normal per-run stdout line) ALSO reports the live GPU usage
+% and GPU temperature WHEN the host exposes them (helpers in
+scripts/collect_sensors.py: get_gpu_usage()/get_gpu_temp()). Neither is
+required: an unavailable metric is simply omitted, and the CPU-temp alerting
+below is unchanged. GPU usage comes from the Intel i915 RC6 idle counter (no
+root needed - intel_gpu_top is NOT used, it needs CAP_PERFMON); a separate iGPU
+temperature sensor normally does not exist (Intel iGPU shares the CPU die), so
+on this host the temp is usually omitted and only the usage is reported.
+
 Credentials and tunables (MAX_TEMP, MIN_HITS, MIN_WINDOW_MIN, CRITICAL_TEMP,
 COOLDOWN_MIN) come from config/telegram.conf (git-ignored; template
 config/telegram.conf.example). Each key falls back to a baked-in default here,
@@ -87,6 +96,44 @@ def _cfg_int(cfg, key, default):
         return int(str(cfg.get(key, "")).strip() or default)
     except ValueError:
         return default
+
+
+def gpu_state():
+    """Best-effort (usage_pct, temp_c) for the host GPU; each may be None.
+
+    Each probe is isolated so a GPU problem can never affect CPU-temp alerting.
+    GPU usage needs a ~1 s counter sample window (see collect_sensors).
+    """
+    usage = temp = None
+    try:
+        usage = sensors.get_gpu_usage()
+    except Exception as exc:  # noqa: BLE001 - never let a probe break the run
+        print(f"[machine-monitor] gpu usage probe failed: {exc}", file=sys.stderr)
+    try:
+        temp = sensors.get_gpu_temp()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[machine-monitor] gpu temp probe failed: {exc}", file=sys.stderr)
+    return usage, temp
+
+
+def gpu_suffix(usage, temp):
+    """Short GPU suffix for a stdout line, e.g. ' GPU 12% | GPU temp 46°C'."""
+    parts = []
+    if usage is not None:
+        parts.append(f"GPU {usage}%")
+    if temp is not None:
+        parts.append(f"GPU temp {temp}°C")
+    return (" " + " | ".join(parts)) if parts else ""
+
+
+def gpu_alert_lines(usage, temp):
+    """Telegram <b> body lines for the GPU metrics ([] when unavailable)."""
+    lines = []
+    if usage is not None:
+        lines.append(f"<b>GPU Usage:</b> {usage}%")
+    if temp is not None:
+        lines.append(f"<b>GPU Temp:</b> {temp}°C")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -229,33 +276,34 @@ def evaluate(current, max_temp, min_hits, window_min, critical_temp,
 # alert rendering + main flow
 # ---------------------------------------------------------------------------
 def alert_text(host, current, critical, max_temp, min_hits, window_min,
-               critical_temp):
+               critical_temp, gpu_usage=None, gpu_temp=None):
     if critical:
-        return "\n".join(
-            [
-                "<b>🔴 CRITICAL TEMPERATURE!</b>",
-                f"<b>Server:</b> {tg.esc_html(host)}",
-                f"<b>Current Temp:</b> {current}°C",
-                f"<b>Critical Limit:</b> {critical_temp}°C "
-                "(single-sample - immediate)",
-            ]
-        )
-    return "\n".join(
-        [
+        lines = [
+            "<b>🔴 CRITICAL TEMPERATURE!</b>",
+            f"<b>Server:</b> {tg.esc_html(host)}",
+            f"<b>Current Temp:</b> {current}°C",
+            f"<b>Critical Limit:</b> {critical_temp}°C "
+            "(single-sample - immediate)",
+        ]
+    else:
+        lines = [
             "<b>⚠️ HIGH TEMPERATURE</b> (repeated/sustained)",
             f"<b>Server:</b> {tg.esc_html(host)}",
             f"<b>Current Temp:</b> {current}°C",
             f"<b>Warn Level:</b> ≥{max_temp}°C on {min_hits} samples "
             f"within {window_min} min",
         ]
-    )
+    # Live GPU load/temp when the host exposes them - useful context on a heat
+    # alert (is the iGPU working hard, or is this a CPU-side load?).
+    lines.extend(gpu_alert_lines(gpu_usage, gpu_temp))
+    return "\n".join(lines)
 
 
 def send_alert(cfg, host, current, critical, max_temp, min_hits, window_min,
-               critical_temp):
+               critical_temp, gpu_usage=None, gpu_temp=None):
     """Send the alert text; prints and returns the exit code."""
     text = alert_text(host, current, critical, max_temp, min_hits, window_min,
-                      critical_temp)
+                      critical_temp, gpu_usage, gpu_temp)
     try:
         tg.send_telegram(cfg, text)
     except Exception as exc:  # noqa: BLE001 - report and fail loudly under cron
@@ -265,12 +313,13 @@ def send_alert(cfg, host, current, critical, max_temp, min_hits, window_min,
     print(
         f"[machine-monitor] {kind} alert sent: {current}°C "
         f"({'single sample ≥' + str(critical_temp) + '°C' if critical else str(min_hits) + ' samples ≥' + str(max_temp) + '°C within ' + str(window_min) + ' min'})"
+        f"{gpu_suffix(gpu_usage, gpu_temp)}"
     )
     return 0
 
 
 def run_in_memory(current, max_temp, min_hits, window_min, critical_temp,
-                  cooldown_min, cfg):
+                  cooldown_min, cfg, gpu_usage=None, gpu_temp=None):
     """Self-contained decision when the state file cannot be used.
 
     Runs when STATE_FILE is unavailable (missing read-only dir, unwritable file):
@@ -301,7 +350,8 @@ def run_in_memory(current, max_temp, min_hits, window_min, critical_temp,
         state = result["state"]
         if result["alert"]:
             return send_alert(cfg, host, current, result["critical"],
-                              max_temp, min_hits, window_min, critical_temp)
+                              max_temp, min_hits, window_min, critical_temp,
+                              gpu_usage, gpu_temp)
         if result["suppressed"]:
             print(
                 f"[machine-monitor] alert due ({current}°C) but inside "
@@ -310,7 +360,8 @@ def run_in_memory(current, max_temp, min_hits, window_min, critical_temp,
             )
             return 0
         if current < max_temp and current < critical_temp:
-            print(f"[machine-monitor] {current}°C < {max_temp}°C - normal")
+            print(f"[machine-monitor] {current}°C < {max_temp}°C - normal"
+                  f"{gpu_suffix(gpu_usage, gpu_temp)}")
             return 0
         if time.time() > deadline:
             print(
@@ -323,6 +374,7 @@ def run_in_memory(current, max_temp, min_hits, window_min, critical_temp,
             f"[machine-monitor] {current}°C ≥ {max_temp}°C - "
             f"warm sample {result['hits_in_window']}/{min_hits} "
             f"in window (in-memory); no alert yet"
+            f"{gpu_suffix(gpu_usage, gpu_temp)}"
         )
         time.sleep(IN_MEMORY_SAMPLE_S)
         current = sensors.get_cpu_temp_max()
@@ -351,12 +403,17 @@ def main():
         )
         return 1
 
+    # Live GPU usage/temp when the host exposes them (best-effort; either may
+    # be None - see gpu_state()).
+    gpu_usage, gpu_temp = gpu_state()
+
     # STATE_FILE cannot be read/written (e.g. missing dir, read-only): the
     # normal per-run path would lose the history between cron ticks, so fall
     # back to an in-memory decision done in this one process run.
     if not DRY and not state_file_usable(STATE_FILE):
         return run_in_memory(current, max_temp, min_hits, window_min,
-                             critical_temp, cooldown_min, cfg)
+                             critical_temp, cooldown_min, cfg,
+                             gpu_usage, gpu_temp)
 
     state = load_state()
     result = evaluate(current, max_temp, min_hits, window_min, critical_temp,
@@ -368,29 +425,34 @@ def main():
         host = socket.gethostname() or "unknown"
         if DRY:
             print(alert_text(host, current, result["critical"], max_temp,
-                             min_hits, window_min, critical_temp))
+                             min_hits, window_min, critical_temp,
+                             gpu_usage, gpu_temp))
             return 0
         return send_alert(cfg, host, current, result["critical"], max_temp,
-                          min_hits, window_min, critical_temp)
+                          min_hits, window_min, critical_temp,
+                          gpu_usage, gpu_temp)
 
     if result["suppressed"]:
         print(
             f"[machine-monitor] alert due ({current}°C) but inside cooldown "
-            f"({cooldown_min} min) - quiet"
+            f"({cooldown_min} min) - quiet{gpu_suffix(gpu_usage, gpu_temp)}"
         )
         return 0
 
     if current >= critical_temp:
         # Should not be reached: a critical sample is an immediate alert above.
-        print(f"[machine-monitor] {current}°C ≥ {critical_temp}°C (critical)")
+        print(f"[machine-monitor] {current}°C ≥ {critical_temp}°C (critical)"
+              f"{gpu_suffix(gpu_usage, gpu_temp)}")
         return 0
     if current < max_temp:
-        print(f"[machine-monitor] {current}°C < {max_temp}°C - normal")
+        print(f"[machine-monitor] {current}°C < {max_temp}°C - normal"
+              f"{gpu_suffix(gpu_usage, gpu_temp)}")
     else:
         print(
             f"[machine-monitor] {current}°C ≥ {max_temp}°C - "
             f"warm sample {result['hits_in_window']}/{min_hits} "
             f"within {window_min} min; no alert yet"
+            f"{gpu_suffix(gpu_usage, gpu_temp)}"
         )
     return 0
 

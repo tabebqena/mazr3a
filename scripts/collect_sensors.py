@@ -11,18 +11,25 @@ Provides:
   - find_value():        extract one whitespace-separated field from sensor lines.
   - collect():           parse `sensors` output into ordered (key, value) pairs.
   - get_cpu_temp_max():  hottest live CPU temperature in °C (read on demand).
+  - get_gpu_usage():     Intel iGPU busy % from the i915 RC6 idle counter.
+  - get_gpu_freq():      Intel iGPU act/cur/max frequency in MHz.
+  - get_gpu_temp():      GPU temperature in °C when the host exposes one.
 
-The sensor helpers are cache-free: they read live data from lm-sensors on
-every call and never read/write any cache file.
+The sensor helpers are cache-free: they read live data from lm-sensors (and
+sysfs) on every call and never read/write any cache file. get_gpu_usage() is
+the one exception to "instant" - it needs TWO readings of a cumulative counter
+a short interval apart, so it samples for ~1 s by default.
 
 Run directly to print the current live readings on demand (nothing is read
 from or written to disk):
 
     python3 collect_sensors.py      # prints CPU_PACK=.. / CORE_0=.. lines
 """
+import glob
 import os
 import subprocess
 import sys
+import time
 
 
 def run_sensors():
@@ -131,10 +138,145 @@ def get_cpu_temp_max():
     return int(round(max(temps))) if temps else None
 
 
+# ---------------------------------------------------------------------------
+# GPU (Intel iGPU) helpers - best-effort, None when unavailable
+# ---------------------------------------------------------------------------
+# The Frigate OpenVINO detector runs on the Intel UHD 630 iGPU, so the host
+# watchdogs also report GPU load/temperature. Availability is host-dependent and
+# both helpers degrade to None (callers then simply omit the metric):
+#
+#   * USAGE - busy % derived from the i915 RC6 (GPU idle) residency counter at
+#     /sys/class/drm/card*/gt/gt*/rc6_residency_ms: RC6 is the GPU idle state, so
+#     busy% = 1 - d(rc6_ms) / d(t_ms) over a short window. Readable by an
+#     ordinary user. `intel_gpu_top` would give a richer per-engine breakdown but
+#     it reads the i915 PMU and needs CAP_PERFMON/root - verified on this host
+#     ("Failed to initialize PMU! (Permission denied)" as `ai`, with
+#     perf_event_paranoid=3) - so it is deliberately NOT used here.
+#   * TEMPERATURE - only if the host exposes a GPU hwmon (amdgpu/nouveau/xe/...)
+#     or an lm-sensors GPU field (e.g. alienware_wmi "GPU:"). An Intel iGPU
+#     shares the CPU die and normally has NO separate sensor, so this is
+#     typically None here (coretemp reports CPU cores only).
+_GPU_HWMON_NAMES = ("i915", "xe", "amdgpu", "nouveau", "radeon", "intel_gpu")
+
+
+def _read_int(path):
+    """Read a single integer from a sysfs file, or None."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _read_str(path):
+    """Read a sysfs file as a stripped string, or None."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _intel_gt_dir():
+    """sysfs 'gt' dir of the Intel iGPU (i915/xe) exposing an RC6 counter.
+
+    Returns None when there is no Intel GPU (or RC6 is not exposed). Walks the
+    DRM cards and checks the PCI driver name, so connector nodes such as
+    card0-DP-1 and any second (discrete) card are skipped safely.
+    """
+    for card in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
+        if "-" in os.path.basename(card):
+            continue  # card0-DP-1 / card0-HDMI-A-1 connector symlinks
+        driver = os.path.basename(
+            os.path.realpath(os.path.join(card, "device", "driver"))
+        )
+        if driver not in ("i915", "xe"):
+            continue
+        for gt in sorted(glob.glob(os.path.join(card, "gt", "gt*"))):
+            if os.path.isfile(os.path.join(gt, "rc6_residency_ms")):
+                return gt
+    return None
+
+
+def get_gpu_usage(sample_s=1.0):
+    """Intel iGPU busy % (0-100 int), or None when unavailable.
+
+    Busy % = 100 * (1 - d(rc6_residency_ms) / d(t_ms)) over ``sample_s`` seconds
+    (RC6 is the GPU's idle state). Never raises. Returns None when there is no
+    Intel GPU, RC6 is disabled, the counter is unreadable, or the counter does
+    not advance - so an absent/broken counter can never be reported as "100%".
+    """
+    gt = _intel_gt_dir()
+    if gt is None:
+        return None
+    if _read_str(os.path.join(gt, "rc6_enable")) == "0":
+        return None  # RC6 off -> the residency counter is not meaningful
+    rc6_a = _read_int(os.path.join(gt, "rc6_residency_ms"))
+    t_a = time.monotonic()
+    if rc6_a is None:
+        return None
+    time.sleep(max(0.0, float(sample_s)))
+    rc6_b = _read_int(os.path.join(gt, "rc6_residency_ms"))
+    t_b = time.monotonic()
+    if rc6_b is None:
+        return None
+    elapsed_ms = (t_b - t_a) * 1000.0
+    if elapsed_ms <= 0 or rc6_b < rc6_a:
+        return None
+    idle = min(1.0, max(0.0, (rc6_b - rc6_a) / elapsed_ms))
+    return int(round(100.0 * (1.0 - idle)))
+
+
+def get_gpu_freq():
+    """Intel iGPU (act, cur, max) frequency in MHz; any element may be None."""
+    gt = _intel_gt_dir()
+    if gt is None:
+        return None, None, None
+    return (
+        _read_int(os.path.join(gt, "rps_act_freq_mhz")),
+        _read_int(os.path.join(gt, "rps_cur_freq_mhz")),
+        _read_int(os.path.join(gt, "rps_max_freq_mhz")),
+    )
+
+
+def get_gpu_temp():
+    """GPU temperature in °C (int), or None when the host exposes no sensor.
+
+    Prefers a GPU hwmon (amdgpu/nouveau/xe/i915), then falls back to the
+    lm-sensors "GPU_TEMP" field already parsed by collect() (e.g. the
+    alienware_wmi "GPU:" reading). Intel iGPUs usually have no separate sensor
+    -> None on this host.
+    """
+    for hwmon in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        name = (_read_str(os.path.join(hwmon, "name")) or "").lower()
+        if name not in _GPU_HWMON_NAMES:
+            continue
+        for temp_input in sorted(glob.glob(os.path.join(hwmon, "temp*_input"))):
+            milli = _read_int(temp_input)
+            if milli is not None:
+                return int(round(milli / 1000.0))
+        return None
+    try:
+        for key, value in collect(run_sensors()):
+            if key == "GPU_TEMP" and value:
+                return int(round(float(value.replace("°C", "").lstrip("+"))))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def main():
     """On-demand: read live sensors once and print KEY=VALUE lines to stdout."""
     for key, value in collect(run_sensors()):
         print(f"{key}={value}")
+    usage = get_gpu_usage()
+    act, cur, mx = get_gpu_freq()
+    gpu_temp = get_gpu_temp()
+    print(f"GPU_USAGE={'n/a' if usage is None else str(usage) + '%'}")
+    print(f"GPU_FREQ_ACT={'n/a' if act is None else str(act) + 'MHz'}")
+    print(f"GPU_FREQ_CUR={'n/a' if cur is None else str(cur) + 'MHz'}")
+    print(f"GPU_FREQ_MAX={'n/a' if mx is None else str(mx) + 'MHz'}")
+    print(f"GPU_TEMP_SYSFS={'n/a' if gpu_temp is None else str(gpu_temp) + '°C'}")
 
 
 if __name__ == "__main__":

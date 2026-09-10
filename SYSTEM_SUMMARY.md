@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v4` |
+| Summary version | `v5` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.3.15` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -35,8 +35,8 @@ core, with purpose-built side services around it:
 - **portal** is an authenticated FastAPI + vanilla-JS SPA (login, live view,
   events, fire alerts) published via a Cloudflare Tunnel.
 - **mqtt** (Mosquitto) is the event broker.
-- Host **cron** runs the unified disk heartbeat, a CPU-temp watchdog, a daily
-  health report and a state sampler.
+- Host **cron** runs the unified disk heartbeat, a CPU-temp + iGPU watchdog, a
+  daily health report and a state sampler.
 
 Roadmap context: this is **Phase 0/1a**. Ollama VLM descriptions, daily LLM
 summaries and person/gait/face profiling are **deferred** (see
@@ -159,10 +159,10 @@ with `docker compose up -d` / `docker compose down`.
 | [`heartbeat_cleanup.py`](scripts/heartbeat_cleanup.py) | root cron (15 min) | **Unified disk heartbeat** — per-store compliance + global-cap escalation across `config/stores/*.conf`. Modes: `--check`, `--dry-run` |
 | [`cleanup_firewatch_store.py`](scripts/cleanup_firewatch_store.py) | in-container worker | firewatch DB-aware evidence cleanup (invoked by the heartbeat's `TYPE=docker-exec` store) |
 | [`cleanup_media.sh`](scripts/cleanup_media.sh) | — | **SUPERSEDED** (replaced by the heartbeat) |
-| [`collect_sensors.py`](scripts/collect_sensors.py) | library | lm-sensors reading helpers |
-| [`machine-monitor.py`](scripts/machine-monitor.py) | `dr` cron (1 min) | CPU-temp watchdog (CRITICAL + WARM tiers) → Telegram |
+| [`collect_sensors.py`](scripts/collect_sensors.py) | library | lm-sensors reading helpers + Intel iGPU usage/temp/freq readers |
+| [`machine-monitor.py`](scripts/machine-monitor.py) | `dr` cron (1 min) | CPU-temp watchdog (CRITICAL + WARM tiers) → Telegram; also reports live iGPU usage/temp (best-effort) |
 | [`machine-status.py`](scripts/machine-status.py) | `dr` cron (daily 08:00) | Daily host + Frigate health report → Telegram |
-| [`watchdog_baseline.py`](scripts/watchdog_baseline.py) | `dr` cron (1 min, `--cron`) | Machine/Frigate state sampler → size-capped CSV |
+| [`watchdog_baseline.py`](scripts/watchdog_baseline.py) | `dr` cron (1 min, `--cron`) | Machine/Frigate state sampler → size-capped CSV (incl. `gpu_usage_pct`, `gpu_temp_c`) |
 | [`telegram_notify.py`](scripts/telegram_notify.py) | library | Shared Telegram Bot API helpers (all senders) |
 | [`telegram_bot.py`](scripts/telegram_bot.py) | `telegram-bot` service | On-demand `/status` command responder |
 | [`container_logs.py`](scripts/container_logs.py) | `logs` service | Read-only Docker-logs sidecar API |
@@ -191,7 +191,7 @@ crontab -l; sudo crontab -l                # confirm both
 ### 5.2 `dr` crontab — [`scripts/crontab.sample`](scripts/crontab.sample)
 | Schedule | Command | Purpose |
 |---|---|---|
-| `* * * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py` | CPU-temp watchdog (every-minute sampling is required for ~1-min hot spikes) |
+| `* * * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py` | CPU-temp + iGPU watchdog (every-minute sampling is required for ~1-min hot spikes) |
 | `0 8 * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/machine-status.py` | Daily health report |
 | `* * * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre` | State sampler → bounded CSV |
 
@@ -211,6 +211,9 @@ sudo systemctl enable --now docker
 
 # lm-sensors (machine-monitor.py / machine-status.py read `sensors`)
 sudo apt install -y lm-sensors && sudo sensors-detect --auto
+# GPU usage needs NO extra tool: the i915 RC6 idle counter in sysfs is
+# world-readable, so the watchdog needs no root and NO intel_gpu_top
+# (that tool reads the i915 PMU and would need CAP_PERFMON).
 
 # git + python3 are required (host scripts + deploy clone)
 sudo apt install -y git python3
@@ -223,6 +226,7 @@ sudo apt install -y git python3
 | `/dev/dri/renderD128` exists | iGPU passthrough to Frigate (OpenVINO detector device: `GPU`) |
 | `shm_size: 256mb` (compose) | FFmpeg decode buffers |
 | `lm-sensors` (`sensors`) | `scripts/machine-monitor.py`, `scripts/machine-status.py` |
+| i915 RC6 sysfs counter (`/sys/class/drm/card0/gt/gt0/rc6_residency_ms`, world-readable) | GPU usage % for the watchdog. **No `intel_gpu_top` / CAP_PERFMON needed.** This host has no GPU temp sensor, so `gpu_temp_c` is blank |
 | `python3` on host | Cron scripts |
 | root cron capability | disk heartbeat must delete root-owned media |
 | Read access to `/var/run/docker.sock` | `logs` sidecar (runs as root in-container) |

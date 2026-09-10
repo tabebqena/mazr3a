@@ -27,6 +27,9 @@ Metrics per row:
               long-run: delta between samples via /proc/stat)
             - memory used/available MB + % (/proc/meminfo)
             - hottest CPU temp (scripts/collect_sensors.py)
+            - GPU busy % + GPU temp (scripts/collect_sensors.py; left blank when
+              the host exposes none - the Intel iGPU has no separate temp
+              sensor, so on this host the temp column is normally empty)
   frigate   - container CPU % (docker stats --no-stream, best-effort)
             - global detection fps + detector inference ms (/api/stats)
             - cameras total / cameras online (camera_fps >= ONLINE_FPS_MIN)
@@ -38,6 +41,11 @@ Storage (git-ignored host files - never written into the tracked tree):
   long-run    <out>/watchdog_baseline_<tag>_<start>.csv + .summary.json
   out dir     default <deploy>/media/watchdog, falling back to ~/watchdog when
               the deploy dir is not writable (e.g. cron running as a non-owner).
+
+  NOTE (2026-09-10): the columns gpu_usage_pct,gpu_temp_c were APPENDED to the
+  CSV. Rows written by an older version therefore have two fewer fields than
+  the header; the in-repo reader is index-based and unaffected, but start a new
+  --tag (e.g. "yolo11s_after") for a clean, uniform file.
 
 Tunables: CLI args or WATCHDOG_* env vars, each with a baked-in default.
   --cron / WATCHDOG_CRON=1       one-shot cron sampling mode
@@ -288,10 +296,12 @@ CSV_HEADER = (
     "run,epoch,iso,load1,load5,load15,host_cpu_pct,"
     "mem_used_mb,mem_avail_mb,mem_pct,temp_c,"
     "frigate_cpu_pct,detection_fps,inference_ms,"
-    "cameras_total,cameras_online,events_interval,events_cum"
+    "cameras_total,cameras_online,events_interval,events_cum,"
+    "gpu_usage_pct,gpu_temp_c"
 )
-# column index of events_cum (for cross-run cumulative reads)
-_EVENTS_CUM_COL = len(CSV_HEADER.split(",")) - 1
+# Column index of events_cum (for cross-run cumulative reads). Resolved BY NAME
+# so appending new columns at the end can never silently shift it.
+_EVENTS_CUM_COL = CSV_HEADER.split(",").index("events_cum")
 
 
 def _f(value):
@@ -316,6 +326,7 @@ def row_values(run, sample):
         _f(sample["detection_fps"]), _f(sample["inference_ms"]),
         _f(sample["cameras_total"]), _f(sample["cameras_online"]),
         _f(sample["events_interval"]), _f(sample["events_cum"]),
+        _f(sample["gpu_usage_pct"]), _f(sample["gpu_temp_c"]),
     ]
 
 
@@ -425,6 +436,8 @@ def build_summary(samples, run_start, run_end, tag):
         "inference_ms": lambda s: s["inference_ms"],
         "cameras_online": lambda s: s["cameras_online"],
         "events_interval": lambda s: s["events_interval"],
+        "gpu_usage_pct": lambda s: s["gpu_usage_pct"],
+        "gpu_temp_c": lambda s: s["gpu_temp_c"],
     }
     for key, getter in numeric.items():
         values = _pct([getter(s) for s in samples])
@@ -462,6 +475,7 @@ def collect_sample(prev_stat, prev_epoch, events_cum):
         "detection_fps": None, "inference_ms": None,
         "cameras_total": None, "cameras_online": None,
         "events_interval": None, "events_cum": events_cum,
+        "gpu_usage_pct": None, "gpu_temp_c": None,
     }
 
     try:
@@ -476,6 +490,13 @@ def collect_sample(prev_stat, prev_epoch, events_cum):
         sample["frigate_cpu_pct"] = frigate_docker_cpu()
     except Exception as exc:  # noqa: BLE001
         print(f"[watchdog] docker probe error: {exc}", file=sys.stderr)
+
+    try:
+        # GPU busy% (i915 RC6 counter) + GPU temp when the host exposes one.
+        sample["gpu_usage_pct"] = sensors.get_gpu_usage()
+        sample["gpu_temp_c"] = sensors.get_gpu_temp()
+    except Exception as exc:  # noqa: BLE001 - a probe must never kill the run
+        print(f"[watchdog] gpu probe error: {exc}", file=sys.stderr)
 
     stats = frigate_stats()
     sample.update(stats)

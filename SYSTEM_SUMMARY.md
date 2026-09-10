@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v5` |
+| Summary version | `v6` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.3.15` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.3.16` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -132,7 +132,7 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts, admin Debug tab |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), admin Debug tab |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |

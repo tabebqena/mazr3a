@@ -418,6 +418,10 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
 .tag.fire { background: #5c1d1d; color: var(--red); }
 .tag.smoke { background: #5c461d; color: var(--amber); }
 .tag.alerted { background: #4a1f1f; color: #ff9d9d; border: 1px solid var(--red); }
+/* Derived fire-evidence tags (inferred portal-side, see portal/firestore.py):
+   motion = a box sat near motion; hits = consecutive evidence frames in a burst. */
+.tag.motion { background: #10303a; color: #63c8e8; }
+.tag.hits { background: #2c2a45; color: #b9b1ff; }
 .muted { color: var(--muted); }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
 video.media { width: 100%; display: block; background: #000; }

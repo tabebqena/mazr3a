@@ -1507,6 +1507,19 @@ async function loadFire() {
   }
 }
 
+/* Derived evidence tags (inferred portal-side, see portal/firestore.py):
+   `motion` = the sample's winning box sat near motion (the firewatch motion
+   bonus applied); `hits` = how many consecutive stored evidence frames this
+   camera produced in the same burst (a proxy for the alert's confirm count). */
+function fireMetaTags(f) {
+  const hits = Number(f.hits) || 1;
+  return (f.motion
+      ? '<span class="tag motion" title="Corroborated by motion (firewatch motion bonus)">motion</span>'
+      : '') +
+    '<span class="tag hits" title="Consecutive stored evidence frames for this camera in this burst">' +
+      hits + ' hit' + (hits === 1 ? '' : 's') + '</span>';
+}
+
 function fireCard(f) {
   fwDets[f.id] = f.detections || [];
   fwMeta[f.id] = f;
@@ -1525,6 +1538,7 @@ function fireCard(f) {
     '</div>' +
     '<div class="meta">' +
       labelTags +
+      fireMetaTags(f) +
       '<span>best ' + Number(f.best_score).toFixed(2) + '</span>' +
       '<span class="tag">' + esc(f.camera) + '</span>' +
       '<span class="muted">' + esc(f.ts_utc || '') + '</span>' +
@@ -1563,6 +1577,7 @@ function openFireLightbox(id) {
     (f.alerted ? '<span class="tag alerted">alerted</span>'
                : '<span class="tag fire">detection</span>') +
     labelTags +
+    fireMetaTags(f) +
     '<span>best ' + Number(f.best_score).toFixed(2) + '</span>' +
     '<span class="tag">' + esc(f.camera || '') + '</span>' +
     '<span class="muted">' + esc(f.ts_utc || '') + '</span>';

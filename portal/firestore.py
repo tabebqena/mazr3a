@@ -13,10 +13,31 @@ So a stored jpg_path `/media/firewatch/cam01/x.jpg` is reachable here as
 
 SQLite WAL reads need access to the -shm/-wal side files, so ./media is mounted
 read-write into the portal container (portal never writes; query_only guards).
+
+This module ALSO derives two read-only fields per frame for the SPA - with no
+firewatch change and no schema migration:
+  * motion - firewatch stores the max EFFECTIVE score (raw + its motion bonus
+    when the winning box sat near motion) as frames.best_score but the RAW box
+    confidence in detections.score, so `best_score > max(raw box scores)` means
+    the sample was motion-corroborated.
+  * hits   - the length of the run of consecutive stored frames for the same
+    camera (oldest->newest, split on a gap > HITS_GAP_S): a proxy for the
+    firewatch confirm count that produced the alert.
 """
 import os
 import sqlite3
 import struct
+
+
+# --- derived (read-only) motion / hits inference ---------------------------
+# A "burst" is a run of stored evidence frames for one camera no more than
+# HITS_GAP_S apart. firewatch's dense follow-up samples are ~5 s apart and a
+# session caps at FOLLOWUP_MAX_S (90 s), so 120 s cleanly splits separate bursts
+# without merging unrelated detections.
+HITS_GAP_S = 120.0
+# Small epsilon absorbing score rounding (firewatch rounds stored scores to
+# 4 decimals) when comparing best_score against the raw box scores.
+_MOTION_EPS = 0.005
 
 
 def _num(value):
@@ -83,6 +104,51 @@ def _row_to_dict(row):
     }
 
 
+def _infer_motion(item):
+    """True when frames.best_score exceeds the max RAW box score (motion bonus)."""
+    dets = item.get("detections") or []
+    if not dets:
+        return False
+    max_raw = max(d["score"] for d in dets)
+    return item["best_score"] > max_raw + _MOTION_EPS
+
+
+def _annotate_motion_hits(conn, items):
+    """Add derived `motion` (bool) and `hits` (int) to each frame dict.
+
+    See the module docstring: motion is inferred from best_score vs the raw box
+    scores, and hits is the size of the consecutive-frame burst (per camera,
+    split on a > HITS_GAP_S gap) the frame belongs to. Both read only the
+    existing evidence rows - no firewatch change.
+    """
+    by_cam = {}
+    for it in items:
+        by_cam.setdefault(it["camera"], []).append(it)
+    for cam, its in by_cam.items():
+        lo = min(i["captured_at"] for i in its)
+        hi = max(i["captured_at"] for i in its)
+        rows = conn.execute(
+            "SELECT id, captured_at FROM frames WHERE camera = ? "
+            "AND captured_at >= ? AND captured_at <= ? "
+            "ORDER BY captured_at ASC, id ASC",
+            (cam, lo - HITS_GAP_S, hi + HITS_GAP_S),
+        ).fetchall()
+        run, burst, prev_t = {}, [], None
+        for r in rows:
+            t = _num(r["captured_at"])
+            if prev_t is not None and (t - prev_t) > HITS_GAP_S:
+                for rid in burst:
+                    run[rid] = len(burst)
+                burst = []
+            burst.append(r["id"])
+            prev_t = t
+        for rid in burst:
+            run[rid] = len(burst)
+        for it in its:
+            it["motion"] = _infer_motion(it)
+            it["hits"] = run.get(it["id"], 1)
+
+
 def list_frames(db_path, *, camera=None, alerted=None, label=None,
                 after=None, before=None, limit=50, offset=0):
     """Return {items: [...], total: n} newest-first, detections embedded."""
@@ -121,6 +187,7 @@ def list_frames(db_path, *, camera=None, alerted=None, label=None,
             for it in items:
                 it["detections"] = by_frame.get(it["id"], [])
                 it["image_url"] = "/api/fire/{}/image.jpg".format(it["id"])
+            _annotate_motion_hits(conn, items)
         return {"items": items, "total": total}
     finally:
         conn.close()

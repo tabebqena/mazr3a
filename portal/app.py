@@ -17,10 +17,10 @@ from fastapi import (
     Depends, FastAPI, HTTPException, Request, Response, WebSocket,
 )
 from fastapi.responses import (
-    FileResponse, HTMLResponse, JSONResponse, StreamingResponse,
+    FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
 )
 
-from portal import auth, config as pconf, firestore, frigate, scenestore
+from portal import auth, config as pconf, eventstore, firestore, frigate
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
@@ -37,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.3.18"
+APP_VERSION = "0.4.0"
 _HTMX = None
 
 
@@ -578,54 +578,172 @@ async def fire_image(frame_id: int, request: Request,
 
 
 # --------------------------------------------------------------------------
-# scenewatch scene descriptions (the "Scenes" tab)
+# scenereader - cross-camera EPISODES + the per-capture scene log
 #
-# scenewatch (scenewatch/scenewatch.py) stores one row per captioned frame in a
-# WAL SQLite DB inside its own store dir (default ./media/scenewatch/ on the host,
-# seen here as /media/scenewatch). The portal only ever READS it (scenestore
-# uses PRAGMA query_only) - scenewatch remains the single writer.
+# scenereader (scenereader/scenereader.py) is the single writer of a WAL SQLite
+# DB in its own store dir (default ./media/events/ on the host, seen here as
+# /media/events). The portal only ever READS it (eventstore.py uses PRAGMA
+# query_only).
 #
-# SCENE_DB / SCENE_JPG_ROOT come from portal.conf; the defaults match the
-# compose service's STORE_DIR, and the image endpoint additionally validates
-# that the file lives under SCENE_JPG_ROOT before serving it.
+# NO IMAGE PATHS ARE TOUCHED HERE: every visit/event carries the Frigate event
+# id, and the frame is served by the EXISTING Frigate proxy defined above
+# (/api/events/<id>/snapshot.jpg). scenereader never copies a frame and the
+# portal never reads a filesystem path out of a DB row.
+#
+# /api/scenes is KEPT as a thin COMPATIBILITY SHIM over the same data so the
+# existing Scenes tab keeps working until the SPA grows the Episodes view; it
+# returns the OLD field names and maps `reason` onto the event label.
 # --------------------------------------------------------------------------
-def _scene_db(request: Request) -> str:
-    return pconf.get(_cfg(request), "SCENE_DB", "/media/scenewatch/scenewatch.db")
+def _scenereader_paths(request: Request):
+    """(db, status_file, trigger_file) resolved from portal.conf.
+
+    Defaults match the compose service's STORE_DIR so no portal.conf change is
+    required, but SCENEREADER_DB / SCENEREADER_STATUS / SCENEREADER_TRIGGER can
+    override each.
+    """
+    cfg = _cfg(request)
+    db = pconf.get(cfg, "SCENEREADER_DB", "/media/events/events.db")
+    store = eventstore.store_dir_from_db(db)
+    status = pconf.get(cfg, "SCENEREADER_STATUS", "") or os.path.join(
+        store, eventstore.STATUS_NAME)
+    trigger = pconf.get(cfg, "SCENEREADER_TRIGGER", "") or os.path.join(
+        store, eventstore.TRIGGER_NAME)
+    return db, status, trigger
 
 
-@app.get("/api/scenes")
-async def scenes(request: Request, user: dict = Depends(current_user),
-                 camera: Optional[str] = None, reason: Optional[str] = None,
-                 min_tier: Optional[str] = None,
-                 with_image: Optional[int] = None,
-                 after: Optional[float] = None, before: Optional[float] = None,
-                 sort: str = "importance",
-                 limit: int = 50, offset: int = 0):
-    # min_tier = "at least this important" (high | normal | low); the SPA
-    # defaults to high so the Scenes tab opens on the few rows that matter.
-    # sort = importance (most important first) | time (newest first).
-    return scenestore.list_scenes(
-        _scene_db(request),
-        camera=camera or None,
-        reason=reason or None,
-        min_tier=min_tier or None,
-        with_image=None if with_image is None else bool(with_image),
+@app.get("/api/episodes")
+async def episodes(request: Request, user: dict = Depends(current_user),
+                   day: Optional[str] = None, camera: Optional[str] = None,
+                   after: Optional[float] = None, before: Optional[float] = None,
+                   with_visits: Optional[int] = None,
+                   limit: int = 50, offset: int = 0):
+    """The cross-camera person stories (the required output).
+
+    Each item carries BOTH narratives - `narrative` (English) and
+    `narrative_ar` (Arabic) - built deterministically by scenereader from the
+    same facts, plus the visits with a Frigate snapshot URL per capture.
+    """
+    db, _status, _trigger = _scenereader_paths(request)
+    result = eventstore.list_episodes(
+        db, day=day or None, camera=camera or None,
         after=after, before=before,
+        with_visits=bool(with_visits), limit=limit, offset=offset)
+    result["days"] = eventstore.days(db)
+    return result
+
+
+@app.get("/api/episodes/{episode_id}")
+async def episode_detail(episode_id: int, request: Request,
+                         user: dict = Depends(current_user)):
+    db, _status, _trigger = _scenereader_paths(request)
+    item = eventstore.get_episode(db, episode_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="episode not found")
+    return item
+
+
+@app.get("/api/scenelog")
+async def scenelog(request: Request, user: dict = Depends(current_user),
+                   camera: Optional[str] = None, label: Optional[str] = None,
+                   min_tier: Optional[str] = None,
+                   has_caption: Optional[int] = None,
+                   after: Optional[float] = None, before: Optional[float] = None,
+                   sort: str = "time", limit: int = 50, offset: int = 0):
+    """The per-capture scene log: deterministic description (+ optional VLM
+    caption) and its importance tier. `min_tier` = "at least this important"."""
+    db, _status, _trigger = _scenereader_paths(request)
+    return eventstore.list_events(
+        db, camera=camera or None, label=label or None,
+        min_tier=min_tier or None,
+        has_caption=None if has_caption is None else bool(has_caption),
+        after=after, before=before,
+        sort=sort if sort in ("importance", "time") else "time",
+        limit=limit, offset=offset)
+
+
+@app.get("/api/scenereader/status")
+async def scenereader_status(request: Request, user: dict = Depends(current_user)):
+    """The service heartbeat plus whether its store is reachable."""
+    db, status_file, _trigger = _scenereader_paths(request)
+    status = eventstore.read_status(status_file)
+    status["store_present"] = os.path.exists(db)
+    if not status.get("updated_at"):
+        status["note"] = "scenereader has not written a status file yet"
+    return status
+
+
+@app.post("/api/scenereader/drain")
+async def scenereader_drain(request: Request, user: dict = Depends(current_user)):
+    """Ask scenereader for a caption batch now (the "Process now" button).
+
+    Writes the trigger flag file it polls; the service still honours its idle
+    governor, so this can never force a hot/overloaded host to work.
+    """
+    _db, _status, trigger = _scenereader_paths(request)
+    if not eventstore.request_drain(trigger):
+        raise HTTPException(status_code=503,
+                            detail="could not write the trigger file")
+    return {"requested": True}
+
+
+# --------------------------------------------------------------------------
+# Scenes tab COMPATIBILITY SHIM (scenewatch -> scenereader)
+#
+# The SPA's Scenes tab still calls /api/scenes and /api/scenes/<id>/image.jpg.
+# Rather than break it while the Episodes view is built, these two endpoints
+# keep the OLD response shape over the NEW data:
+#   * `reason` (motion|baseline) maps onto the event LABEL filter
+#   * `description` = the VLM caption when present, else the deterministic one
+#   * the image is a REDIRECT to the existing Frigate snapshot proxy, because
+#     scenereader keeps no image paths of its own.
+# Remove both once the SPA uses only /api/scenelog + /api/episodes.
+# --------------------------------------------------------------------------
+@app.get("/api/scenes")
+async def scenes_compat(request: Request, user: dict = Depends(current_user),
+                        camera: Optional[str] = None, reason: Optional[str] = None,
+                        min_tier: Optional[str] = None,
+                        with_image: Optional[int] = None,
+                        after: Optional[float] = None, before: Optional[float] = None,
+                        sort: str = "importance", limit: int = 50, offset: int = 0):
+    db, _status, _trigger = _scenereader_paths(request)
+    res = eventstore.list_events(
+        db, camera=camera or None, label=reason or None,
+        min_tier=min_tier or None, after=after, before=before,
         sort=sort if sort in ("importance", "time") else "importance",
-        limit=limit, offset=offset,
-    )
+        limit=limit, offset=offset)
+    items = []
+    for event in res.get("items", []):
+        if with_image is not None and bool(event.get("image_url")) != bool(with_image):
+            continue
+        items.append({
+            "id": event["id"],
+            "camera": event["camera"],
+            "captured_at": event["start_time"],
+            "ts_utc": "",
+            "description": event.get("description_vlm")
+            or event.get("description_meta") or "",
+            "reason": event.get("label") or "",
+            "model": "scenereader",
+            "latency_ms": 0,
+            "importance": event.get("importance", 0),
+            "tier": event.get("tier", "normal"),
+            "has_image": bool(event.get("image_url")),
+            "image_url": ("/api/scenes/{}/image.jpg".format(event["id"])
+                          if event.get("image_url") else None),
+        })
+    return {"items": items, "total": res.get("total", len(items)),
+            "note": res.get("note")}
 
 
 @app.get("/api/scenes/{scene_id}/image.jpg")
-async def scene_image(scene_id: int, request: Request,
-                      user: dict = Depends(current_user)):
-    cfg = _cfg(request)
-    root = pconf.get(cfg, "SCENE_JPG_ROOT", "") or None
-    path = scenestore.scene_image_path(_scene_db(request), scene_id, root=root)
-    if not path:
+async def scene_image_compat(scene_id: int, request: Request,
+                             user: dict = Depends(current_user)):
+    """Redirect to Frigate's own snapshot proxy for this capture."""
+    db, _status, _trigger = _scenereader_paths(request)
+    item = eventstore.get_event(db, scene_id)
+    if not item or not item.get("image_url"):
         raise HTTPException(status_code=404, detail="image not found")
-    return FileResponse(path, media_type="image/jpeg",
-                        headers={"Cache-Control": "public, max-age=300"})
+    return RedirectResponse(url=item["image_url"], status_code=307)
 
 
 # --------------------------------------------------------------------------

@@ -411,16 +411,24 @@ def set_narratives(conn, day, anon_name, narrative, narrative_ar):
 
 
 def add_visit(conn, episode_id, event_id, seq, place, enter_time, leave_time,
-              duration_s):
-    """Attach one event (= one place visit) to an episode at position `seq`."""
+              duration_s, event_ids=None):
+    """Attach one STAY to an episode at position `seq`.
+
+    `event_id` is the REPRESENTATIVE capture of the stay (the thumbnail) and
+    `event_ids` may list every capture the stay merges (Frigate re-fires detection,
+    so several events can be one continuous stay). ONE row is written - the visit
+    list the portal renders stays meaningful - while EVERY merged capture is linked
+    to the episode, so `events.episode_id` remains complete.
+    """
     conn.execute(
         "INSERT OR REPLACE INTO episode_events"
         " (episode_id, event_id, seq, place, enter_time, leave_time, duration_s)"
         " VALUES (?,?,?,?,?,?,?)",
         (episode_id, event_id, int(seq), place, enter_time, leave_time, duration_s),
     )
-    conn.execute("UPDATE events SET episode_id = ? WHERE id = ?",
-                 (episode_id, event_id))
+    for link_id in (event_ids or [event_id]):
+        conn.execute("UPDATE events SET episode_id = ? WHERE id = ?",
+                     (episode_id, link_id))
 
 
 def days_with_events(conn):

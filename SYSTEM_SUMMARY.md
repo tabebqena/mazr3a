@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v13` |
+| Summary version | `v14` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.4.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -161,9 +161,9 @@ resident.
 |---|---|
 | Container | `scenereader` |
 | Image | **built** from [`scenereader/Dockerfile`](scenereader/Dockerfile) (`python:3.11-slim` + `openvino-genai`, `numpy`, `Pillow`); unprivileged uid 1000 |
-| Purpose | Read Frigate's own captures (never re-detecting), write a deterministic per-camera sentence, then link cameras into anonymous **person episodes** with a narrative, e.g. *"Person A entered Field 1 (cam04) at 22:36, stayed 12 min; then went to Store (cam07) at 22:49; left at 22:51."* |
+| Purpose | Read Frigate's own captures (never re-detecting), write a deterministic per-camera sentence, then link cameras into anonymous **person episodes** with a narrative, e.g. *"Person A entered Field 1 (cam04) at 22:36, stayed 12 min; then went to Store (cam07) at 22:49; left at 22:51."* **One STAY = one visit**: Frigate re-fires detection, so consecutive captures of the same place within `VISIT_MERGE_GAP_S` are merged into a single stay (span, not the sum), and the narrative only says *"returned to X"* for a real return after being elsewhere. |
 | Dev files | [`scenereader/scenereader.py`](scenereader/scenereader.py) (service), [`frigate.py`](scenereader/frigate.py), [`store.py`](scenereader/store.py), [`episodes.py`](scenereader/episodes.py), [`describe.py`](scenereader/describe.py), [`captioners.py`](scenereader/captioners.py), models [`models/scene/`](models/scene/) (git-ignored) |
-| Config | [`config/scenereader.conf`](config/scenereader.conf) (`/config/scenereader.conf`) + [`config/places.conf`](config/places.conf) (`/config/places.conf`) |
+| Config | [`config/scenereader.conf`](config/scenereader.conf) (`/config/scenereader.conf`) + [`config/places.conf`](config/places.conf) (`/config/places.conf`). Episode shape: `EPISODE_GAP_S`, `REID_MAX_GAP_S`, `VISIT_MIN_S`, `VISIT_MERGE_GAP_S`; caption cost: `VLM_TIMEOUT_S`, `VLM_MAX_IMAGE_PX`, `MAX_EVENTS_PER_RUN`. |
 | Frame source | **Read in place, NEVER copied**: host `./media` IS Frigate's `/media/frigate`; event snapshots are `clips/<camera>-<event_id>.jpg` with a `-clean.webp` sibling (the un-annotated frame is the one captioned). Verified 2026-09-10 — there is **no** `media/snapshots/`. |
 | Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): Frigate's `config/frigate.db`, **read-only**, single denormalised `event` table, joined by the **exact** event id in the filename. `api` / `auto` fall back to `/api/events/<id>`. `score`/`top_score`/`box` columns are NULL → the live values are parsed from the `data` JSON. |
 | Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = a small **SmolVLM2-500M GGUF + mmproj** served by a **resident** `llama-server` (~0.5–0.7 GB); `openvino` = the **RETAINED** Qwen2-VL-2B INT4 IR that was already on the host (~2 GB). Switching is config-only — no re-download, no rebuild. |
@@ -310,7 +310,7 @@ sudo apt install -y git python3
 |---|---|
 | [`config/config.yaml`](config/config.yaml) | Frigate 0.17 (cameras, **zones**, go2rtc, model, detector, record, motion). Kept byte-identical to the host file — see the `frigate` service Notes for the re-adopt-after-UI-edit rule. |
 | [`config/firewatch.conf`](config/firewatch.conf) | firewatch tunables (motion gate, thresholds, store) |
-| [`config/scenereader.conf`](config/scenereader.conf) | scenereader tunables (Frigate access, scan/drain timing, idle governor, model backend, episodes, store) |
+| [`config/scenereader.conf`](config/scenereader.conf) | scenereader tunables (Frigate access, scan/drain timing, idle governor, model backend incl. `VLM_TIMEOUT_S`, episodes incl. `VISIT_MERGE_GAP_S`, store) |
 | [`config/places.conf`](config/places.conf) | **The human layer**: camera/zone → place names + the `ADJACENCY` routes that link one person across cameras (edit this to name the farm) |
 | [`config/heartbeat.conf`](config/heartbeat.conf) | Disk heartbeat global cap (`FS_PATH`, `MIN_FREE_GB`, `RELIEF_FREE_GB`, …) |
 | [`config/stores/*.conf`](config/stores/) | Per-service cleanup profiles |

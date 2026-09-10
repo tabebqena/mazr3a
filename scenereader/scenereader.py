@@ -217,6 +217,10 @@ class S:
         self.episode_gap_s = 600.0
         self.reid_max_gap_s = 90.0
         self.visit_min_s = 0.0
+        # Consecutive captures of the SAME place within this gap are one STAY
+        # (Frigate re-fires detection, so a 3-minute presence arrives as 5-6
+        # events; narrating each one produced "returned to X" five times).
+        self.visit_merge_gap_s = 120.0
         self.narrative_tz_offset_h = 0.0
 
 
@@ -274,6 +278,7 @@ def resolve_settings(raw):
     s.episode_gap_s = max(1.0, _getf(raw, "EPISODE_GAP_S", 600))
     s.reid_max_gap_s = max(0.0, _getf(raw, "REID_MAX_GAP_S", 90))
     s.visit_min_s = max(0.0, _getf(raw, "VISIT_MIN_S", 0))
+    s.visit_merge_gap_s = max(0.0, _getf(raw, "VISIT_MERGE_GAP_S", 120))
     s.narrative_tz_offset_h = _getf(raw, "NARRATIVE_TZ_OFFSET_H", 0)
     return s
 
@@ -582,7 +587,8 @@ def rebuild_episodes(s, conn, places, dry=False, log=LOG):
     count = episodes.rebuild(conn, places, store, labels=s.episode_labels,
                              reid_max_gap_s=s.reid_max_gap_s,
                              episode_gap_s=s.episode_gap_s, visit_min_s=s.visit_min_s,
-                             tz_offset_h=s.narrative_tz_offset_h)
+                             tz_offset_h=s.narrative_tz_offset_h,
+                             visit_merge_gap_s=s.visit_merge_gap_s)
     log("episodes rebuilt: {}".format(count))
     return count
 

@@ -1,3 +1,5 @@
+
+
 """episodes.py - L1 places, L2 anonymous linking, L3 episodes, L4 narrative.
 
 Turns the per-camera captures in `events` into the required story:
@@ -223,8 +225,74 @@ def person_events(conn, labels=DEFAULT_LABELS, after=None, before=None):
     return conn.execute(sql, params).fetchall()
 
 
+def _same_place(a, b):
+    """Do two visits describe the same human place? (camera is the fallback.)
+
+    Compared case-insensitively on the RESOLVED place, so a zone hit and a camera
+    hit that name the same place still count as one place.
+    """
+    pa = str(a.get("place") or a.get("camera") or "").strip().lower()
+    pb = str(b.get("place") or b.get("camera") or "").strip().lower()
+    return bool(pa) and pa == pb
+
+
+def merge_visits(visits, gap_s=120.0):
+    """Collapse CONSECUTIVE captures of one person at ONE place into one stay.
+
+    WHY this exists: Frigate emits a NEW capture event every time detection
+    re-triggers, so a person who stands in the gateway for three minutes arrives as
+    five or six events. Narrating one clause per event produced:
+
+        "Person FO entered Estraha (cam01) at 22:34, stayed 1 min; then returned to
+         Estraha (cam01) at 22:35, stayed 1 min; then returned to Estraha ..."
+
+    A stay is therefore ONE visit: `enter_time` = the first capture, `leave_time` =
+    the last one, and `duration_s` = the **span** - never the sum, which would count
+    a single presence several times. All captures are kept as `event_ids` (so the
+    store still links each of them to the episode) and the LONGEST single capture
+    becomes the representative `event_id`, i.e. the thumbnail for that stay.
+
+    `gap_s` bounds the merge: a longer gap means the person really left and came
+    back, which is its own visit and reads as "returned to ...".
+    """
+    out = []
+    for visit in visits or []:
+        enter = float(visit["enter_time"])
+        leave = float(visit["leave_time"])
+        current = out[-1] if out else None
+        if current is not None and _same_place(current, visit):
+            gap = enter - float(current["leave_time"])
+            if 0.0 <= gap <= float(gap_s or 0.0):
+                current["enter_time"] = min(float(current["enter_time"]), enter)
+                current["leave_time"] = max(float(current["leave_time"]), leave)
+                current["duration_s"] = max(
+                    0.0, current["leave_time"] - current["enter_time"])
+                current["event_ids"].append(visit["event_id"])
+                current["n_events"] += 1
+                current["_best"].append(
+                    (max(0.0, leave - enter), visit["event_id"], visit["camera"]))
+                _best_s, best_id, best_cam = max(current["_best"])
+                current["event_id"] = best_id
+                current["camera"] = best_cam
+                continue
+        out.append({
+            "event_id": visit["event_id"],
+            "camera": visit["camera"],
+            "place": visit["place"],
+            "enter_time": enter,
+            "leave_time": leave,
+            "duration_s": max(0.0, float(visit.get("duration_s") or (leave - enter))),
+            "event_ids": [visit["event_id"]],
+            "n_events": 1,
+            "_best": [(max(0.0, leave - enter), visit["event_id"], visit["camera"])],
+        })
+    for visit in out:
+        visit.pop("_best", None)
+    return out
+
+
 def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
-                   visit_min_s=0.0):
+                   visit_min_s=0.0, visit_merge_gap_s=120.0):
     """Link person captures into anonymous cross-camera episodes.
 
     Deterministic and explainable: a capture joins an OPEN episode only when that
@@ -234,8 +302,13 @@ def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
 
     Returns a list of dicts ordered by start time:
         {day, anon_name, label, start_time, end_time, link_confidence,
-         visits: [{event_id, camera, place, enter_time, leave_time, duration_s}],
+         visits: [{event_id, event_ids, n_events, camera, place, enter_time,
+                   leave_time, duration_s, partners}],
          partners: [anon_name, ...]}
+
+    `visit_merge_gap_s` is handed to `merge_visits`, which turns repeated captures
+    of the same place into ONE stay (see its docstring) - without it the narrative
+    repeats "returned to X" once per capture.
     """
     open_eps = []   # list of dicts, each with 'visits'
     done = []
@@ -298,6 +371,10 @@ def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
         idx = counters.get(ep["day"], 0)
         counters[ep["day"]] = idx + 1
         ep["anon_name"] = _anon_name(idx)
+        # Collapse repeated captures of the same place BEFORE anything reads the
+        # visit list: `end_time`, the confidence fallback below, the co-presence
+        # overlap, the stored visits and the narrative all use the merged stays.
+        ep["visits"] = merge_visits(ep["visits"], visit_merge_gap_s)
         ep["end_time"] = max(v["leave_time"] for v in ep["visits"])
         if ep["confidence"] is None:
             ep["confidence"] = 1.0 if len(ep["visits"]) == 1 else 0.5
@@ -313,22 +390,48 @@ def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
 
 
 def _add_partners(episodes):
-    """Co-presence: two episodes overlapping in time at a shared place."""
+    """Co-presence: two episodes sharing a place with an OVERLAPPING window.
+
+    Attached to the VISITS it covers, not only to the episode, so the narrative
+    says "with Person B" on the clause where they actually shared the place instead
+    of tacking every partner onto the final clause. The episode-level list is kept
+    as well (it is the one the portal and older data carry).
+    """
     for ep in episodes:
         ep["partners"] = []
+        for visit in ep["visits"]:
+            visit["partners"] = []
     for i, a in enumerate(episodes):
         for b in episodes[i + 1:]:
             # episodes are time-sorted: once b starts after a ends, no later one overlaps
             if b["start"] >= a["end_time"]:
                 break
-            places_a = {v["place"] for v in a["visits"]}
-            if any(v["place"] in places_a for v in b["visits"]):
-                a["partners"].append(b["anon_name"])
-                b["partners"].append(a["anon_name"])
+            for visit_a in a["visits"]:
+                for visit_b in b["visits"]:
+                    if not _same_place(visit_a, visit_b):
+                        continue
+                    overlap = min(float(visit_a["leave_time"]),
+                                  float(visit_b["leave_time"])) - max(
+                        float(visit_a["enter_time"]), float(visit_b["enter_time"]))
+                    if overlap < 0:
+                        continue          # touching windows do not count as "with"
+                    if b["anon_name"] not in visit_a["partners"]:
+                        visit_a["partners"].append(b["anon_name"])
+                    if a["anon_name"] not in visit_b["partners"]:
+                        visit_b["partners"].append(a["anon_name"])
+            if any(v["partners"] for v in a["visits"]):
+                a["partners"] = sorted({p for v in a["visits"] for p in v["partners"]})
+                b["partners"] = sorted({p for v in b["visits"] for p in v["partners"]})
 
 
 def write_episodes(conn, episodes, store):
-    """Persist a build result: episodes + visits (events.episode_id) in one go."""
+    """Persist a build result: episodes + visits (events.episode_id) in one go.
+
+    A merged visit writes ONE row (the representative capture, whose thumbnail
+    stands for the whole stay) but links EVERY capture of that stay to the episode,
+    so `events.episode_id` stays complete without inflating the visit list the
+    portal renders.
+    """
     store.clear_episodes(conn)
     for ep in episodes:
         eid = store.insert_episode(conn, ep["day"], ep["anon_name"], ep["label"],
@@ -337,7 +440,8 @@ def write_episodes(conn, episodes, store):
         for seq, visit in enumerate(ep["visits"]):
             store.add_visit(conn, eid, visit["event_id"], seq, visit["place"],
                             visit["enter_time"], visit["leave_time"],
-                            visit["duration_s"])
+                            visit["duration_s"],
+                            event_ids=visit.get("event_ids"))
     return len(episodes)
 
 
@@ -351,8 +455,21 @@ def _clock(epoch, tz_offset_h=0.0):
     return dt.strftime("%H:%M")
 
 
+# A stay shorter than this is not described in minutes: "stayed 1 min" for a 20 s
+# capture was one of the things that made the narrative read as nonsense.
+SHORT_STAY_S = 45.0
+
+
 def _minutes(seconds):
     return max(1, int(round(float(seconds) / 60.0)))
+
+
+def _duration_en(seconds):
+    """'under a minute' below SHORT_STAY_S, else rounded minutes."""
+    secs = max(0.0, float(seconds))
+    if secs < SHORT_STAY_S:
+        return "under a minute"
+    return "{} min".format(_minutes(secs))
 
 
 def _minutes_ar(seconds):
@@ -362,6 +479,8 @@ def _minutes_ar(seconds):
     their own forms. Getting this wrong reads as broken Arabic to a native
     speaker, so it is done explicitly rather than with a naive format().
     """
+    if max(0.0, float(seconds)) < SHORT_STAY_S:
+        return "أقل من دقيقة"
     n = _minutes(seconds)
     if n == 1:
         return "دقيقة واحدة"
@@ -384,25 +503,36 @@ def compose_narrative(episode, aliases=None, tz_offset_h=0.0):
     if not visits:
         return ""
     parts = []
-    prev_place = None
+    seen_places = set()
     for idx, visit in enumerate(visits):
         place = visit["place"] or visit["camera"]
         clock = _clock(visit["enter_time"], tz_offset_h)
         # The subject is named once; later visits read as "then went to ...",
         # matching how the required sentence is spoken ("... then go to the store").
+        # "returned to" is kept for a place met EARLIER: after `merge_visits` a
+        # continuous stay is a single visit, so a repeat here means the person
+        # really left that place and came back.
         if idx == 0:
             segment = "{} entered {} ({}) at {}".format(
                 name, place, visit["camera"], clock)
         else:
-            verb = "returned to" if place == prev_place else "went to"
+            verb = "returned to" if str(place).strip().lower() in seen_places \
+                else "went to"
             segment = "then {} {} ({}) at {}".format(verb, place, visit["camera"], clock)
         if visit.get("duration_s") is not None:
-            segment += ", stayed {} min".format(_minutes(visit["duration_s"]))
+            segment += ", stayed {}".format(_duration_en(visit["duration_s"]))
+        partners = [aliases.get(p) or p for p in (visit.get("partners") or [])]
+        if partners:
+            segment += " with " + ", ".join(partners)
         parts.append(segment)
-        prev_place = place
-    partners = [aliases.get(p) or p for p in (episode.get("partners") or [])]
-    if partners:
-        parts[-1] += " with " + ", ".join(partners)
+        seen_places.add(str(place).strip().lower())
+    # A partner known only at EPISODE level (data built before per-visit partners,
+    # or a co-presence that merged away) still has to be surfaced: the last clause
+    # is where it reads best.
+    if not any(v.get("partners") for v in visits):
+        partners = [aliases.get(p) or p for p in (episode.get("partners") or [])]
+        if partners:
+            parts[-1] += " with " + ", ".join(partners)
     # a trailing "left at HH:MM" only reads well for a single-visit episode
     if len(visits) == 1:
         text = parts[0] + ", left at {}.".format(
@@ -435,27 +565,41 @@ def compose_narrative_ar(episode, aliases=None, tz_offset_h=0.0, places=None):
         return places.place_name_ar(raw) if places is not None else raw
 
     parts = []
+    seen_places = set()
     for idx, visit in enumerate(visits):
         clock = _clock(visit["enter_time"], tz_offset_h)
+        raw_place = str(visit["place"] or visit["camera"]).strip().lower()
         if idx == 0:
             segment = "وصول {} إلى {} ({}) في {}".format(
                 name, place_text(visit), visit["camera"], clock)
+        elif raw_place in seen_places:
+            # a place met EARLIER = a real return (العودة), not "moving on"
+            segment = "ثم العودة إلى {} ({}) في {}".format(
+                place_text(visit), visit["camera"], clock)
         else:
             segment = "ثم الانتقال إلى {} ({}) في {}".format(
                 place_text(visit), visit["camera"], clock)
         if visit.get("duration_s") is not None:
             segment += "، مدة البقاء {}".format(_minutes_ar(visit["duration_s"]))
+        partners = [_anon_ar_from_en(aliases.get(p) or p)
+                    for p in (visit.get("partners") or [])]
+        if partners:
+            segment += " برفقة " + "، ".join(partners)
         parts.append(segment)
-    partners = [aliases.get(p) or _anon_ar_from_en(p)
-                for p in (episode.get("partners") or [])]
-    if partners:
-        parts[-1] += " برفقة " + "، ".join(partners)
+        seen_places.add(raw_place)
+    # episode-level partners (older data, or a co-presence merged away) last
+    if not any(v.get("partners") for v in visits):
+        partners = [aliases.get(p) or _anon_ar_from_en(p)
+                    for p in (episode.get("partners") or [])]
+        if partners:
+            parts[-1] += " برفقة " + "، ".join(partners)
     return "؛ ".join(parts) + "؛ المغادرة في {}.".format(
         _clock(visits[-1]["leave_time"], tz_offset_h))
 
 
 def rebuild(conn, places, store, labels=DEFAULT_LABELS, reid_max_gap_s=90.0,
-            episode_gap_s=600.0, visit_min_s=0.0, tz_offset_h=0.0):
+            episode_gap_s=600.0, visit_min_s=0.0, tz_offset_h=0.0,
+            visit_merge_gap_s=120.0):
     """Re-derive every episode from `events`, write it, and return the count.
 
     Each episode gets BOTH narratives (English + Arabic) from the same facts, so
@@ -463,7 +607,8 @@ def rebuild(conn, places, store, labels=DEFAULT_LABELS, reid_max_gap_s=90.0,
     """
     rows = person_events(conn, labels=labels)
     episodes = build_episodes(rows, places, reid_max_gap_s=reid_max_gap_s,
-                              episode_gap_s=episode_gap_s, visit_min_s=visit_min_s)
+                              episode_gap_s=episode_gap_s, visit_min_s=visit_min_s,
+                              visit_merge_gap_s=visit_merge_gap_s)
     write_episodes(conn, episodes, store)
     for ep in episodes:
         aliases = store.get_aliases(conn, ep["day"])

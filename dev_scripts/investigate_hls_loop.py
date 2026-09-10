@@ -231,7 +231,7 @@ def summarize(events, cam):
     for e in events:
         if not seq or seq[-1]["status"] != e["status"]:
             seq.append(e)
-    lives = [e for e in events if e["status"] == "Live (HLS)"]
+    lives = [e for e in events if e["status"] in ("Live (HLS)", "Live")]
     waits = [e for e in events if e["status"]
              and "waiting for video" in e["status"]]
     painted = [e for e in lives if e["frames"] and e["frames"] > 0]

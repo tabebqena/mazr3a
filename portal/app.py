@@ -1,16 +1,20 @@
 """FastAPI app for the portal: auth + proxied Frigate JSON/media + Firewatch
 evidence, plus the static SPA. See portal/__init__.py and plans/portal-web-app.md.
 """
+import asyncio
+import contextlib
 import hashlib
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from typing import Optional
 
 import httpx
+import websockets
 from fastapi import (
-    Depends, FastAPI, HTTPException, Request, Response,
+    Depends, FastAPI, HTTPException, Request, Response, WebSocket,
 )
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, StreamingResponse,
@@ -33,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.3.12"
+APP_VERSION = "0.3.13"
 _HTMX = None
 
 
@@ -60,7 +64,8 @@ app = FastAPI(
     description=(
         "Authenticated API for the Frigate + Firewatch stack. Proxies Frigate "
         "events/media, serves Firewatch fire evidence, and serves the Live view "
-        "as same-origin HLS from Frigate's embedded go2rtc (via /api/live/<cam>/hls)."
+        "as same-origin go2rtc MSE over WebSocket (via /api/live/<cam>/mse), "
+        "with a same-origin HLS fallback (via /api/live/<cam>/hls)."
     ),
     version=APP_VERSION,
     lifespan=lifespan,
@@ -325,26 +330,28 @@ async def _frigate_stream(request: Request, path: str, params=None):
 
 
 # --------------------------------------------------------------------------
-# Live view: same-origin HLS proxy to Frigate's embedded go2rtc.
+# Live view: same-origin go2rtc transport, proxied through the portal.
 #
-# go2rtc 1.9.10 (embedded in this Frigate 0.17.2 build) exposes NO working
-# MSE-over-WebSocket for a generic client and no HTTP /api/stream.mse (404);
-# its reliable, tunnel-friendly (plain TCP) live transports are HLS and MP4,
-# both served under Frigate's /api/go2rtc/* reverse proxy. The SPA plays HLS
-# with hls.js (native MSE in the page); any failure falls back to the detect-
-# snapshot proxy. Routes below keep the whole HLS tree SAME-ORIGIN behind the
-# session cookie:
+# PRIMARY - MSE over WebSocket (/api/live/<cam>/mse): the SPA opens a WS here
+# and this route relays it to Frigate's embedded go2rtc
+# ws://<frigate>/api/go2rtc/api/ws?src=<cam>_portal. Frigate only nginx-proxies
+# go2rtc's own /api/ws (go2rtc serves it to any client); the portal keeps the
+# whole exchange SAME-ORIGIN behind the session cookie + CF Access boundary.
+# This is the same transport Frigate's own UI uses and it plays quiet cameras
+# (sparse keyframes) reliably - unlike go2rtc HLS, whose ~1 s sliding window
+# with pinned EXT-X-MEDIA-SEQUENCE makes hls.js stall/skip on sparse-keyframe
+# cameras (see plans/investigate-hls-loop-quiet-cams.md).
+#
+# FALLBACK - HLS (/api/live/<cam>/hls/*) for browsers with no MediaSource
+# (e.g. old iOS native HLS): the go2rtc master playlist + media/segments are
+# proxied verbatim:
 #   GET /api/live/<cam>/hls/stream.m3u8          -> go2rtc master playlist
 #   GET /api/live/<cam>/hls/hls/<playlist|seg>.ts -> go2rtc media/segments
-# go2rtc's master references "hls/playlist.m3u8" relative to /api/, so the
-# browser resolves it under the /hls/ mount here and no playlist rewriting is
-# needed. go2rtc pulls the camera only while a viewer keeps fetching.
 #
-# AUDIO: the cameras send G.711 (PCMU) audio, which browsers/MSE cannot
-# decode, so the master playlist is fetched for the <cam>_portal go2rtc
-# source (config/config.yaml go2rtc.streams) - an on-demand ffmpeg transcode
-# that copies the video and re-encodes the audio to AAC. hls.js/Safari can
-# then play Live WITH sound; the SPA's Live stage exposes a muted-by-default
+# AUDIO: the cameras send G.711 (PCMU), which browsers cannot decode, so both
+# transports use the <cam>_portal go2rtc source (config/config.yaml
+# go2rtc.streams) - an on-demand ffmpeg transcode that copies the video and
+# re-encodes the audio to AAC. The SPA's Live stage exposes a muted-by-default
 # 🔊 toggle (browsers only allow sound autoplay after a user gesture).
 # --------------------------------------------------------------------------
 # go2rtc source suffix for the AAC-audio portal variants (config/config.yaml
@@ -381,6 +388,84 @@ async def live_hls_media(camera: str, rest: str, request: Request,
         raise HTTPException(status_code=404, detail="not found")
     return await _frigate_stream(request, "/api/go2rtc/api/" + rest,
                                  params=request.query_params)
+
+
+@app.websocket("/api/live/{camera}/mse")
+async def live_mse(camera: str, websocket: WebSocket):
+    """Same-origin go2rtc MSE-over-WebSocket tunnel (primary Live transport).
+
+    The SPA opens ws://<portal>/api/live/<cam>/mse and this relays text/binary
+    frames to Frigate's embedded go2rtc (ws://<frigate>/api/go2rtc/api/ws?src=
+    <cam>_portal). The browser speaks go2rtc's MSE protocol (send {"type":"mse"},
+    then receive a codec text frame followed by fMP4 init + media segments); the
+    relay is transport-agnostic and preserves the message type. Same-origin keeps
+    it behind the portal session cookie + CF Access; the <cam>_portal source
+    carries AAC audio so Live keeps sound.
+
+    Auth: the session cookie is validated here (FastAPI's HTTP dependency cannot
+    be used on a WebSocket); invalid/unknown users are closed with code 4401.
+    """
+    await websocket.accept()
+    secret = websocket.app.state.secret
+    token = websocket.cookies.get(COOKIE_NAME)
+    name = auth.read_session(secret, token) if secret else None
+    authed = bool(name) and any(u["username"] == name
+                                for u in websocket.app.state.users)
+    if not authed or not frigate.valid_camera_name(camera):
+        await websocket.close(code=4401)
+        return
+
+    base = pconf.get(websocket.app.state.cfg, "FRIGATE_API", "http://frigate:5000")
+    if base.startswith("https://"):
+        ws_base = "wss://" + base[len("https://"):]
+    elif base.startswith("http://"):
+        ws_base = "ws://" + base[len("http://"):]
+    else:
+        ws_base = "ws://" + base
+    upstream_url = (ws_base.rstrip("/") + "/api/go2rtc/api/ws?src="
+                    + quote(camera + LIVE_SOURCE_SUFFIX, safe=""))
+    try:
+        upstream = await websockets.connect(
+            upstream_url, max_size=None, ping_interval=20, ping_timeout=20,
+            open_timeout=10)
+    except Exception:
+        await websocket.close(code=1011)
+        return
+
+    async def client_to_upstream():
+        try:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                if message.get("text") is not None:
+                    await upstream.send(message["text"])
+                elif message.get("bytes") is not None:
+                    await upstream.send(message["bytes"])
+        except Exception:
+            pass
+
+    async def upstream_to_client():
+        try:
+            async for message in upstream:
+                if isinstance(message, (bytes, bytearray)):
+                    await websocket.send_bytes(bytes(message))
+                else:
+                    await websocket.send_text(message)
+        except Exception:
+            pass
+
+    tasks = [asyncio.create_task(client_to_upstream()),
+             asyncio.create_task(upstream_to_client())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        with contextlib.suppress(Exception):
+            await upstream.close()
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
 @app.get("/api/live/{camera}/latest.jpg")

@@ -1,8 +1,9 @@
 /* mazr3a CCTV portal SPA - vanilla JS.
-   Views: Login, Live (single camera; HLS via the portal's go2rtc proxy with
-   hls.js and a detect-snapshot fallback, idle time watch), Frigate Events &
-   detections, Firewatch fire detections & alerts. Talks to the portal /api/*
-   (same origin, session cookie). */
+   Views: Login, Live (single camera; go2rtc MSE over WebSocket - the same
+   transport Frigate's own UI uses - proxied same-origin through the portal,
+   with an hls.js HLS fallback and a detect-snapshot poster, idle time watch),
+   Frigate Events & detections, Firewatch fire detections & alerts. Talks to
+   the portal /api/* (same origin, session cookie). */
 'use strict';
 
 const $ = (s, el) => (el || document).querySelector(s);
@@ -13,26 +14,32 @@ const state = {
   settings: null,
   cameras: [],
   live: { cam: null, playing: false, mode: '', sound: false, imgLive: false,
-          revealed: false },   // true once this HLS attempt dropped the poster
-  // imgLive: the <img> is the poster shown while an HLS attempt is starting
+          revealed: false },   // true once this live attempt dropped the poster
+  // imgLive: the <img> is the poster shown while a live attempt is starting
   //          (or the frozen last frame while an online camera auto-retries).
-  // mode: '' | 'hls' | 'offline'
+  // mode: '' | 'mse' | 'hls' | 'offline'
   idleSec: 30,
 };
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
-const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live HLS
+const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live
 const OFFLINE_CHECK_MS = 8000;    // how often to re-check an offline camera
+// Live transport: go2rtc MSE over WebSocket is PRIMARY (robust - the same
+// transport Frigate's own UI uses). hls.js HLS is a FALLBACK for browsers with
+// no MediaSource. The watchdogs below operate on the <video> element + decoded
+// frame counters, so they apply to BOTH transports.
+const MSE_SUPPORTED = !!(window.MediaSource && window.MediaSource.isTypeSupported);
+const MSE_BACK_BUFFER_S = 15;     // trim media behind the playhead (bound memory)
 const HLS_PAINT_WAIT_MS = 3500;   // post-reveal: claim Live only once a real
                                   // video frame has been decoded (frame-based)
-// Retry when HLS buffered but no video frame ever rendered (blackRevert path).
+// Retry when media buffered but no video frame ever rendered (blackRevert path).
 const HLS_VIDEO_RETRY_MS = 6000;
-// Post-"Live" watchdog: go2rtc HLS is a tiny ~2 x 0.5 s sliding live window and
-// can stall right after a frame renders over a slow path, freezing a black
-// "Live (HLS)". If no NEW video frame decodes for this long while Live is
-// claimed, restart HLS (fresh session) instead of sitting on a black/frozen.
+// Post-"Live" watchdog: if no NEW video frame decodes for this long while Live
+// is claimed, tear down and restart the transport (fresh go2rtc session)
+// instead of sitting on a black/frozen picture.
 const HLS_STALL_WATCH_MS = 4000;
-// True when this browser can play HLS at all (hls.js MSE or native Safari HLS).
+// HLS fallback support (hls.js MSE, or native Safari HLS where MediaSource is
+// absent). MSE is preferred; HLS is only used when MSE is unavailable.
 const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
   || (function () {
        try {
@@ -43,7 +50,8 @@ const HLS_SUPPORTED = !!(window.Hls && window.Hls.isSupported())
 let liveTimer = null;
 let idleTimer = null;
 let liveTok = 0;             // guards stale async callbacks after switch/stop
-let curHls = null;           // active hls.js instance (destroy on stop/switch)
+let curHls = null;           // active hls.js instance (HLS fallback; destroy on stop/switch)
+let curMse = null;           // active go2rtc MSE session {ms,url,ws,buf,mime,queue,...}
 let frameWatchTimer = null;  // watchdog: give up waiting for the first media
 let retryTimer = null;       // auto-retry: snapshot fallback -> HLS live
 let offlineTimer = null;     // periodic re-check while a camera is offline
@@ -71,6 +79,12 @@ function toast(msg) {
   t.classList.remove('hidden');
   clearTimeout(t._h);
   t._h = setTimeout(() => t.classList.add('hidden'), 5000);
+}
+/* True while a Live transport attempt is active (MSE primary or HLS fallback).
+   The shared teardown/watchdog guards use this so they work for either. */
+function isLiveTrying() {
+  const m = state.live.mode;
+  return m === 'mse' || m === 'hls';
 }
 async function api(path, opts) {
   const init = Object.assign({ credentials: 'same-origin' }, opts || {});
@@ -204,18 +218,21 @@ function refreshCamSelects() {
 // keep the frozen poster and auto-retry HLS in the background.
 
 function hlsFallback(cam, tok) {
-  /* HLS could not start. Stop the attempt, then classify WHY:
+  /* The live transport could not start, or has ended. Stop the attempt, then
+     classify WHY (see decideAfterHlsFail below). Generic over the transport
+     (MSE primary or HLS fallback):
      - camera OFFLINE (Frigate online flag false) -> a clean "offline" state,
        no spinner and NO ~1 fps snapshot feed;
      - camera ONLINE but slow to start -> that is LATENCY, so we keep the last
-       frozen poster (no snapshot feed) and auto-retry HLS in the background.
-     Frigate's online flag (camera_fps) is authoritative, so HLS startup
-     latency is never mistaken for an offline camera. */
+       frozen poster (no snapshot feed) and auto-retry in the background.
+       Frigate's online flag (camera_fps) is authoritative, so startup latency
+       is never mistaken for an offline camera. */
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-      || state.live.mode !== 'hls') return;
+      || !isLiveTrying()) return;
   clearFrameWatch();                 // no stale first-media watchdog
   clearPaintCheck();
   clearStallWatch();
+  destroyMse();                      // tear down the MSE session (WebSocket+MediaSource)
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   state.live.imgLive = false;        // freeze the poster; stop the poster poll
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
@@ -232,13 +249,13 @@ function hlsFallback(cam, tok) {
 async function decideAfterHlsFail(cam, tok) {
   await fetchCameras();              // fresh Frigate online flags
   if (!state.live.playing || cam !== state.live.cam
-      || state.live.mode !== 'hls') return;
+      || !isLiveTrying()) return;
   if (!isOnline(cam)) { enterOffline(cam); return; }
   // Camera is ONLINE -> just latency/startup: keep the frozen poster visible,
   // no spinner, no snapshot feed, and auto-retry HLS in the background.
   $('#live-img').classList.remove('hidden');
   syncLiveTools();      // frozen poster: save/zoom active, sound stays off
-  $('#live-status').textContent = 'HLS starting - auto-retrying\u2026';
+  $('#live-status').textContent = 'Live starting - auto-retrying\u2026';
   scheduleLiveRetry(cam);
 }
 
@@ -285,6 +302,7 @@ function enterOffline(cam) {
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   clearFrameWatch();
+  destroyMse();
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   const video = $('#live-video');
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
@@ -314,14 +332,14 @@ function enterOffline(cam) {
    upgrade to live in the background - the frozen poster stays up. Stops when
    the view stops (idle, leaving Live, switching) or the camera is offline. */
 function scheduleLiveRetry(cam, delayMs) {
-  if (retryTimer || !state.live.playing || !HLS_SUPPORTED
-      || state.live.imgLive) return;
+  if (retryTimer || !state.live.playing || state.live.imgLive) return;
+  if (!MSE_SUPPORTED && !HLS_SUPPORTED) return;   // no transport available
   retryTimer = setTimeout(() => {
     retryTimer = null;
     if (!state.live.playing || state.live.cam !== cam
-        || state.live.mode !== 'hls' || state.live.imgLive) return;
-    $('#live-status').textContent = 'Upgrading to live HLS\u2026';
-    startHls(cam, liveTok);   // background attempt; the frozen poster stays up
+        || !isLiveTrying() || state.live.imgLive) return;
+    $('#live-status').textContent = 'Upgrading to live\u2026';
+    startLive(cam, liveTok);   // background attempt; the frozen poster stays up
   }, delayMs || SNAPSHOT_RETRY_MS);
 }
 
@@ -398,7 +416,7 @@ function toggleLiveSound() {
    voice" loop + possible black screen). Re-baseline whichever live-decode
    watchdog is active so turning sound on is transparent - never a restart. */
 function forgiveLiveWatchdogs() {
-  if (!state.live.playing || state.live.mode !== 'hls' || !state.live.cam) return;
+  if (!state.live.playing || !isLiveTrying() || !state.live.cam) return;
   const cam = state.live.cam, tok = liveTok;
   if (paintCheck) { clearPaintCheck(); startPaintCheck(cam, tok); }
   else if (stallWatch) { armStallWatch(cam, tok); }
@@ -408,7 +426,7 @@ function forgiveLiveWatchdogs() {
    the offline state there is no sound to toggle. */
 function liveAudioActive() {
   const v = $('#live-video');
-  return !!(state.live.playing && state.live.mode === 'hls'
+  return !!(state.live.playing && isLiveTrying()
             && state.live.revealed && !state.live.imgLive
             && v && !v.classList.contains('hidden') && v.readyState >= 2);
 }
@@ -450,12 +468,12 @@ function startStream(cam) {
   syncCamUI();                        // highlight the active camera in the picker
   if (!isOnline(cam)) { enterOffline(cam); return; }   // offline: no spinner/feed
   state.live.playing = true;
-  state.live.mode = 'hls';
-  state.live.imgLive = true;      // poster <img> shown while HLS warms up
+  // mode is set by the chosen transport (startMse/startHls) via startLive().
+  state.live.imgLive = true;      // poster <img> shown while live warms up
   hideOverlay();
-  showSpinner();                  // poster image + spinner until the first HLS media
+  showSpinner();                  // poster image + spinner until the first media
   scheduleFrame(cam, tok);        // show the freshest detect frame immediately
-  startHls(cam, tok);             // ...while HLS warms up underneath
+  startLive(cam, tok);            // ...while live warms up underneath
   resetIdle();
 }
 
@@ -468,9 +486,9 @@ function startStream(cam) {
    is in the buffer, even while the video sits under the poster. The poster +
    spinner stay up during the true no-data latency window; if no media ever
    arrives the watchdog classifies the camera (offline state vs online retry). */
-// Watchdog before classifying why HLS never delivered. It does NOT decide
-// offline by itself - decideAfterHlsFail consults Frigate's online flag, so a
-// shorter wait never mislabels slow (latency) cameras as offline.
+// Watchdog before classifying why the live transport never delivered media. It
+// does NOT decide offline by itself - decideAfterHlsFail consults Frigate's
+// online flag, so a shorter wait never mislabels slow (latency) cameras.
 const HLS_FIRST_FRAME_WAIT_MS = 10000;
 function armFirstFrameWatch(cam, tok) {
   if (frameWatchTimer) return;                  // already waiting/done
@@ -478,12 +496,12 @@ function armFirstFrameWatch(cam, tok) {
     frameWatchTimer = null;
     clearFrameWatch();
     if (state.live.playing && tok === liveTok && cam === state.live.cam
-        && state.live.mode === 'hls') hlsFallback(cam, tok);
+        && isLiveTrying()) hlsFallback(cam, tok);
   }, HLS_FIRST_FRAME_WAIT_MS);
 }
 function firstMediaReady(cam, tok) {   // first real media buffered -> reveal
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-      || state.live.mode !== 'hls' || state.live.revealed) return;
+      || !isLiveTrying() || state.live.revealed) return;
   firstHlsFrame(cam, tok);
 }
 function clearFrameWatch() {
@@ -572,13 +590,180 @@ function startHls(cam, tok) {
   hlsFallback(cam, tok);
 }
 
+/* ------------- Live view: go2rtc MSE over WebSocket (PRIMARY) ----------------
+   The robust live transport - the same one Frigate's own UI uses. One WebSocket
+   to the portal (/api/live/<cam>/mse, relayed same-origin to go2rtc's /api/ws).
+   The client sends {"type":"mse"}; go2rtc replies with a text frame carrying the
+   codec string (e.g. video/mp4; codecs="avc1.4D4029,mp4a.40.2") followed by
+   binary fMP4 - an init segment (ftyp/moov) then media fragments (moof/mdat). We
+   append those to a MediaSource SourceBuffer and reveal the <video> once the
+   first media fragment is buffered. Unlike go2rtc HLS (a shallow ~1 s sliding
+   window) this is one continuous stream, so sparse-keyframe (quiet) cameras
+   decode reliably. Poster, honest frame-based Live detection and the stall
+   watchdog are shared with the HLS fallback above/below. */
+
+function startLive(cam, tok) {
+  if (MSE_SUPPORTED) startMse(cam, tok);
+  else startHls(cam, tok);
+}
+
+function destroyMse() {
+  const s = curMse;
+  curMse = null;
+  if (!s) return;
+  try {
+    if (s.ws) {
+      s.ws.onopen = s.ws.onmessage = s.ws.onerror = s.ws.onclose = null;
+      s.ws.close();
+    }
+  } catch (e) { /* ignore */ }
+  try { if (s.buf && s.buf.updating) s.buf.abort(); } catch (e) { /* ignore */ }
+  try { if (s.url) URL.revokeObjectURL(s.url); } catch (e) { /* ignore */ }
+}
+
+function startMse(cam, tok) {
+  state.live.mode = 'mse';
+  state.live.revealed = false;
+  destroyMse();
+  if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
+  const video = $('#live-video');
+  // Keep the <video> visible UNDER the poster (CSS z-index) so it decodes while
+  // we wait; the poster drops only once real media is buffered (firstMediaReady).
+  video.muted = true;                 // autoplay-safe; sound restored on reveal
+  video.classList.remove('hidden');
+  syncSoundUI();
+  $('#live-status').textContent = 'Connecting ' + cam + '\u2026';
+  armFirstFrameWatch(cam, tok);       // watchdog: no media in time -> classify
+  const ms = new MediaSource();
+  const url = URL.createObjectURL(ms);
+  curMse = { ms: ms, url: url, ws: null, buf: null, mime: null,
+             queue: [], appended: 0, streaming: false };
+  video.src = url;
+  ms.addEventListener('sourceopen', function () {
+    if (state.live.playing && tok === liveTok && cam === state.live.cam
+        && state.live.mode === 'mse') openMseSocket(cam, tok);
+  }, { once: true });
+  video.addEventListener('loadeddata', function () {
+    firstMediaReady(cam, tok);
+  }, { once: true });
+}
+
+function mseOk(cam, tok) {
+  return !!(state.live.playing && tok === liveTok && cam === state.live.cam
+            && state.live.mode === 'mse' && curMse);
+}
+
+function openMseSocket(cam, tok) {
+  const proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+  const url = proto + location.host + '/api/live/'
+    + encodeURIComponent(cam) + '/mse';
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { hlsFallback(cam, tok); return; }
+  ws.binaryType = 'arraybuffer';
+  if (!curMse) { try { ws.close(); } catch (e) { /* ignore */ } return; }
+  curMse.ws = ws;
+  ws.onopen = function () {
+    if (!mseOk(cam, tok)) { try { ws.close(); } catch (e) { /* ignore */ } return; }
+    ws.send(JSON.stringify({ type: 'mse' }));   // go2rtc: enter MSE mode
+  };
+  ws.onmessage = function (ev) {
+    if (!mseOk(cam, tok)) return;
+    if (typeof ev.data === 'string') { mseControl(cam, tok, ev.data); return; }
+    if (curMse.buf) {
+      curMse.queue.push(new Uint8Array(ev.data));
+      pumpMse(cam, tok);
+    }
+  };
+  ws.onerror = function () { /* onclose follows */ };
+  ws.onclose = function () { if (mseOk(cam, tok)) hlsFallback(cam, tok); };
+}
+
+/* go2rtc MSE control text: {"type":"mse","value":"<mime codecs>"}. Create the
+   SourceBuffer from that mime; if this browser cannot play the codecs, fall
+   back to HLS (e.g. native Safari) rather than showing a dead stream. */
+function mseControl(cam, tok, text) {
+  let m = null;
+  try { m = JSON.parse(text); } catch (e) { return; }
+  if (!m || m.type !== 'mse' || !m.value || !curMse || curMse.buf) return;
+  if (!window.MediaSource || !MediaSource.isTypeSupported(m.value)) {
+    destroyMse();
+    if (state.live.playing && tok === liveTok && cam === state.live.cam) {
+      if (HLS_SUPPORTED) startHls(cam, tok); else hlsFallback(cam, tok);
+    }
+    return;
+  }
+  curMse.mime = m.value;
+  try {
+    const buf = curMse.ms.addSourceBuffer(m.value);
+    buf.mode = 'segments';
+    buf.addEventListener('updateend', function () {
+      trimMse();
+      pumpMse(cam, tok);
+    });
+    buf.addEventListener('error', function () { hlsFallback(cam, tok); });
+    curMse.buf = buf;
+  } catch (e) {
+    hlsFallback(cam, tok);
+  }
+}
+
+/* Append queued fMP4 chunks one at a time (a SourceBuffer allows a single
+   in-flight append). Reveal the <video> once a media fragment (moof) is
+   buffered - the init segment (ftyp/moov) alone carries no frames. */
+function pumpMse(cam, tok) {
+  const s = curMse;
+  if (!s || !s.buf || !s.ms || s.ms.readyState !== 'open') return;
+  if (s.buf.updating || !s.queue.length || !mseOk(cam, tok)) return;
+  const chunk = s.queue.shift();
+  let hasMedia = false;
+  for (let i = 0; i + 3 < chunk.length; i++) {
+    if (chunk[i] === 0x6d && chunk[i + 1] === 0x6f &&
+        chunk[i + 2] === 0x6f && chunk[i + 3] === 0x66) { hasMedia = true; break; }
+  }
+  try {
+    s.buf.appendBuffer(chunk);
+  } catch (e) {
+    // Buffer full/invalid: drop some history, then retry on the next updateend.
+    try {
+      if (s.buf.buffered.length) {
+        s.buf.remove(0, s.buf.buffered.start(0) + MSE_BACK_BUFFER_S);
+      }
+    } catch (e2) { /* ignore */ }
+    s.queue.unshift(chunk);
+    return;
+  }
+  s.appended += 1;
+  if (hasMedia && !s.streaming) {
+    s.streaming = true;
+    const v = $('#live-video');
+    const p = (v && v.play()) || null;
+    if (p && p.catch) p.catch(function () { /* ignore */ });
+    firstMediaReady(cam, tok);     // reveal the video + start the paint check
+  }
+}
+
+/* Keep only a short back-buffer behind the playhead so a long watch does not
+   grow memory without bound. */
+function trimMse() {
+  const s = curMse;
+  if (!s || !s.buf || s.buf.updating) return;
+  try {
+    const v = $('#live-video');
+    const ct = v ? v.currentTime : 0;
+    if (s.buf.buffered.length &&
+        ct - s.buf.buffered.start(0) > MSE_BACK_BUFFER_S + 5) {
+      s.buf.remove(0, ct - MSE_BACK_BUFFER_S);
+    }
+  } catch (e) { /* ignore */ }
+}
+
 /* A real video data fragment has buffered -> reveal the <video> (drop the
    poster). "Live (HLS)" is only claimed once a frame actually renders
    (startPaintCheck) - otherwise we keep the poster and auto-retry instead of
    a black screen that says Live. */
 function firstHlsFrame(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-      || state.live.mode !== 'hls') return;
+      || !isLiveTrying()) return;
   clearFrameWatch();
   clearPaintCheck();
   clearStallWatch();
@@ -590,7 +775,7 @@ function firstHlsFrame(cam, tok) {
   showVideo();                        // hide poster, show the <video>
   hideSpinner();
   syncLiveTools();      // real frame now live: save/zoom + sound become active
-  $('#live-status').textContent = 'HLS starting\u2026';
+  $('#live-status').textContent = 'Starting\u2026';
   startPaintCheck(cam, tok);
 }
 
@@ -625,7 +810,7 @@ function startPaintCheck(cam, tok) {
   let lastT = video.currentTime;
   paintCheck = setInterval(() => {
     if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-        || state.live.mode !== 'hls' || state.live.imgLive) {
+        || !isLiveTrying() || state.live.imgLive) {
       clearPaintCheck(); return;
     }
     const fr = canCount ? videoFrames(video) : -1;
@@ -634,7 +819,7 @@ function startPaintCheck(cam, tok) {
     lastT = video.currentTime;
     if (painted && video.readyState >= 2) {
       clearPaintCheck();
-      $('#live-status').textContent = 'Live (HLS)';
+      $('#live-status').textContent = 'Live';
       applyLiveSound();
       armStallWatch(cam, tok);   // keep it honest: restart if the picture freezes
       return;
@@ -663,7 +848,7 @@ function armStallWatch(cam, tok) {
   let since = Date.now();
   stallWatch = setInterval(() => {
     if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-        || state.live.mode !== 'hls') { clearStallWatch(); return; }
+        || !isLiveTrying()) { clearStallWatch(); return; }
     const f = videoFrames(video);
     if (f < 0) { clearStallWatch(); return; }
     if (f > last) { last = f; since = Date.now(); return; }
@@ -682,11 +867,12 @@ function clearStallWatch() {
    the view self-recovers instead of showing a black "Live (HLS)". */
 function blackRevert(cam, tok) {
   if (!state.live.playing || tok !== liveTok || cam !== state.live.cam
-      || state.live.mode !== 'hls') return;
+      || !isLiveTrying()) return;
   clearPaintCheck();
   clearStallWatch();
   state.live.revealed = true;         // this attempt already revealed once
   state.live.imgLive = false;         // frozen poster (no ~1 fps feed)
+  destroyMse();                       // tear down the MSE session (if any)
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   const video = $('#live-video');
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
@@ -696,7 +882,7 @@ function blackRevert(cam, tok) {
   $('#live-img').classList.remove('hidden');
   hideSpinner();
   syncLiveTools();      // frozen poster still zoomable/savable; sound off
-  $('#live-status').textContent = 'HLS starting - waiting for video\u2026';
+  $('#live-status').textContent = 'Live starting - waiting for video\u2026';
   scheduleLiveRetry(cam, HLS_VIDEO_RETRY_MS);
 }
 
@@ -737,6 +923,7 @@ function stopStream() {
   if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = null; }
   clearPaintCheck();
   clearStallWatch();
+  destroyMse();
   if (curHls) { curHls.destroy(); curHls = null; }
   const video = $('#live-video');
   try { video.pause(); } catch (e) { /* ignore */ }

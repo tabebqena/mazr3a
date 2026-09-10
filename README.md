@@ -395,6 +395,14 @@ How it works:
 - The model runs **only** on cameras whose motion gate passed (or whose periodic
   `BASELINE_EVERY_S` is due), and a per-camera `CAPTION_COOLDOWN_S` stops a slow
   object being re-described on every sweep.
+- **CPU is bounded by an "only when idle" gate, not just by those per-camera
+  timers.** `MAX_CAPTIONS_PER_SWEEP=1` means a sweep can caption at most one
+  camera, and `MIN_CAPTION_GAP_S=8` enforces real idle time between the END of one
+  caption and the START of the next, across all cameras. A camera that wants a
+  caption while the gate is closed is **dropped, not queued** — the frame is
+  already stale by the next sweep — and the drop is reported in the sweep log as
+  `N gated to stay idle (cam02,cam05)`. Raising either knob re-enables bursts.
+======= REPLACE
 - The VLM (Qwen2-VL-2B **INT4** OpenVINO IR, git-ignored in
   [`models/scene/`](models/scene/README.md), ~1.76 GB) is loaded **once** and
   stays resident in RAM; it runs on **CPU** (`MODEL_DEVICE=CPU`) so the iGPU

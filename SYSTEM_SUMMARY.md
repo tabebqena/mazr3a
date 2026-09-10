@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v9` |
+| Summary version | `v10` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.3.18` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -161,7 +161,7 @@ See [`plans/scene-description.md`](plans/scene-description.md).
 | Scene store | `./media/scenewatch/` (`scenewatch.db` WAL + `<cam>/*.jpg` — `STORE_IMAGES=true` by default so the portal's Scenes tab has a frame to open) |
 | Volumes | `./scenewatch:/scenewatch:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
-| Notes | Code/config edits need only `docker compose restart scenewatch`. No host cron entry — the sweep loop runs in-container. Mirrors firewatch's motion gate; per-camera `CAPTION_COOLDOWN_S` bounds the caption cost. Every caption is scored 0-100 into a `tier` (high/normal/low) at write time, which is what the portal's Scenes tab filters and sorts on. |
+| Notes | Code/config edits need only `docker compose restart scenewatch`. No host cron entry — the sweep loop runs in-container. Mirrors firewatch's motion gate; per-camera `CAPTION_COOLDOWN_S` (300 s) bounds how often one camera is captioned. **`MAX_CAPTIONS_PER_SWEEP=1` + `MIN_CAPTION_GAP_S=8` are the cross-camera "only when idle" gate** — one caption per sweep, spaced by real idle time, and a frame that cannot be captioned now is **dropped, not queued** (logged as `N gated to stay idle (...)`). Every caption is scored 0-100 into a `tier` (high/normal/low) at write time, which is what the portal's Scenes tab filters and sorts on. |
 
 ### 3.8 Service → development-file map (quick lookup)
 | Service | Primary code / config in repo |

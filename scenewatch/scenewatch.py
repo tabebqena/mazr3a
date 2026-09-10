@@ -65,6 +65,11 @@ from PIL import Image, ImageFilter
 CONF_PATH = os.environ.get("SCENEWATCH_CONF", "/config/scenewatch.conf")
 LOG = lambda *a: print(time.strftime("[%Y-%m-%d %H:%M:%S]"), *a, flush=True)  # noqa: E731
 _STOP = [False]  # set by SIGTERM/SIGINT -> clean, prompt shutdown
+# Monotonic time the last caption FINISHED, for ANY camera. Together with
+# MAX_CAPTIONS_PER_SWEEP this is the "only when idle" gate: scenewatch never
+# has more than one caption in flight and never queues a frame - a frame that
+# cannot be captioned now is dropped (see _do_sweep).
+_LAST_CAPTION = [0.0]
 
 DEFAULT_PROMPT = ("Describe this CCTV scene in one short sentence. Mention "
                   "people, vehicles, animals or notable activity. If nothing "
@@ -534,8 +539,13 @@ class S:
         self.night_extra = 8.0
         self.frame_frac = 0.0015
         self.frame_frac_max = 0.20
-        self.baseline_every = 600.0
-        self.caption_cooldown = 120.0
+        self.baseline_every = 1800.0
+        self.caption_cooldown = 300.0
+        # "Only when idle" gate (see _do_sweep): at most this many captions per
+        # sweep (one camera at a time), and this many seconds of real idle time
+        # between the END of one caption and the START of the next.
+        self.max_captions_per_sweep = 1
+        self.min_caption_gap = 8.0
         self.store_enabled = True
         self.tick_min = 0.25
         self.heartbeat_s = 300.0
@@ -575,8 +585,13 @@ def _resolve_settings(cfg, cameras):
     s.frame_frac = _clampf(_getf(cfg, "MOTION_FRAME_FRAC", 0.0015), 0.0, 1.0, 0.0015)
     s.frame_frac_max = _clampf(_getf(cfg, "MOTION_FRAME_FRAC_MAX", 0.20),
                                s.frame_frac, 1.0, 0.20)
-    s.baseline_every = max(10.0, _getf(cfg, "BASELINE_EVERY_S", 600))
-    s.caption_cooldown = max(0.0, _getf(cfg, "CAPTION_COOLDOWN_S", 120))
+    s.baseline_every = max(10.0, _getf(cfg, "BASELINE_EVERY_S", 1800))
+    s.caption_cooldown = max(0.0, _getf(cfg, "CAPTION_COOLDOWN_S", 300))
+    # "Only when idle": a frame is captioned only if no other caption is in
+    # flight, at most MAX_CAPTIONS_PER_SWEEP per sweep (1 = one camera at a
+    # time), and only after MIN_CAPTION_GAP_S of idle since the last one ended.
+    s.max_captions_per_sweep = max(1, _geti(cfg, "MAX_CAPTIONS_PER_SWEEP", 1))
+    s.min_caption_gap = max(0.0, _getf(cfg, "MIN_CAPTION_GAP_S", 8))
     s.store_enabled = _getb(cfg, "STORE_ENABLED", True)
     s.tick_min = 0.25
     s.heartbeat_s = max(30.0, _getf(cfg, "HEARTBEAT_S", 300))
@@ -673,7 +688,8 @@ def _do_sweep(s, cfg, cap, state, dry=False):
     if s.gap_s > elapsed:
         _bounded_sleep(s.gap_s - elapsed)
     if _STOP[0]:
-        return {"captioned": 0, "skipped": len(s.cameras)}
+        return {"captioned": 0, "skipped": len(s.cameras), "gated": 0,
+                "gated_cams": []}
     # --- 3) fetch frame B for every camera that gave an A ---
     bframes, tB = {}, {}
     for cam in aframes:
@@ -686,6 +702,7 @@ def _do_sweep(s, cfg, cap, state, dry=False):
     # --- 4) per camera: gap sanity -> motion -> caption or skip ---
     now = time.monotonic()
     captioned = skipped = 0
+    gated_cams = []      # eligible but dropped by the "only when idle" gate
     for cam in bframes:
         st = state[cam]
         _cam_ok(cam, s, st)
@@ -707,9 +724,28 @@ def _do_sweep(s, cfg, cap, state, dry=False):
             if motion and now < st["cool_until"]:
                 skipped += 1
                 continue
+            # --- "ONLY WHEN IDLE" GATE ------------------------------------
+            # This camera WANTS a caption, but we only send a frame when
+            # nothing else is being captioned and the pipeline has been idle
+            # long enough. Otherwise the frame is DROPPED (never queued) - it
+            # is already stale by the time the next sweep fetches a fresh one.
+            #   1. at most MAX_CAPTIONS_PER_SWEEP per sweep, so a sweep with
+            #      several moving cameras cannot fire a burst of inferences;
+            #   2. MIN_CAPTION_GAP_S of idle measured from the END of the last
+            #      caption, so captions stay spaced out across sweeps too.
+            if captioned >= s.max_captions_per_sweep:
+                gated_cams.append(cam)
+                continue
+            since = time.monotonic() - _LAST_CAPTION[0]
+            if since < s.min_caption_gap:
+                gated_cams.append(cam)
+                continue
             reason = "motion" if motion else "baseline"
             text, ms = cap.caption(_decode(b_bytes))
-            st["last_caption"] = time.monotonic()
+            # The idle clock starts when this caption FINISHED, so the next
+            # one waits for MIN_CAPTION_GAP_S of real idle time.
+            _LAST_CAPTION[0] = time.monotonic()
+            st["last_caption"] = _LAST_CAPTION[0]
             st["cool_until"] = st["last_caption"] + s.caption_cooldown
             st["captions"] += 1
             captioned += 1
@@ -732,7 +768,8 @@ def _do_sweep(s, cfg, cap, state, dry=False):
                             cap.model_name, ms, importance, tier)
         except Exception as exc:  # noqa: BLE001 - isolate the whole camera turn
             _cam_err(cam, s, st, exc)
-    return {"captioned": captioned, "skipped": skipped}
+    return {"captioned": captioned, "skipped": skipped,
+            "gated": len(gated_cams), "gated_cams": gated_cams}
 
 
 def run_once(cfg, cap, dry=False):
@@ -747,10 +784,13 @@ def run_once(cfg, cap, dry=False):
     state = _new_state(s, cameras)
     LOG(f"sweep: {len(cameras)} cameras, gap {s.gap_s:g}s, "
         f"gate {s.frame_frac:g}..{s.frame_frac_max:g}, "
-        f"cooldown {s.caption_cooldown:g}s, baseline {s.baseline_every:g}s"
+        f"cooldown {s.caption_cooldown:g}s, baseline {s.baseline_every:g}s, "
+        f"idle gate {s.max_captions_per_sweep}/sweep + {s.min_caption_gap:g}s"
         + (" [dry-run: not storing]" if dry else ""))
     res = _do_sweep(s, cfg, cap, state, dry=dry)
-    LOG(f"sweep done: {res['captioned']} captioned, {res['skipped']} skipped")
+    LOG(f"sweep done: {res['captioned']} captioned, {res['skipped']} skipped"
+        + (f", {res['gated']} gated to stay idle "
+           f"({','.join(res['gated_cams'])})" if res["gated"] else ""))
     return True
 
 
@@ -768,6 +808,7 @@ def run_forever(cfg, cap):
     LOG(f"started: {len(cameras)} cameras, sweep {s.poll_interval:g}s, "
         f"gap {s.gap_s:g}s, gate {s.frame_frac:g}..{s.frame_frac_max:g}, "
         f"cooldown {s.caption_cooldown:g}s, baseline {s.baseline_every:g}s, "
+        f"idle gate {s.max_captions_per_sweep}/sweep + {s.min_caption_gap:g}s, "
         f"device {cap.device}"
         + (f", threads {cap._max_threads}" if cap.device.startswith("CPU") else "")
         + f", model {cap.model_name}, heartbeat {s.heartbeat_s:g}s")

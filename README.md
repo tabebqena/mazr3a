@@ -7,6 +7,11 @@ external **firewatch** service with instant Telegram photo alerts
 (Ollama descriptions, daily summaries, face/gait profiling, a native in-Frigate
 fire model) stay deferred to later phases.
 
+> **System map:** [`SYSTEM_SUMMARY.md`](SYSTEM_SUMMARY.md) is the maintained
+> inventory of every service, its development-file locations, the host crontab,
+> required host settings and the deploy workflow. Update it whenever a service
+> changes (see [`.roo/rules/system-summary.md`](.roo/rules/system-summary.md)).
+
 ## Hardware / Environment
 
 | Item | Value |

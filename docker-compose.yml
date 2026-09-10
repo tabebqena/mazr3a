@@ -1,6 +1,34 @@
 # ============================================================
 # Frigate NVR + Mosquitto MQTT broker - Phase 0 baseline
 # Target: Debian host, CPU-only (OpenVINO detector)
+#
+# RESOURCE LIMITS (host = 8 cores, ~7.5 GiB RAM)
+# ------------------------------------------------------------
+# `cpus` is a HARD CFS quota and `mem_limit` a HARD memory ceiling
+# (equivalent to docker run --cpus / --memory). Neither reserves anything:
+# a limit is only a maximum, so a container using less is unaffected.
+#
+# Why memory limits matter here: without one, a runaway container can exhaust
+# the host and the kernel's OOM killer picks a victim by score - which may be
+# Frigate. A per-container ceiling makes the cgroup that OVERSHOOTS die first.
+# `oom_score_adj` states the preference explicitly (lower = killed later):
+#   frigate      -500  the NVR is the critical path; never kill it first
+#   scenewatch    200  the newest/largest consumer; kill it first
+#
+# NOTE: the ceilings deliberately SUM to more than the host's RAM (~8.25 GiB).
+# They are backstops against runaway growth, not a hard partition of memory -
+# a strict partition would have to be tight enough to OOM-kill Frigate during
+# a recording burst, which is the one failure mode worth avoiding. To make it a
+# hard partition instead, lower each value so the total fits under ~6.5 GiB.
+#
+# Frigate's cgroup also contains its 1 GB tmpfs /tmp/cache AND its 256 MB
+# /dev/shm (tmpfs/shmem are charged to the memory cgroup), so its floor is
+# ~1.25 GB before any ffmpeg/python working set - hence its generous ceiling.
+#
+# Frigate is deliberately NOT CPU-capped: CFS throttling can make it drop
+# decoded frames (exactly what the detector-health checks look for). Instead
+# every OTHER service is capped, and those caps sum to ~7.4 of the 8 cores, so
+# Frigate always has headroom.
 # ============================================================
 
 services:
@@ -9,6 +37,12 @@ services:
     image: ghcr.io/blakeblackshear/frigate:stable
     restart: unless-stopped
     stop_grace_period: 30s
+    # Resource ceiling (see the header). ~1.5-2 GB typical; the ceiling covers
+    # the 1 GB tmpfs cache + 256 MB shm + ffmpeg working set. Raise this first
+    # if Frigate ever logs OOM / gets killed during a recording burst.
+    mem_limit: 3g
+    # Last container the kernel should OOM-kill (lower = killed later).
+    oom_score_adj: -500
     # Shared memory (/dev/shm) used by FFmpeg decode buffers.
     # Frigate recommends >=254MB for 10 cameras with hardware decode
     # (it logged "SHM size too small" at 128mb).
@@ -48,6 +82,8 @@ services:
     container_name: mqtt
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    cpus: "0.5"          # tiny broker; never a bottleneck
+    mem_limit: 256m
     ports:
       - "1883:1883" # MQTT broker (Frigate publishes events here)
     volumes:
@@ -72,6 +108,8 @@ services:
     container_name: firewatch
     build: ./firewatch
     restart: unless-stopped
+    cpus: "2.0"          # small IR model at a low cadence
+    mem_limit: 1g        # ~0.35-0.5 GB typical (python + OpenVINO + YOLO IR)
     volumes:
       - ./firewatch:/firewatch:ro
       - ./scripts:/scripts:ro
@@ -97,20 +135,32 @@ services:
   # scenewatch - farm scene-description watchdog (see plans/scene-description.md).
   # Mirrors firewatch's batched two-frame motion sweep: fetch frame A for
   # every camera, sleep MOTION_GAP_S (> 1 s), fetch frame B, diff A/B, and
-  # when a camera shows motion caption that frame with a small SmolVLM VLM
-  # and store a one-line description in a WAL SQLite DB.
+  # when a camera shows motion caption that frame with a VLM and store a
+  # one-line description in a WAL SQLite DB.
   # The model is loaded ONCE and stays resident in RAM (OpenVINO GenAI on
   # CPU, so the iGPU stays entirely with Frigate's detector). Code/config are
   # mounted read-only so edits need only `docker compose restart scenewatch`.
-  # The SmolVLM OpenVINO IR under ./models/scene is GIT-IGNORED (~500 MB): it
-  # is produced with dev_scripts/prep_scene_model.sh on the host, NOT via git
+  # The OpenVINO VLM under ./models/scene is GIT-IGNORED (~1.76 GB,
+  # Qwen2-VL-2B int4 - the smallest VLM openvino_genai can actually load): it
+  # is fetched with dev_scripts/prep_scene_model.sh on the host, NOT via git
   # (see models/scene/README.md). Writes only under ./media/scenewatch.
-  # If the host ever needs a hard RAM ceiling, add `mem_limit: 2g` here.
+  # CPU is bounded by the caption RATE (MAX_CAPTIONS_PER_SWEEP +
+  # MIN_CAPTION_GAP_S in config/scenewatch.conf) and by cpus below.
   # ------------------------------------------------------------------
   scenewatch:
     container_name: scenewatch
     build: ./scenewatch
     restart: unless-stopped
+    # 4 of 8 cores, matching INFERENCE_NUM_THREADS=4 in scenewatch.conf, so a
+    # caption can never starve Frigate's decode/detect.
+    cpus: "4.0"
+    # ~2.0-2.4 GB expected (weights ~1.72 GB + KV/activations + python).
+    # Ceiling with headroom - do NOT tighten towards 2g until docker stats
+    # has confirmed the real figure, or the container will OOM-loop.
+    mem_limit: 3g
+    # Prefer this container over Frigate when memory really runs out (below
+    # Frigate's -500; the sidecar/portal defaults of 0 are between them).
+    oom_score_adj: 200
     volumes:
       - ./scenewatch:/scenewatch:ro   # scenewatch.py (the watcher)
       - ./config:/config:ro           # scenewatch.conf
@@ -147,6 +197,8 @@ services:
     container_name: telegram-bot
     image: python:3.11-slim
     restart: unless-stopped
+    cpus: "0.5"          # idle long-poll; bursts only on a command
+    mem_limit: 256m
     command: ["python", "/scripts/telegram_bot.py"]
     volumes:
       - ./scripts:/scripts:ro            # telegram_bot.py + telegram_notify.py
@@ -178,6 +230,8 @@ services:
     container_name: logs
     image: python:3.11-slim
     restart: unless-stopped
+    cpus: "0.5"          # stands idle; serves on demand
+    mem_limit: 256m
     command: ["python", "/scripts/container_logs.py"]
     volumes:
       - ./scripts:/scripts:ro
@@ -214,6 +268,8 @@ services:
     container_name: portal
     build: ./portal
     restart: unless-stopped
+    cpus: "1.0"          # HTTP + proxying; HLS is streamed, not transcoded
+    mem_limit: 512m      # ~0.15-0.25 GB typical
     ports:
       - "8080:8080"         # internal host port for the Cloudflare Tunnel
     volumes:

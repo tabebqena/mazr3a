@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v10` |
+| Summary version | `v11` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.3.18` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -173,6 +173,37 @@ See [`plans/scene-description.md`](plans/scene-description.md).
 | `telegram-bot` | [`scripts/telegram_bot.py`](scripts/telegram_bot.py), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
 | `logs` | [`scripts/container_logs.py`](scripts/container_logs.py) |
 | `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf) |
+
+### 3.9 Resource limits (CPU / memory / OOM priority)
+
+Set in [`docker-compose.yml`](docker-compose.yml). `cpus` is a hard CFS quota and
+`mem_limit` a hard memory ceiling; **neither reserves anything** — a limit is only
+a maximum, so a container using less is unaffected. Host: 8 cores, ~7.5 GiB.
+
+| Service | `cpus` | `mem_limit` | `oom_score_adj` | Rationale |
+|---|---|---|---|---|
+| `frigate` | *(uncapped)* | 3 GiB | **-500** | Critical path — CFS throttling can make it drop decoded frames, so only its **memory** is ceilinged. Its cgroup also holds the 1 GB tmpfs `/tmp/cache` + 256 MB `/dev/shm`, hence the generous ceiling. |
+| `scenewatch` | 4 | 3 GiB | **200** | Biggest consumer (~2.0–2.4 GB: ~1.72 GB of weights + KV/activations). The preferred OOM victim. |
+| `firewatch` | 2 | 1 GiB | *(0)* | Small IR model at a low cadence (~0.35–0.5 GB). |
+| `portal` | 1 | 512 MiB | *(0)* | HTTP + proxying; HLS is streamed, not transcoded. |
+| `mqtt` | 0.5 | 256 MiB | *(0)* | Broker. |
+| `logs` | 0.5 | 256 MiB | *(0)* | Idle sidecar. |
+| `telegram-bot` | 0.5 | 256 MiB | *(0)* | Idle long-poll. |
+
+- **OOM priority is the real safety mechanism.** `oom_score_adj` (lower = killed
+  later) makes `scenewatch` the preferred victim, so memory pressure restarts the
+  scene describer rather than the NVR.
+- **The ceilings deliberately sum to more than the host's RAM** (~8.25 GiB). They
+  are backstops against runaway growth, **not** a hard partition: a strict
+  partition would have to be tight enough to OOM-kill Frigate during a recording
+  burst, which is the one failure worth avoiding. To make it a hard partition,
+  lower the values so the total fits under ~6.5 GiB.
+- **The non-Frigate CPU caps sum to ~7.4 of 8 cores**, so Frigate always retains
+  headroom without being quota-throttled.
+- Do **not** tighten `scenewatch` toward 2 GiB until `docker stats` confirms its
+  real footprint, or it will OOM-loop.
+- Inspect: `docker stats`; `docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}' <container>`.
+- Validated with the real parser: `docker compose config --format json`.
 
 ---
 

@@ -112,6 +112,25 @@ sudo apt update && sudo apt install -y docker.io docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
+## Resource limits (CPU / memory)
+
+Every compose service carries a `cpus` quota and a `mem_limit` ceiling, plus an
+`oom_score_adj` that decides who the kernel kills first under memory pressure —
+the full table and rationale is [§3.9 of `SYSTEM_SUMMARY.md`](SYSTEM_SUMMARY.md).
+Neither key reserves anything; they are only maximums.
+
+The one deliberate asymmetry: **Frigate is not CPU-capped**, because CFS
+throttling can make it drop decoded frames (exactly what the detector-health
+checks watch for). Instead every *other* service is capped, so Frigate always
+keeps headroom. For memory, `scenewatch` is the preferred OOM victim
+(`oom_score_adj: 200`) versus Frigate (`-500`) — so if the host does run short,
+the scene describer restarts rather than the NVR.
+
+```bash
+docker stats                                                      # usage vs limits
+docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}' frigate
+```
+
 ## Deploy (git-based)
 
 Deploys are **git-based** (2026-09-05): the repo lives at

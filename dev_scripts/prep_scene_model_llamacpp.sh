@@ -25,7 +25,10 @@
 #   bash dev_scripts/prep_scene_model_llamacpp.sh --force      # re-download
 #   bash dev_scripts/prep_scene_model_llamacpp.sh --bin        # ALSO fetch llama.cpp
 #   bash dev_scripts/prep_scene_model_llamacpp.sh --repo USER/MODEL
-#   bash dev_scripts/prep_scene_model_llamacpp.sh --bin --llamacpp-tag bXXXX
+#   bash dev_scripts/prep_scene_model_llamacpp.sh --bin --llamacpp-tag b10900
+#     (the tag is only needed for --bin; the script DISCOVERS the exact asset
+#      name from the release, because llama.cpp ships .tar.gz now and the names
+#      change over time. b10900 was verified 2026-09-10.)
 #
 # After running, point config/scenereader.conf at the two files it reports and
 # `docker compose restart scenereader`.
@@ -143,11 +146,49 @@ if [ -n "$DO_BIN" ]; then
   if [ -z "$LLAMACPP_TAG" ]; then
     echo "ERROR: --bin needs --llamacpp-tag <release tag> so the download is" >&2
     echo "       reproducible (see https://github.com/ggml-org/llama.cpp/releases)." >&2
-    echo "       Example: --bin --llamacpp-tag b6000" >&2
+    echo "       Example: --bin --llamacpp-tag b10900  (verified 2026-09-10)" >&2
+    echo "       The exact asset name is DISCOVERED from the release, so the tag is" >&2
+    echo "       all that is needed - llama.cpp ships .tar.gz and renames assets." >&2
     exit 1
   fi
   mkdir -p "$BIN_DIR"
-  ASSET="llama-${LLAMACPP_TAG}-bin-ubuntu-x64.zip"
+  # DISCOVER the asset name from the release instead of assuming it - llama.cpp
+  # asset names have changed over time and assuming one breaks the fetch with a
+  # confusing 404. Prefer a plain Ubuntu x64 CPU build (never a CUDA/Vulkan/ROCm/
+  # SYCL/ARM/macOS/Windows asset).
+  REL_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${LLAMACPP_TAG}"
+  ASSET="$(curl -sL --fail --max-time 60 "$REL_API" | python3 -c '
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+names = [a["name"] for a in d.get("assets", [])]
+def bad(n):
+    # never a GPU/accelerator or foreign-platform build; "openvino" is skipped too
+    # so the PLAIN CPU build (the smallest, ~17 MB) wins by default
+    return re.search(r"cuda|vulkan|rocm|sycl|hip|openvino|arm|aarch|s390|riscv|android|macos|win|ios|xcframework", n, re.I)
+def pkg(n):
+    # llama.cpp ships .tar.gz now (it used .zip historically) - accept both
+    return n.endswith(".tar.gz") or n.endswith(".tgz") or n.endswith(".zip")
+cands = [n for n in names if pkg(n) and not bad(n) and re.search(r"ubuntu", n, re.I) and re.search(r"x64|x86_64", n, re.I)]
+if not cands:
+    cands = [n for n in names if pkg(n) and not bad(n)]
+print(cands[0] if cands else "")')"
+  if [ -z "$ASSET" ]; then
+    echo "ERROR: no suitable CPU asset found in release ${LLAMACPP_TAG}." >&2
+    echo "       Available assets:" >&2
+    curl -sL --fail --max-time 60 "$REL_API" | python3 -c 'import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for a in d.get("assets", []):
+    print("         " + a["name"])' >&2 || true
+    echo "       Pick another --llamacpp-tag (see the llama.cpp releases page)." >&2
+    exit 1
+  fi
+  echo "   asset  : ${ASSET}"
   URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_TAG}/${ASSET}"
   ZIP="${BIN_DIR}/${ASSET}"
   if [ -s "$ZIP" ] && [ -z "$FORCE" ]; then
@@ -156,9 +197,16 @@ if [ -n "$DO_BIN" ]; then
     echo "   GET    ${ASSET}"
     curl -L --fail --retry 3 --max-time 3600 -# -o "$ZIP" "$URL"
   fi
-  command -v unzip >/dev/null 2>&1 || { echo "ERROR: unzip not found" >&2; exit 1; }
   tmp="$(mktemp -d)"
-  unzip -q -o "$ZIP" -d "$tmp"
+  case "$ASSET" in
+    *.tar.gz|*.tgz)
+      command -v tar >/dev/null 2>&1 || { echo "ERROR: tar not found" >&2; exit 1; }
+      tar -xzf "$ZIP" -C "$tmp" ;;
+    *.zip)
+      command -v unzip >/dev/null 2>&1 || { echo "ERROR: unzip not found" >&2; exit 1; }
+      unzip -q -o "$ZIP" -d "$tmp" ;;
+    *) echo "ERROR: unsupported archive ${ASSET}" >&2; exit 1 ;;
+  esac
   # flatten: the archive nests the binaries in a subdir; copy the two we run
   found=0
   for want in llama-server llama-mtmd-cli; do

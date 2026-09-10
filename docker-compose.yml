@@ -172,9 +172,13 @@ services:
     # 1 of 8 cores: a periodic disk scan plus a short, bounded caption batch -
     # not a continuous sweep. Raise only if the drain is starved, never to 4.
     cpus: "1.0"
-    # ~0.5-0.7 GB resident with the small model. Raise towards 3g ONLY if the
-    # retained 2B OpenVINO backend is selected (config/scenereader.conf).
-    mem_limit: 1500m
+    # A CEILING, not a reservation: the small default model uses ~0.5-0.7 GB, so
+    # this costs nothing in normal operation - but 3g leaves room to switch to the
+    # RETAINED 2B OpenVINO backend (config/scenereader.conf MODEL_BACKEND=openvino,
+    # ~2 GB resident) without also having to edit compose. `oom_score_adj: 200`
+    # below still makes this the FIRST victim under real memory pressure, so the
+    # wider ceiling does not put Frigate at risk.
+    mem_limit: 3g
     # Prefer this container over Frigate when memory really runs out (below
     # Frigate's -500; the sidecar/portal defaults of 0 are between them).
     oom_score_adj: 200

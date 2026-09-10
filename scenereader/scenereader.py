@@ -470,6 +470,8 @@ def _frame_for(conn_row):
 
 def drain(s, conn, cap, dry=False, force=False, log=LOG):
     """Caption up to MAX_EVENTS_PER_RUN pending events within MAX_RUN_SECONDS."""
+    if cap is None:
+        return {"captioner": 0, "missing": 0, "skipped": "no-model"}
     ok, why = governor_state(s)
     if not ok and not (force and s.force_allow_hot):
         log("drain skipped: {}".format(why))
@@ -565,7 +567,9 @@ def _consume_trigger(s):
 def run_forever(s, conn, places, cap):
     LOG("started: backend {} model {} | scan {:g}s drain {:g}s episodes {:g}s | "
         "gate loadavg<={:g} temp<={:g}C | persist {} | retention {:g}d".format(
-            cap.backend, cap.name, s.scan_every, s.drain_every, s.episodes_every,
+            cap.backend if cap is not None else s.model_backend,
+            cap.name if cap is not None else "(not loaded yet)",
+            s.scan_every, s.drain_every, s.episodes_every,
             s.max_loadavg, s.max_cpu_temp_c,
             "resident" if s.model_keep_loaded else "load-per-batch",
             s.events_retention_days))
@@ -598,6 +602,16 @@ def run_forever(s, conn, places, cap):
                 rebuild_episodes(s, conn, places)
                 next_episodes = time.monotonic() + s.episodes_every
             triggered = _consume_trigger(s)
+            # The captioner may be missing (the model files are a deploy
+            # prerequisite, NOT shipped by git). Scanning, descriptions and
+            # episodes keep running regardless; the model is picked up as soon as
+            # it appears, so a fresh deploy never crash-loops on a missing model.
+            if cap is None and (triggered or now >= next_drain):
+                try:
+                    cap = captioners.make_captioner(s)
+                    LOG("captioner loaded: {} {}".format(cap.backend, cap.name))
+                except Exception as exc:  # noqa: BLE001 - keep narrating
+                    LOG("captioner still unavailable: {}".format(exc))
             if triggered or now >= next_drain:
                 res = drain(s, conn, cap, force=triggered)
                 if res.get("captioner") or res.get("missing") or triggered:
@@ -657,19 +671,24 @@ def main():
         LOG("ERROR: cannot open the store at {}: {}".format(db_path(s), exc))
         return 2
 
-    need_model = bool({"--check", "--drain", "--once", "--dry-run"} & args) or not args
+    # An explicit model-requiring FLAG must fail loudly, but the long-running
+    # service must NOT: a missing model only disables captions, not the narrator.
+    strict_model = bool({"--check", "--drain", "--once", "--dry-run"} & args)
+    attempt_model = strict_model or not args
     cap = None
-    if need_model:
+    if attempt_model:
         try:
             cap = captioners.make_captioner(s)
-        except RuntimeError as exc:
-            LOG("ERROR: {}".format(exc))
-            return 2
+            LOG("captioner: backend {} model {} ({} threads)".format(
+                cap.backend, cap.name, s.vlm_n_threads))
         except Exception as exc:  # noqa: BLE001
-            LOG("ERROR: cannot load the captioner: {}".format(exc))
-            return 2
-        LOG("captioner: backend {} model {} ({} threads)".format(
-            cap.backend, cap.name, s.vlm_n_threads))
+            if strict_model:
+                LOG("ERROR: {}".format(exc))
+                return 2
+            LOG("WARNING: captioner unavailable: {}".format(exc))
+            LOG("WARNING: scanning, descriptions and episodes WILL run; captions "
+                "start once the model is present (retried automatically).")
+            cap = None
 
     try:
         if "--check" in args:

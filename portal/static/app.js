@@ -24,6 +24,7 @@ const state = {
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
 const SNAPSHOT_RETRY_MS = 15000;  // auto-retry interval: snapshot -> live
 const OFFLINE_CHECK_MS = 8000;    // how often to re-check an offline camera
+const LIVE_SOUND_KEY = 'portal.liveSound';  // localStorage: remembered voice on/off
 // Live transport: go2rtc MSE over WebSocket is PRIMARY (robust - the same
 // transport Frigate's own UI uses). hls.js HLS is a FALLBACK for browsers with
 // no MediaSource. The watchdogs below operate on the <video> element + decoded
@@ -153,6 +154,9 @@ async function boot() {
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
   state.idleSec = Math.max(15, parseInt(state.settings.stream_idle_timeout_s, 10) || 30);
+  // Remembered voice-button state (localStorage), re-applied when a new live
+  // stream reaches "Live" (see applyLiveSound in startPaintCheck).
+  loadLiveSoundPref();
   // Bottom-most version label: server APP_VERSION (the HTML text is the fallback).
   const vn = $('#ver-no');
   if (vn && state.settings.app_version) vn.textContent = state.settings.app_version;
@@ -236,6 +240,7 @@ function hlsFallback(cam, tok) {
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
   state.live.imgLive = false;        // freeze the poster; stop the poster poll
   if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+  silenceLiveAudio();                // voice must stop with the picture
   const video = $('#live-video');
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
   const img = $('#live-img');
@@ -304,6 +309,7 @@ function enterOffline(cam) {
   clearFrameWatch();
   destroyMse();
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
+  silenceLiveAudio();                // offline: never keep the voice playing
   const video = $('#live-video');
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
   const img = $('#live-img');
@@ -389,6 +395,26 @@ function showVideo() {
    the <video> must start muted so browsers allow autoplay. Sound is opt-in via
    the #live-sound button; clicking it is a user gesture (always permitted), and
    once a stream is already playing muted the last choice is re-applied safely. */
+/* Persisted voice-button state (localStorage, like portal.lastCam) so a new
+   live stream - or a page reload - re-applies the last choice. */
+function loadLiveSoundPref() {
+  try {
+    const v = localStorage.getItem(LIVE_SOUND_KEY);
+    if (v != null) state.live.sound = (v === '1');
+  } catch (e) { /* ignore */ }
+}
+function saveLiveSoundPref() {
+  try { localStorage.setItem(LIVE_SOUND_KEY, state.live.sound ? '1' : '0'); }
+  catch (e) { /* ignore */ }
+}
+/* Force the media element silent. Called on EVERY stop/teardown (idle stop,
+   camera switch, leaving Live, offline, stream failure) so the voice can never
+   outlive the picture. */
+function silenceLiveAudio() {
+  const video = $('#live-video');
+  if (!video) return;
+  try { video.muted = true; video.volume = 1; } catch (e) { /* ignore */ }
+}
 function applyLiveSound() {
   const video = $('#live-video');
   video.muted = !state.live.sound;
@@ -397,6 +423,7 @@ function applyLiveSound() {
 }
 function toggleLiveSound() {
   state.live.sound = !state.live.sound;
+  saveLiveSoundPref();       // remember the choice for the next stream/session
   applyLiveSound();
   if (state.live.sound) {
     const v = $('#live-video');
@@ -421,14 +448,32 @@ function forgiveLiveWatchdogs() {
   if (paintCheck) { clearPaintCheck(); startPaintCheck(cam, tok); }
   else if (stallWatch) { armStallWatch(cam, tok); }
 }
+/* Keep the audible state tied to the <video> element: pausing the stream (idle
+   stop, camera switch, leaving Live, teardown) silences the voice and updates
+   the button; (re)playing re-applies the remembered choice once live. */
+function bindLiveAudioSync() {
+  const v = $('#live-video');
+  if (!v) return;
+  v.addEventListener('pause', () => {
+    silenceLiveAudio();       // the voice must never outlive the picture
+    syncSoundUI();
+  });
+  v.addEventListener('play', () => {
+    if (state.live.sound && isLiveTrying() && state.live.revealed) applyLiveSound();
+    else syncSoundUI();
+  });
+}
+bindLiveAudioSync();
 /* Live audio only exists once an HLS video has revealed and really buffered
-   media - during the warm-up poster, an auto-retry freeze, an interruption or
-   the offline state there is no sound to toggle. */
+   media AND is actually playing - during the warm-up poster, an auto-retry
+   freeze, an interruption, the offline state or a paused/idle stop there is no
+   sound to toggle (a paused element must never read as "sound on"). */
 function liveAudioActive() {
   const v = $('#live-video');
   return !!(state.live.playing && isLiveTrying()
             && state.live.revealed && !state.live.imgLive
-            && v && !v.classList.contains('hidden') && v.readyState >= 2);
+            && v && !v.classList.contains('hidden') && v.readyState >= 2
+            && !v.paused);
 }
 /* Reflect the REAL sound state (muted until live audio exists). The sound
    button is never hidden - when offline / interrupted / warming up it is just
@@ -874,6 +919,7 @@ function blackRevert(cam, tok) {
   state.live.imgLive = false;         // frozen poster (no ~1 fps feed)
   destroyMse();                       // tear down the MSE session (if any)
   if (curHls) { try { curHls.destroy(); } catch (e) { /* ignore */ } curHls = null; }
+  silenceLiveAudio();                // black revert: stop the voice too
   const video = $('#live-video');
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
   const img = $('#live-img');
@@ -925,6 +971,7 @@ function stopStream() {
   clearStallWatch();
   destroyMse();
   if (curHls) { curHls.destroy(); curHls = null; }
+  silenceLiveAudio();                // idle stop / leave: voice stops with video
   const video = $('#live-video');
   try { video.pause(); } catch (e) { /* ignore */ }
   try { video.removeAttribute('src'); video.load(); } catch (e) { /* ignore */ }
@@ -1576,7 +1623,9 @@ document.addEventListener('keydown', (e) => {
 /* The read-only `logs` sidecar stays idle; the portal pulls its container
    list + log tails ONLY when this tab is opened (and on Refresh / tail or
    container change). The Container dropdown lets the admin view ONE container's
-   logs instead of every container at once ("All containers" is the default). */
+   logs instead of every container at once ("All containers" is the default).
+   Every card ALSO carries its own refresh button so one container's tail can be
+   reloaded without re-fetching the rest; lines render newest-first. */
 function isAdmin() {
   return !!(state.me && state.me.is_admin);
 }
@@ -1631,26 +1680,67 @@ function renderDebug(data) {
   Array.from(frag.children).forEach(c => box.appendChild(c));
 }
 
+/* Docker logs come oldest-first; the UI shows the NEWEST line at the top (the
+   reader almost always wants the latest output). Reverse the tail lines. */
+function newestFirst(text) {
+  const lines = String(text == null ? '' : text).split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();  // trailing \n
+  lines.reverse();
+  return lines.join('\n');
+}
+
 function dbgCard(c) {
   const running = c.state === 'running';
+  const name = c.name || '';
   const dot = '<span class="dbg-dot' + (running ? ' on' : '')
     + '" title="' + esc(c.state || 'stopped') + '"></span>';
-  return '<div class="dbg-card">' +
+  return '<div class="dbg-card" data-dbg-card="' + esc(name) + '">' +
     '<div class="dbg-head">' + dot +
-      '<span class="dbg-name">' + esc(c.name || '?') + '</span>' +
+      '<span class="dbg-name">' + esc(name || '?') + '</span>' +
       '<span class="dbg-meta">' + esc(c.state || '') + '</span>' +
       '<span class="dbg-meta">' + esc(c.status || '') + '</span>' +
       '<span class="dbg-img">' + esc(c.image || '') + '</span>' +
+      '<button class="dbg-refresh" type="button" data-dbg-refresh="' + esc(name) +
+        '" title="Reload only this container\u0027s logs" ' +
+        'aria-label="Reload ' + esc(name) + ' logs">&#8635;</button>' +
     '</div>' +
     (c.error
       ? '<div class="dbg-err">log unavailable: ' + esc(c.error) + '</div>'
-      : '<pre class="dbg-logs">' + esc(c.logs || '') + '</pre>') +
+      : '<pre class="dbg-logs">' + esc(newestFirst(c.logs || '')) + '</pre>') +
   '</div>';
+}
+
+/* Refresh ONE container's log tail and swap ONLY that card - the admin is never
+   forced to re-fetch every container (the global Refresh still does all). */
+async function refreshOneContainerLog(name, btn) {
+  if (!name) return;
+  const card = btn ? btn.closest('.dbg-card') : null;
+  const tailSel = $('#dbg-tail');
+  const tail = parseInt(tailSel && tailSel.value, 10) || 200;
+  if (btn) btn.disabled = true;
+  try {
+    const data = await api('/api/admin/logs?tail=' + tail +
+                           '&name=' + encodeURIComponent(name));
+    const c = (data.containers || [])[0];
+    if (c && card) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = dbgCard(c);
+      if (tmp.firstElementChild) card.replaceWith(tmp.firstElementChild);
+    }
+  } catch (e) {
+    toast('Log refresh failed: ' + (e && e.message ? e.message : e));
+    if (btn && document.body.contains(btn)) btn.disabled = false;
+  }
 }
 
 $('#dbg-refresh').addEventListener('click', loadDebug);
 $('#dbg-tail').addEventListener('change', loadDebug);
 $('#dbg-container').addEventListener('change', loadDebug);
+// Per-container refresh (delegated: cards are re-rendered on every load).
+$('#dbg-list').addEventListener('click', (e) => {
+  const b = e.target.closest('.dbg-refresh');
+  if (b) refreshOneContainerLog(b.dataset.dbgRefresh, b);
+});
 
 /* ---------------- start ---------------- */
 boot();

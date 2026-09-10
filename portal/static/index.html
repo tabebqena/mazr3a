@@ -197,7 +197,9 @@
            stays idle; there is no polling). Visible only to admin.
            The Container dropdown (populated by app.js from
            /api/admin/containers) picks a single container; "All containers"
-           keeps the stacked per-container view. -->
+           keeps the stacked per-container view. Each container card also has
+           its own ↻ button that reloads ONLY that container's tail, and lines
+           are shown newest-first (top). -->
       <section id="view-debug" class="view hidden">
         <div class="controls">
           <label>Container

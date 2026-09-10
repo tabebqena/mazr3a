@@ -106,26 +106,29 @@ nav a.active { color: var(--text); background: var(--panel2); }
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
 .view { padding-bottom: 8px; }
 
-/* Filter/search bars (Events + Fire alerts): one compact horizontal toolbar.
-   Each "label + field" is a single item laid out INLINE (caption left of the
-   field) and auto-width - NEVER full width. When there is room they all share
-   one line; on narrow screens the bar wraps whole items (a field is never
-   separated from its caption). */
+/* Filter/search bars (Events + Fire alerts + Debug): ONE compact horizontal
+   toolbar. Each "label + field" is a single inline item (caption left of the
+   field) at its natural width - NEVER full width. The row NEVER wraps: on a
+   narrow (mobile) screen it scrolls horizontally instead of stacking into many
+   rows, so the filter bar keeps the same single-row shape everywhere. */
 .controls {
-  display: flex; flex-flow: row wrap; align-items: flex-end;
+  display: flex; flex-flow: row nowrap; align-items: flex-end;
   gap: 8px 12px; margin-bottom: 14px;
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+  padding-bottom: 2px;
 }
 .controls label {
   display: flex; flex-direction: row; align-items: center; gap: 6px;
   color: var(--muted); font-size: 13px; white-space: nowrap;
-  min-height: var(--tap-h);
+  min-height: var(--tap-h); flex: 0 0 auto;
 }
 .controls input:not([type="checkbox"]), .controls select {
   width: auto; min-width: 130px;
 }
 .controls label.check { gap: 8px; }
 .controls label.check input { width: auto; min-width: 0; flex: 0 0 auto; }
-.controls button { width: auto; align-self: auto; white-space: nowrap; }
+.controls button { width: auto; align-self: auto; white-space: nowrap; flex: 0 0 auto; }
 /* Custom From/To: the wrap is transparent (display: contents) so its From/To
    fields join the SAME single toolbar row as the other filters. The .hidden
    class (JS toggle) still wins over this (display:none !important). */
@@ -528,6 +531,13 @@ body.lb-open { overflow: hidden; }
   color: var(--muted); font-size: 11px; margin-left: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+/* Per-container refresh: reload ONLY this card's log tail (no full-tab reload). */
+.dbg-refresh {
+  flex: 0 0 auto; width: auto; min-width: 34px; min-height: 30px;
+  padding: 2px 10px; margin-left: 6px;
+  font-size: 14px; line-height: 1;
+}
+.dbg-refresh:disabled { opacity: .5; cursor: default; }
 .dbg-err { color: var(--amber); padding: 8px 12px; font-size: 13px; }
 .dbg-logs {
   margin: 0; padding: 10px 12px;

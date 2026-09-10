@@ -65,16 +65,26 @@ mqtt:
 # ------------------------------------------------------------------
 go2rtc:
   streams:
-    cam01: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
-    cam02: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
-    cam03: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
-    cam04: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
-    cam05: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
-    cam06: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
-    cam07: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
-    cam08: rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
-    cam09: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
-    cam10: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
+    cam01: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
+    cam02: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
+    cam03: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
+    cam04: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
+    cam05: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
+    cam06: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
+    cam07: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
+    cam08: 
+      rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
+    cam09: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
+    cam10: 
+      rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
     # ------------------------------------------------------------------
     # <cam>_portal sources: SAME video as the base <cam>, but the audio is
     # re-encoded to AAC. The cameras send G.711 (PCMU) audio, which browsers/
@@ -235,7 +245,7 @@ objects:
       threshold: 0.65
     truck:
       min_score: 0.5
-      threshold: 0.65   
+      threshold: 0.65
 
 # ------------------------------------------------------------------
 # Recording - EVENT-ONLY (Phase 0b).
@@ -305,7 +315,8 @@ cameras:
   cam01:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
           roles: [detect]
     objects:
       track:
@@ -341,10 +352,35 @@ cameras:
       height: 360
       fps: 1
 
+    zones:
+      diwan1:
+        coordinates: 0.905,0.537,0.832,0.519,0.719,0.768,0.854,0.832,0.881,0.703
+        loitering_time: 0
+        friendly_name: Diwan1
+      diwan2:
+        coordinates: 0.67,0.868,0.604,0.992,0.806,0.998,0.815,0.916,0.754,0.932
+        loitering_time: 0
+        friendly_name: Diwan2
+      estraha_door:
+        coordinates: 
+          0.916,0.417,0.924,0.447,0.897,0.611,0.889,0.649,0.842,0.846,0.793,0.956,0.743,0.924,0.782,0.81,0.826,0.81
+        loitering_time: 0
+        friendly_name: Estraha Door
+      estraha_front:
+        coordinates: 
+          0.594,0.361,0.474,0.405,0.421,0.421,0.273,0.467,0.062,0.553,-0.001,0.579,0.001,0.998,0.593,0.986,0.666,0.858,0.732,0.906,0.771,0.798,0.715,0.772,0.825,0.519,0.639,0.373
+        loitering_time: 0
+        friendly_name: Estraha Front
+      estraha_road:
+        coordinates: 
+          0.011,0.351,0.019,0.565,0.4,0.411,0.585,0.353,0.732,0.311,0.836,0.291,0.862,0.273,0.808,0.246,0.74,0.24,0.672,0.248,0.604,0.232,0.511,0.232,0.437,0.228,0.334,0.259,0.268,0.279,0.141,0.311
+        loitering_time: 0
+        friendly_name: Estraha Road
   cam02:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
           roles: [detect]
     objects:
       track:
@@ -366,17 +402,25 @@ cameras:
     # detect frame. Revisit if you miss detections.
     # ------------------------------------------------------------------
     motion:
-      mask: 0.059,0.154,0.001,0.114,-0.001,0.002,0.996,0.004,0.999,0.226,0.786,0.226,0.572,0.184,0.461,0.188,0.338,0.176,0.228,0.174,0.12,0.18,0.073,0.208
+      mask: 
+        0.059,0.154,0.001,0.114,-0.001,0.002,0.996,0.004,0.999,0.226,0.786,0.226,0.572,0.184,0.461,0.188,0.338,0.176,0.228,0.174,0.12,0.18,0.073,0.208
     detect:
       enabled: true
       width: 640
       height: 360
       fps: 1
 
+    zones:
+      solar_panels:
+        coordinates: 
+          0.396,0.305,0.386,0.21,0.302,0.206,0.202,0.21,0.042,0.228,0.043,0.399,0.045,0.431,0.092,0.405,0.268,0.357
+        loitering_time: 0
+        friendly_name: Solar panels
   cam03:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
           roles: [detect]
     objects:
       track:
@@ -398,17 +442,34 @@ cameras:
     # detect frame. Revisit if you miss detections.
     # ------------------------------------------------------------------
     motion:
-      mask: 1,0.553,0.745,0.495,0.542,0.451,0.476,0.433,0.324,0.431,0.226,0.389,0.114,0.379,0.037,0.391,0.001,0.369,0.002,0.004,0.997,-0.002
+      mask: 
+        1,0.553,0.745,0.495,0.542,0.451,0.476,0.433,0.324,0.431,0.226,0.389,0.114,0.379,0.037,0.391,0.001,0.369,0.002,0.004,0.997,-0.002
     detect:
       enabled: true
       width: 640
       height: 360
       fps: 1
 
+    zones:
+      zone_a3829a54:
+        coordinates: 
+          0.871,0.705,0.746,0.565,0.659,0.557,0.517,0.531,0.442,0.509,0.391,0.503,0.31,0.507,0.268,0.527,0.27,0.559,0.423,0.577,0.495,0.613,0.602,0.635,0.695,0.677
+        loitering_time: 0
+        friendly_name: Field2.5
+      hoash_door_1:
+        coordinates: 0.132,0.453,0.131,0.563,0.091,0.569,0.088,0.453
+        loitering_time: 0
+        friendly_name: Hoash Door 1
+      estraha_road_2:
+        coordinates: 
+          0.75,0.563,0.8,0.625,0.879,0.713,0.994,0.8,0.999,0.723,0.895,0.673,0.827,0.601,0.805,0.561
+        loitering_time: 0
+        friendly_name: Estraha Road 2
   cam04:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
           roles: [detect]
     # Farm view (cows/sheep normally present): ignore all animal detections,
     # track only person and car. This overrides the global objects.track list.
@@ -434,7 +495,8 @@ cameras:
   cam05:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
           roles: [detect]
     # Farm view (cows/sheep normally present): ignore all animal detections,
     # track only person and car. This overrides the global objects.track list.
@@ -450,7 +512,8 @@ cameras:
     # detect frame. Revisit if you miss detections.
     # ------------------------------------------------------------------
     motion:
-      mask: 0.002,0.194,0.406,0.112,0.552,0.092,0.687,0.038,0.774,0.024,0.883,0.032,0.991,0.044,0.996,0.004,0.003,0
+      mask: 
+        0.002,0.194,0.406,0.112,0.552,0.092,0.687,0.038,0.774,0.024,0.883,0.032,0.991,0.044,0.996,0.004,0.003,0
     detect:
       enabled: true
       width: 640
@@ -460,7 +523,8 @@ cameras:
   cam06:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
           roles: [detect]
     # Farm view (cows/sheep normally present): ignore all animal detections,
     # track only person and car. This overrides the global objects.track list.
@@ -474,10 +538,17 @@ cameras:
       height: 360
       fps: 1
 
+    zones:
+      housh_2_door:
+        coordinates: 
+          0.262,0.21,0.163,0.265,0.172,0.459,0.177,0.491,0.273,0.485,0.302,0.457,0.297,0.375
+        loitering_time: 0
+        friendly_name: Housh 2 Door
   cam07:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
           roles: [detect]
     # Farm view (cows/sheep normally present): ignore all animal detections,
     # track only person and car. This overrides the global objects.track list.
@@ -493,7 +564,8 @@ cameras:
     # detect frame. Revisit if you miss detections.
     # ------------------------------------------------------------------
     motion:
-      mask: 0.883,0.012,0.835,0.293,0.577,0.253,0.287,0.15,0.175,0.142,0.063,0.124,0,0.126,0,0
+      mask: 
+        0.883,0.012,0.835,0.293,0.577,0.253,0.287,0.15,0.175,0.142,0.063,0.124,0,0.126,0,0
     detect:
       enabled: true
       width: 640
@@ -509,7 +581,8 @@ cameras:
   cam08:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
+        - path: 
+            rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
           roles: [detect]
     objects:
       track:
@@ -535,7 +608,8 @@ cameras:
   cam09:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
           roles: [detect]
     objects:
       track:
@@ -558,10 +632,17 @@ cameras:
       height: 360
       fps: 1
 
+    zones:
+      field_west:
+        coordinates: 
+          0.455,0.479,0.264,0.503,0.118,0.523,0.42,0.539,0.562,0.523,0.621,0.485
+        loitering_time: 0
+        friendly_name: Field  West
   cam10:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
+        - path: 
+            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
           roles: [detect]
     objects:
       track:

@@ -157,7 +157,7 @@ See [`plans/scene-description.md`](plans/scene-description.md).
 | Dev files | [`scenewatch/scenewatch.py`](scenewatch/scenewatch.py) (watcher), [`scenewatch/requirements.txt`](scenewatch/requirements.txt), model [`models/scene/`](models/scene/) (git-ignored) |
 | Config | [`config/scenewatch.conf`](config/scenewatch.conf) (`/config/scenewatch.conf`) |
 | Model | SmolVLM2-500M-Instruct, OpenVINO **INT4** IR, resident in RAM; `MODEL_DEVICE=CPU` (iGPU stays with Frigate's detector) |
-| Model prerequisite | **NOT deployed by git** (~500 MB): produce with [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) — see [`models/scene/README.md`](models/scene/README.md) |
+| Model prerequisite | **NOT deployed by git**: fetch with [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) (`--repo int4` default ~356 MB, `int8` ~509 MB; plain `curl`, no optimum/torch) — see [`models/scene/README.md`](models/scene/README.md) |
 | Scene store | `./media/scenewatch/` (`scenewatch.db` WAL; optional `<cam>/*.jpg` when `STORE_IMAGES=true`) |
 | Volumes | `./scenewatch:/scenewatch:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
@@ -352,7 +352,7 @@ Developer scripts of note (local, not deployed):
 | [`dev_scripts/deploy_all.sh`](dev_scripts/deploy_all.sh) | SSH to host, `git pull --ff-only`, `docker compose up -d --build` + restart ALL services, verify |
 | [`dev_scripts/run_ssh.sh`](dev_scripts/run_ssh.sh) | Run ONE read-only remote command (SSH_ASKPASS, no `sshpass`) |
 | [`dev_scripts/prep_fire_model.sh`](dev_scripts/prep_fire_model.sh) | `best.pt` → OpenVINO IR (`models/fire/`) |
-| [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) | SmolVLM HF → OpenVINO INT4 IR (`models/scene/`, git-ignored) |
+| [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) | Download a pre-converted SmolVLM2 OpenVINO export into `models/scene/` (git-ignored) with `curl`; `--export` builds one with `optimum-cli` instead |
 | [`dev_scripts/promote_fire_model.sh`](dev_scripts/promote_fire_model.sh) | Promote a versioned checkpoint to ACTIVE |
 | [`dev_scripts/test_fire_model.py`](dev_scripts/test_fire_model.py) | Local fire-model benchmark |
 | Other `dev_scripts/*` | dataset build / analysis helpers |
@@ -362,10 +362,10 @@ Workflow:
 2. Run `./dev_scripts/deploy_all.sh` (host syncs to `origin/master`; every service is restarted).
 3. The script verifies stack state, effective Frigate config, `firewatch.py --check` and a `--dry-run` pass.
 
-> **scenewatch deploy prerequisite:** its SmolVLM IR (~500 MB) is **not** in git,
-> so before the first `scenewatch` start it must exist on the host at
-> `models/scene/` (run [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh)
-> there, or copy the export over). Verify with
+> **scenewatch deploy prerequisite:** its SmolVLM export (~356–509 MB) is **not**
+> in git, so before the first `scenewatch` start it must exist on the host at
+> `models/scene/`. Fetch it **on the host** (no pip/optimum needed):
+> `bash dev_scripts/prep_scene_model.sh` (or `--repo int8`). Verify with
 > `docker compose exec scenewatch python /scenewatch/scenewatch.py --check`.
 
 Ownership rules: deploy/git handoff runs as **`dr`** (owner of `/home/dr/frigate`);

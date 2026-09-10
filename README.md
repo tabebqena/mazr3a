@@ -61,7 +61,7 @@ face/gait profiling, a native in-Frigate fire model) stay deferred to later phas
 ├── dev_scripts/                # LOCAL scripts - dev/debug + deploy orchestrators only
 │   ├── deploy_all.sh           # git-based FULL deploy (configs + firewatch + model)
 │   ├── prep_fire_model.sh      # best.pt -> OpenVINO IR (models/fire)
-│   ├── prep_scene_model.sh     # SmolVLM -> OpenVINO INT4 IR (models/scene, git-ignored)
+│   ├── prep_scene_model.sh     # fetch a pre-converted SmolVLM2 OV export (models/scene, git-ignored)
 │   ├── promote_fire_model.sh   # Promote a versioned checkpoint to ACTIVE
 │   ├── test_fire_model.py      # Local fire-model benchmark
 │   └── ...                     # dataset/build/analyze helpers (see plans)
@@ -403,8 +403,8 @@ How it works:
 
 Operate:
 ```bash
-# PREREQUISITE: the ~500 MB model is NOT in git - produce/copy it first
-./dev_scripts/prep_scene_model.sh          # or copy models/scene/ to the host
+# PREREQUISITE: the model is NOT in git - fetch it first (curl only, no pip/torch)
+bash dev_scripts/prep_scene_model.sh       # default --repo int4 (~356 MB)
 docker compose up -d --build scenewatch
 docker compose logs -f scenewatch          # watch captions / skips
 docker compose exec scenewatch python /scenewatch/scenewatch.py --check     # load + probe caption

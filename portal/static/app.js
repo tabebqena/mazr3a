@@ -167,7 +167,7 @@ async function boot() {
 
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
-  const VIEWS = ['live', 'events', 'fire', 'debug'];
+  const VIEWS = ['live', 'events', 'fire', 'scenes', 'debug'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
   // Debug is admin-only: a non-admin who lands on #/debug falls back to Live.
   if (view === 'debug' && !(state.me && state.me.is_admin)) view = 'live';
@@ -179,6 +179,7 @@ function onRoute() {
   if (view === 'live') ensureLive();
   else if (view === 'events') loadEvents();
   else if (view === 'fire') reloadFire();   // page-based: reset to page 1 on entry
+  else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
 }
 
@@ -208,6 +209,7 @@ function refreshCamSelects() {
   }).join('');
   $('#ev-cam').innerHTML = '<option value="">all cameras</option>' + opts;
   $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + opts;
+  $('#sc-cam').innerHTML = '<option value="">all cameras</option>' + opts;
 }
 
 /* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
@@ -1632,6 +1634,136 @@ $('#fw-lightbox').addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeFireLightbox();
+});
+
+/* ------------- scenewatch scene descriptions (paged + time-filtered) ---------
+   One row per captioned frame (scenewatch's two-frame motion gate; `reason`
+   says whether motion or the periodic baseline triggered it). The tab lists the
+   description + camera + time; the stored frame is the card image and opens in
+   a lightbox. Rows captured while STORE_IMAGES=false carry no image. */
+const SC_PAGE = 24;
+let scPage = 1;
+let scPages = 1;
+let scMeta = {};              // scene id -> full record (for the lightbox)
+
+function reloadScenes() {
+  scPage = 1;
+  scMeta = {};
+  loadScenes();
+}
+$('#sc-refresh').addEventListener('click', reloadScenes);
+$('#sc-cam').addEventListener('change', reloadScenes);
+$('#sc-reason').addEventListener('change', reloadScenes);
+wireTimeControls('sc', reloadScenes);
+$('#sc-prev').addEventListener('click', () => {
+  if (scPage > 1) { scPage--; loadScenes(); }
+});
+$('#sc-next').addEventListener('click', () => {
+  if (scPage < scPages) { scPage++; loadScenes(); }
+});
+
+async function loadScenes() {
+  const box = $('#sc-list');
+  const st = $('#sc-status');
+  st.textContent = 'Loading…';
+  hidePager('sc');
+  try {
+    const { after, before } = timeRange($('#sc-time'), $('#sc-from'), $('#sc-to'));
+    const p = new URLSearchParams({
+      limit: String(SC_PAGE),
+      offset: String((scPage - 1) * SC_PAGE),
+    });
+    const cam = $('#sc-cam').value; if (cam) p.set('camera', cam);
+    const rsn = $('#sc-reason').value; if (rsn) p.set('reason', rsn);
+    if (after) p.set('after', String(after));
+    if (before) p.set('before', String(before));
+    const data = await api('/api/scenes?' + p.toString());
+    const total = data.total || 0;
+    scPages = Math.max(1, Math.ceil(total / SC_PAGE));
+    if (scPage > scPages) scPage = scPages;
+    // `note` explains an empty list (DB missing, or scenewatch never captioned).
+    st.textContent = (total ? total + ' description(s)' : '') +
+      (data.note ? (total ? ' — ' : '') + data.note : '');
+    box.innerHTML = '';
+    if (!data.items.length) {
+      box.innerHTML = '<div class="empty">No scene descriptions</div>';
+      hidePager('sc');
+      return;
+    }
+    const frag = document.createElement('div');
+    frag.innerHTML = data.items.map(sceneCard).join('');
+    $$('.card', frag).forEach(c => box.appendChild(c));
+    renderPager('sc', scPage, scPages);
+  } catch (e) {
+    st.textContent = '';
+    box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    hidePager('sc');
+  }
+}
+
+function sceneTags(s) {
+  return '<span class="tag ' + (s.reason === 'baseline' ? 'baseline' : 'motion') + '">' +
+    esc(s.reason || '') + '</span>';
+}
+
+function sceneCard(s) {
+  scMeta[s.id] = s;
+  const img = s.has_image
+    ? '<div class="sc-imgwrap"><img class="sc-img" data-id="' + s.id + '" ' +
+      'src="' + esc(s.image_url) + '" alt="scene frame" loading="lazy"></div>'
+    : '<div class="sc-imgwrap noimg">no image stored</div>';
+  return '<div class="card">' +
+    '<div class="thumb">' + img + '</div>' +
+    '<div class="scene-desc">' + esc(s.description || '') + '</div>' +
+    '<div class="meta">' +
+      sceneTags(s) +
+      '<span class="tag">' + esc(s.camera) + '</span>' +
+      '<span class="muted">' + esc(fmtDT(s.captured_at)) + '</span>' +
+      (s.motion_frac ? '<span class="muted">motion ' +
+        (Number(s.motion_frac) * 100).toFixed(2) + '%</span>' : '') +
+      (s.latency_ms ? '<span class="muted">' + Number(s.latency_ms) + ' ms</span>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+/* -------- scene lightbox: click a card image to view the frame larger ------ */
+function openSceneLightbox(id) {
+  const s = scMeta[id];
+  if (!s || !s.has_image) return;
+  const img = $('#sc-lb-img');
+  $('#sc-lb-title').textContent = 'Scene #' + id;
+  $('#sc-lb-meta').innerHTML =
+    sceneTags(s) +
+    '<span class="tag">' + esc(s.camera || '') + '</span>' +
+    '<span class="muted">' + esc(fmtDT(s.captured_at)) + '</span>' +
+    '<div class="lb-desc">' + esc(s.description || '') + '</div>';
+  img.onerror = () => { img.onerror = null; };
+  $('#sc-lightbox').classList.remove('hidden');
+  document.body.classList.add('lb-open');
+  img.src = s.image_url;
+}
+
+function closeSceneLightbox() {
+  const lb = $('#sc-lightbox');
+  if (!lb || lb.classList.contains('hidden')) return;
+  lb.classList.add('hidden');
+  document.body.classList.remove('lb-open');
+  const img = $('#sc-lb-img');
+  img.onerror = null;
+  img.removeAttribute('src');
+}
+
+// Delegated so it survives every re-render (cards are replaced on each load).
+$('#sc-list').addEventListener('click', (e) => {
+  const el = e.target.closest('.sc-img');
+  if (el && el.dataset.id) openSceneLightbox(el.dataset.id);
+});
+$('#sc-lb-close').addEventListener('click', closeSceneLightbox);
+$('#sc-lightbox').addEventListener('click', (e) => {
+  if (e.target.closest('[data-sc-close]')) closeSceneLightbox();   // backdrop tap
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSceneLightbox();
 });
 
 /* ---------------- admin Debug: logs of containers (selectable) ---------------- */

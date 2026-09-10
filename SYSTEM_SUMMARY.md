@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v7` |
+| Summary version | `v8` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.3.16` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.3.17` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -36,7 +36,7 @@ core, with purpose-built side services around it:
 - **telegram-bot** answers `/status`, `/help`, `/start` live from Telegram.
 - **logs** is a read-only Docker-logs sidecar for the portal's admin Debug tab.
 - **portal** is an authenticated FastAPI + vanilla-JS SPA (login, live view,
-  events, fire alerts) published via a Cloudflare Tunnel.
+  events, fire alerts, scene descriptions) published via a Cloudflare Tunnel.
 - **mqtt** (Mosquitto) is the event broker.
 - Host **cron** runs the unified disk heartbeat, a CPU-temp + iGPU watchdog, a
   daily health report and a state sampler.
@@ -137,8 +137,8 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), admin Debug tab |
-| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenewatch scene descriptions** (Scenes tab: caption list + the stored frame in a lightbox, read-only via [`portal/scenestore.py`](portal/scenestore.py)), admin Debug tab |
+| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/scenestore.py`](portal/scenestore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw for SQLite WAL read) |
@@ -158,7 +158,7 @@ See [`plans/scene-description.md`](plans/scene-description.md).
 | Config | [`config/scenewatch.conf`](config/scenewatch.conf) (`/config/scenewatch.conf`) |
 | Model | SmolVLM2-500M-Instruct, OpenVINO **INT4** IR, resident in RAM; `MODEL_DEVICE=CPU` (iGPU stays with Frigate's detector) |
 | Model prerequisite | **NOT deployed by git**: fetch with [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) (`--repo int4` default ~356 MB, `int8` ~509 MB; plain `curl`, no optimum/torch) — see [`models/scene/README.md`](models/scene/README.md) |
-| Scene store | `./media/scenewatch/` (`scenewatch.db` WAL; optional `<cam>/*.jpg` when `STORE_IMAGES=true`) |
+| Scene store | `./media/scenewatch/` (`scenewatch.db` WAL + `<cam>/*.jpg` — `STORE_IMAGES=true` by default so the portal's Scenes tab has a frame to open) |
 | Volumes | `./scenewatch:/scenewatch:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
 | Notes | Code/config edits need only `docker compose restart scenewatch`. No host cron entry — the sweep loop runs in-container. Mirrors firewatch's motion gate; per-camera `CAPTION_COOLDOWN_S` bounds the caption cost. |

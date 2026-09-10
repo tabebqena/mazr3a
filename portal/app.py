@@ -20,7 +20,7 @@ from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, StreamingResponse,
 )
 
-from portal import auth, config as pconf, firestore, frigate
+from portal import auth, config as pconf, firestore, frigate, scenestore
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
@@ -37,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.3.16"
+APP_VERSION = "0.3.17"
 _HTMX = None
 
 
@@ -571,6 +571,50 @@ async def fire_image(frame_id: int, request: Request,
     cfg = _cfg(request)
     db = pconf.get(cfg, "FIREWATCH_DB", "/media/firewatch.db")
     path = firestore.frame_image_path(cfg, db, frame_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=300"})
+
+
+# --------------------------------------------------------------------------
+# scenewatch scene descriptions (the "Scenes" tab)
+#
+# scenewatch (scenewatch/scenewatch.py) stores one row per captioned frame in a
+# WAL SQLite DB inside its own store dir (default ./media/scenewatch/ on the host,
+# seen here as /media/scenewatch). The portal only ever READS it (scenestore
+# uses PRAGMA query_only) - scenewatch remains the single writer.
+#
+# SCENE_DB / SCENE_JPG_ROOT come from portal.conf; the defaults match the
+# compose service's STORE_DIR, and the image endpoint additionally validates
+# that the file lives under SCENE_JPG_ROOT before serving it.
+# --------------------------------------------------------------------------
+def _scene_db(request: Request) -> str:
+    return pconf.get(_cfg(request), "SCENE_DB", "/media/scenewatch/scenewatch.db")
+
+
+@app.get("/api/scenes")
+async def scenes(request: Request, user: dict = Depends(current_user),
+                 camera: Optional[str] = None, reason: Optional[str] = None,
+                 with_image: Optional[int] = None,
+                 after: Optional[float] = None, before: Optional[float] = None,
+                 limit: int = 50, offset: int = 0):
+    return scenestore.list_scenes(
+        _scene_db(request),
+        camera=camera or None,
+        reason=reason or None,
+        with_image=None if with_image is None else bool(with_image),
+        after=after, before=before,
+        limit=limit, offset=offset,
+    )
+
+
+@app.get("/api/scenes/{scene_id}/image.jpg")
+async def scene_image(scene_id: int, request: Request,
+                      user: dict = Depends(current_user)):
+    cfg = _cfg(request)
+    root = pconf.get(cfg, "SCENE_JPG_ROOT", "") or None
+    path = scenestore.scene_image_path(_scene_db(request), scene_id, root=root)
     if not path:
         raise HTTPException(status_code=404, detail="image not found")
     return FileResponse(path, media_type="image/jpeg",

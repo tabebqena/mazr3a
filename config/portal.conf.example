@@ -64,3 +64,14 @@ FRIGATE_API=http://frigate:5000
 FIREWATCH_DB=/media/firewatch.db
 FIREWATCH_JPG_PREFIX=/media/firewatch/
 FIREWATCH_JPG_REPLACE=/media/
+
+# ------------------------------------------------------------------
+# scenewatch scene-description store (read-only consumer, "Scenes" tab).
+# scenewatch writes STORE_DIR=/media/scenewatch - its own subdir of the same
+# host ./media tree this container mounts at /media - so its stored absolute
+# jpg_path (/media/scenewatch/<cam>/x.jpg) needs NO prefix remap.
+# SCENE_JPG_ROOT is the safety guard: a stored image is served only when it
+# resolves INSIDE this directory.
+# ------------------------------------------------------------------
+SCENE_DB=/media/scenewatch/scenewatch.db
+SCENE_JPG_ROOT=/media/scenewatch

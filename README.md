@@ -473,13 +473,22 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   `firewatch.py`). The view **defaults to alerts only** (uncheck "alerts only" to browse all
   detections), has **numbered pagination** and the same preset/custom **time filter**, and
   auto-refreshes when any filter changes.
+- **Scenes** — the scene descriptions written by the **scenewatch** service
+  ([`portal/scenestore.py`](portal/scenestore.py) reads its WAL DB read-only). One card per
+  caption, newest first, showing the **description text** plus camera, trigger
+  (`motion`/`baseline`), time, motion fraction and inference latency. The card image is the
+  frame stored with that caption — **click it to open the picture full-size** in a lightbox.
+  Filterable by camera/trigger with the same numbered pagination + preset/custom time filter.
+  (Cards for rows captured while `STORE_IMAGES=false` list the text with a
+  "no image stored" placeholder.)
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
 `live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the Access policy,
 and the portal login gates the dashboard/API on top. Live HLS is same-origin — the portal
 proxies Frigate's `/api/go2rtc/*` server-side — so it needs no extra tunnel path mapping and
-flows through the portal's own Access/session boundary. Frigate REST/DB and the Firewatch
-WAL DB (`./media/firewatch.db`) are reached only server-side by the portal.
+flows through the portal's own Access/session boundary. Frigate REST/DB, the Firewatch WAL DB
+(`./media/firewatch.db`) and the scenewatch scene DB (`./media/scenewatch/scenewatch.db`) are
+reached only server-side by the portal.
 
 ```bash
 docker compose up -d --build portal

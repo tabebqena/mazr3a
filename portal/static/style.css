@@ -601,3 +601,33 @@ body.lb-open { overflow: hidden; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
   .toast { left: 50%; right: auto; transform: translateX(-50%); }
 }
+
+/* ================= SCENES TAB (scenewatch captions) =================
+   Reuses .grid / .card / .thumb / .meta / .tag and the fire-evidence lightbox
+   chrome (.fw-lightbox / .fw-lb-*); only the caption text, the no-image
+   placeholder, the `baseline` tag and the lightbox description line are new. */
+.scene-desc {
+  padding: 10px 12px 0;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.sc-imgwrap { position: relative; cursor: zoom-in; }
+.sc-imgwrap img { width: 100%; display: block; }
+.sc-imgwrap.noimg {
+  display: grid; place-items: center;
+  min-height: 130px;
+  background: #111; color: var(--muted);
+  font-size: 13px; cursor: default;
+}
+/* `baseline` = the periodic describe of a still scene (no motion triggered it);
+   `motion` reuses the firewatch motion tag colour. */
+.tag.baseline { background: #1d3a2a; color: #7bdca0; }
+/* The caption text, on its own line inside the lightbox meta row. */
+.fw-lb-meta .lb-desc {
+  flex-basis: 100%;
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}

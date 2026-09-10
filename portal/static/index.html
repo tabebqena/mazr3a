@@ -36,6 +36,7 @@
         <a data-view="live" href="#/live">Live</a>
         <a data-view="events" href="#/events">Events</a>
         <a data-view="fire" href="#/fire">Fire alerts</a>
+        <a data-view="scenes" href="#/scenes">Scenes</a>
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
@@ -192,6 +193,37 @@
         </div>
       </section>
 
+      <!-- scenewatch scene descriptions: one card per caption, newest first.
+           Mirrors the Fire alerts tab (camera/trigger/time filters, numbered
+           pagination). Each card shows the description + camera + time; the
+           stored frame is the card image and opens in a lightbox on click.
+           Rows captured while STORE_IMAGES=false have no image. -->
+      <section id="view-scenes" class="view hidden">
+        <div class="controls">
+          <label>Camera <select id="sc-cam"></select></label>
+          <label>Trigger
+            <select id="sc-reason">
+              <option value="">all</option>
+              <option value="motion">motion</option>
+              <option value="baseline">baseline</option>
+            </select>
+          </label>
+          <label>Time <select id="sc-time"></select></label>
+          <div id="sc-custom-wrap" class="time-custom hidden" data-preset-sel="sc-time">
+            <label>From <input id="sc-from" type="datetime-local"></label>
+            <label>To <input id="sc-to" type="datetime-local"></label>
+          </div>
+          <button id="sc-refresh" type="button" title="Reload scene descriptions">Refresh</button>
+        </div>
+        <div id="sc-status" class="status"></div>
+        <div id="sc-list" class="grid"></div>
+        <div id="sc-pager" class="pager hidden">
+          <button id="sc-prev" type="button">&#8249; Prev</button>
+          <span id="sc-pageno" class="pageno"></span>
+          <button id="sc-next" type="button">Next &#8250;</button>
+        </div>
+      </section>
+
       <!-- Admin-only Debug: last log messages of containers. Pulled on demand
            from the read-only `logs` sidecar when this tab opens (the sidecar
            stays idle; there is no polling). Visible only to admin.
@@ -255,6 +287,26 @@
           <div id="fw-lb-boxes" class="fw-lb-boxes"></div>
         </div>
         <div id="fw-lb-meta" class="fw-lb-meta"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scene lightbox: the frame stored with a scene description, as large as
+       fits, plus its camera/time/trigger metadata and the caption text.
+       Reuses the fire-evidence lightbox chrome (.fw-lightbox/.fw-lb-*). -->
+  <div id="sc-lightbox" class="fw-lightbox hidden" role="dialog"
+       aria-modal="true" aria-label="Scene description - larger view">
+    <div class="fw-backdrop" data-sc-close></div>
+    <div class="fw-lb-card">
+      <div class="fw-lb-head">
+        <span id="sc-lb-title">Scene</span>
+        <button id="sc-lb-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div class="fw-lb-body">
+        <div class="fw-lb-frame">
+          <img id="sc-lb-img" alt="scene frame - larger view">
+        </div>
+        <div id="sc-lb-meta" class="fw-lb-meta"></div>
       </div>
     </div>
   </div>

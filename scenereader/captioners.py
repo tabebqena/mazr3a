@@ -1,4 +1,7 @@
-"""models.py - the captioner backends behind one interface.
+"""captioners.py - the captioner backends behind one interface.
+
+(Named `captioners`, not `models`, so it can never be confused with the repo's
+top-level `models/` directory of model artifacts.)
 
 Two backends, selected by MODEL_BACKEND (plans/event-scene-reader.md §8.1):
 
@@ -192,7 +195,7 @@ class LlamaCppCaptioner(Captioner):
             return None
         if out.returncode != 0:
             return None
-        # the CLI echoes the prompt; keep the longest non-prompt line block
+        # the CLI echoes the prompt back; keep the answer lines only
         lines = [ln.strip() for ln in (out.stdout or "").splitlines()]
         body = [ln for ln in lines if ln and not ln.startswith("llama_")
                 and prompt.strip()[:24] not in ln]
@@ -200,7 +203,7 @@ class LlamaCppCaptioner(Captioner):
 
 
 # ---------------------------------------------------------------------------
-# OpenVINO GenAI (the RETAINED 2B IR) - unchanged semantics from scenewatch
+# OpenVINO GenAI (the RETAINED 2B IR)
 # ---------------------------------------------------------------------------
 class OpenVinoCaptioner(Captioner):
     """Qwen2-VL-2B int4 via openvino_genai.VLMPipeline, loaded once and kept.
@@ -224,6 +227,7 @@ class OpenVinoCaptioner(Captioner):
         except ImportError as exc:  # image without the retained runtime
             raise RuntimeError(
                 "openvino-genai is not available in this image: {}".format(exc))
+
         self.model_dir = model_dir
         self.name = os.path.basename(model_dir) or model_dir
         self.device = str(device or "CPU").upper()
@@ -233,6 +237,7 @@ class OpenVinoCaptioner(Captioner):
         props = {}
         if self.device.startswith("CPU") and self._threads > 0:
             props["INFERENCE_NUM_THREADS"] = str(self._threads)
+        self.pipe = None
         try:
             self.pipe = ov_genai.VLMPipeline(model_dir, self.device, props)
         except TypeError:

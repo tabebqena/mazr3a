@@ -33,6 +33,15 @@ models/fire/versions/
 # labelmap.txt ride the git deploy; frigate loads them from /models/coco via the
 # ./models:/models:ro mount. config/ holds ONLY config (no models).
 
+# scenewatch SmolVLM scene-description model is GIT-IGNORED (2026-09-10): the
+# OpenVINO INT4 export is ~500 MB, far too large for git history (unlike the
+# 20 MB models/fire/ ACTIVE set). It is produced by
+# dev_scripts/prep_scene_model.sh and fetched onto the host as a deploy
+# prerequisite. Provenance: models/scene/README.md + VERSIONS.md (tracked).
+models/scene/*
+!models/scene/README.md
+!models/scene/VERSIONS.md
+
 # ------------------------------------------------------------------
 # Host Frigate runtime files that Frigate ITSELF writes into config/ on the
 # host (verified on ssh.mazr3a.garden 2026-09-06) - auto-generated, never

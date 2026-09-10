@@ -3,9 +3,11 @@
 Baseline deployment of **Frigate NVR** + **Mosquitto MQTT** on a Debian host with
 10 IP cameras (9 UNV/VCP + 1 Hikvision). Fire/smoke detection is provided by an
 external **firewatch** service with instant Telegram photo alerts
-([`plans/fire-detection.md`](plans/fire-detection.md)). The remaining AI features
-(Ollama descriptions, daily summaries, face/gait profiling, a native in-Frigate
-fire model) stay deferred to later phases.
+([`plans/fire-detection.md`](plans/fire-detection.md)), and live **scene
+descriptions** by a **scenewatch** service running a small resident SmolVLM model
+([`plans/scene-description.md`](plans/scene-description.md)). The remaining AI
+features (Frigate-event/clip enrichment, a portal scene view, daily LLM summaries,
+face/gait profiling, a native in-Frigate fire model) stay deferred to later phases.
 
 > **System map:** [`SYSTEM_SUMMARY.md`](SYSTEM_SUMMARY.md) is the maintained
 > inventory of every service, its development-file locations, the host crontab,
@@ -27,7 +29,7 @@ fire model) stay deferred to later phases.
 
 ```
 .
-├── docker-compose.yml          # Frigate + Mosquitto + firewatch services
+├── docker-compose.yml          # Frigate + Mosquitto + firewatch + scenewatch services
 ├── .env.example                # RTSP credentials template (commit this)
 ├── .env                        # RTSP credentials (git-ignored; copy from .env.example)
 ├── config/
@@ -36,12 +38,14 @@ fire model) stay deferred to later phases.
 │   ├── stores/                 # Per-service cleanup profiles (one <service>.conf each)
 │   │   ├── frigate.conf        #   Frigate media (recordings/clips/snapshots/cache)
 │   │   ├── firewatch.conf      #   firewatch evidence (DB-aware, docker-exec delegate)
+│   │   ├── scenewatch.conf     #   scene DB + optional captioned JPEGs (media/scenewatch/)
 │   │   ├── watchdog.conf       #   watchdog baseline CSVs (media/watchdog/)
 │   │   ├── mosquitto.conf      #   mosquitto data/log
 │   │   └── logs.conf           #   host deploy-root runtime logs
 │   ├── cleanup_firewatch.conf  # firewatch in-container DB cleanup tunables (worker)
 │   ├── cleanup_media.conf      # SUPERSEDED 2026-09-09 (was cleanup_media.sh tunables)
 │   ├── firewatch.conf          # Fire-watch tunables (cameras, cadence, thresholds)
+│   ├── scenewatch.conf         # Scene-description tunables (motion gate, caption cadence)
 │   └── telegram.conf           # Telegram bot creds (git-ignored; example in repo)
 ├── scripts/                    # HOST scripts - deployed to & run on the Frigate host
 │   ├── heartbeat_cleanup.py    # UNIFIED disk heartbeat (per-service + global cap; root cron)
@@ -57,6 +61,7 @@ fire model) stay deferred to later phases.
 ├── dev_scripts/                # LOCAL scripts - dev/debug + deploy orchestrators only
 │   ├── deploy_all.sh           # git-based FULL deploy (configs + firewatch + model)
 │   ├── prep_fire_model.sh      # best.pt -> OpenVINO IR (models/fire)
+│   ├── prep_scene_model.sh     # SmolVLM -> OpenVINO INT4 IR (models/scene, git-ignored)
 │   ├── promote_fire_model.sh   # Promote a versioned checkpoint to ACTIVE
 │   ├── test_fire_model.py      # Local fire-model benchmark
 │   └── ...                     # dataset/build/analyze helpers (see plans)
@@ -64,9 +69,14 @@ fire model) stay deferred to later phases.
 │   ├── Dockerfile              # firewatch runtime image (deps only)
 │   ├── requirements.txt        # openvino + numpy + Pillow
 │   └── firewatch.py            # Fire-watch watcher (runs in the firewatch container)
+├── scenewatch/
+│   ├── Dockerfile              # scenewatch runtime image (deps only)
+│   ├── requirements.txt        # openvino-genai + numpy + Pillow
+│   └── scenewatch.py           # Scene-description watcher (runs in the scenewatch container)
 ├── models/
 │   ├── coco/                   # Frigate COCO detector ONNX (git-tracked; ACTIVE yolo11n)
-│   └── fire/                   # Fire/smoke ACTIVE OpenVINO IR model (git-tracked; versions/ ignored)
+│   ├── fire/                   # Fire/smoke ACTIVE OpenVINO IR model (git-tracked; versions/ ignored)
+│   └── scene/                  # SmolVLM OpenVINO IR (GIT-IGNORED ~500 MB; prep_scene_model.sh)
 ├── mosquitto/
 │   └── config/mosquitto.conf   # MQTT broker config
 ├── media/                      # Frigate recordings & snapshots (auto-created)
@@ -214,7 +224,8 @@ Clips expire two ways:
   ([`scripts/heartbeat_cleanup.py`](scripts/heartbeat_cleanup.py), host root cron every
   15 min) replaces the old `cleanup_media.sh`. Each locally-writing service declares its
   own store profile under [`config/stores/`](config/stores/) (`frigate.conf`,
-  `firewatch.conf`, `watchdog.conf`, `mosquitto.conf`, `logs.conf`) telling the heartbeat
+  `firewatch.conf`, `scenewatch.conf`, `watchdog.conf`, `mosquitto.conf`, `logs.conf`)
+  telling the heartbeat
   how to clean its files — by `MAX_SIZE_GB` (oldest-first while over the cap) and/or
   `MAX_AGE_DAYS` (delete older than N days), scoped to that service's own dirs so no store
   ever touches another's files. A **global cap** in
@@ -369,6 +380,38 @@ docker compose exec firewatch python /firewatch/firewatch.py --dry-run   # one l
 docker compose restart firewatch          # apply firewatch.conf / code edits
 ```
 
+## Scene descriptions — `scenewatch` service
+
+[`plans/scene-description.md`](plans/scene-description.md) — a second out-of-band
+watcher that **mirrors firewatch's batched two-frame motion sweep** and, when a
+camera shows motion, captions that frame with a small **SmolVLM** vision-language
+model and stores a one-line description.
+
+How it works:
+- Every `POLL_INTERVAL_S` it fetches frame **A** for all cameras from
+  `http://frigate:5000/api/<cam>/latest.jpg`, sleeps the remainder of
+  `MOTION_GAP_S` (> 1 s), fetches frame **B**, and diffs A/B into the same
+  denoised numpy motion mask firewatch uses.
+- The model runs **only** on cameras whose motion gate passed (or whose periodic
+  `BASELINE_EVERY_S` is due), and a per-camera `CAPTION_COOLDOWN_S` stops a slow
+  object being re-described on every sweep.
+- The SmolVLM OpenVINO INT4 IR (git-ignored, [`models/scene/`](models/scene/README.md))
+  is loaded **once** and stays resident in RAM; it runs on **CPU**
+  (`MODEL_DEVICE=CPU`) so the iGPU stays with Frigate's detector.
+- Descriptions go to a WAL SQLite DB at `./media/scenewatch/scenewatch.db`
+  (`scenes` table). `STORE_IMAGES=true` additionally keeps the captioned JPEG.
+
+Operate:
+```bash
+# PREREQUISITE: the ~500 MB model is NOT in git - produce/copy it first
+./dev_scripts/prep_scene_model.sh          # or copy models/scene/ to the host
+docker compose up -d --build scenewatch
+docker compose logs -f scenewatch          # watch captions / skips
+docker compose exec scenewatch python /scenewatch/scenewatch.py --check     # load + probe caption
+docker compose exec scenewatch python /scenewatch/scenewatch.py --dry-run   # one sweep, no store
+docker compose restart scenewatch          # apply scenewatch.conf / code edits
+```
+
 ### Live status on demand — `telegram-bot`
 
 A stdlib-only [`telegram-bot`](scripts/telegram_bot.py) compose service long-polls the
@@ -452,7 +495,10 @@ The portal API is self-documented at `/docs` (OpenAPI). Start the container afte
 - **Phase 1b** — Native in-Frigate fire/smoke detection by swapping the sole detector
   for a fire + smoke + person + car + animal **union** model (combine with the animal
   Part-2 model work) so fire appears in the Frigate UI / MQTT events / recorded clips.
-- **Phase 2** — Ollama VLM scene descriptions + SQLite event log + cron daily summary
+- **Phase 2** — *live scene descriptions DONE* via the `scenewatch` service +
+  SmolVLM (this replaces Ollama with the OpenVINO GenAI runtime the stack already
+  uses). Still deferred: the Frigate-event log, event/clip enrichment, a portal
+  scene view and the cron daily LLM summary.
 - **Phase 3** — Person attributes, gait, and identity profiling (DeepFace / YOLOv8-Pose)
 
 These will reuse this same compose stack, the `frigate/events` MQTT topic, and the

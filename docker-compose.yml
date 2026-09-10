@@ -94,6 +94,41 @@ services:
       - frigate
 
   # ------------------------------------------------------------------
+  # scenewatch - farm scene-description watchdog (see plans/scene-description.md).
+  # Mirrors firewatch's batched two-frame motion sweep: fetch frame A for
+  # every camera, sleep MOTION_GAP_S (> 1 s), fetch frame B, diff A/B, and
+  # when a camera shows motion caption that frame with a small SmolVLM VLM
+  # and store a one-line description in a WAL SQLite DB.
+  # The model is loaded ONCE and stays resident in RAM (OpenVINO GenAI on
+  # CPU, so the iGPU stays entirely with Frigate's detector). Code/config are
+  # mounted read-only so edits need only `docker compose restart scenewatch`.
+  # The SmolVLM OpenVINO IR under ./models/scene is GIT-IGNORED (~500 MB): it
+  # is produced with dev_scripts/prep_scene_model.sh on the host, NOT via git
+  # (see models/scene/README.md). Writes only under ./media/scenewatch.
+  # If the host ever needs a hard RAM ceiling, add `mem_limit: 2g` here.
+  # ------------------------------------------------------------------
+  scenewatch:
+    container_name: scenewatch
+    build: ./scenewatch
+    restart: unless-stopped
+    volumes:
+      - ./scenewatch:/scenewatch:ro   # scenewatch.py (the watcher)
+      - ./config:/config:ro           # scenewatch.conf
+      - ./models:/models:ro           # SmolVLM OpenVINO IR at /models/scene
+      # Scene store: <host>/media/scenewatch/scenewatch.db. Same git-ignored
+      # host media tree Frigate/firewatch use (no new host dir), in its own
+      # subdir so it never mixes with Frigate recordings. rw is required for
+      # the SQLite WAL (-wal/-shm) files.
+      - ./media:/media
+    environment:
+      - FRIGATE_API=http://frigate:5000   # compose network: frigate service
+      - SCENEWATCH_CONF=/config/scenewatch.conf
+      - MODEL_DIR=/models/scene
+      - STORE_DIR=/media/scenewatch
+    depends_on:
+      - frigate
+
+  # ------------------------------------------------------------------
   # telegram-bot - on-demand command responder for the farm Telegram bot
   # (see plans/telegram-command-bot.md). Long-polls the Bot API getUpdates
   # and answers /status, /help, /start IN THE CHAT THAT ASKED.

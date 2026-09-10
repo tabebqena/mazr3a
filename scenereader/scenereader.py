@@ -445,6 +445,7 @@ def harvest(s, conn, places, dry=False, log=LOG):
                 if dry:
                     continue
                 _row_id, inserted = _safe_upsert(conn, row)
+                _commit(conn, log)          # per ITEM, not per pass (see _commit)
                 added += 1 if inserted else 0
                 enriched += 1 if meta else 0
             except Exception as exc:  # noqa: BLE001 - per-event isolation
@@ -462,6 +463,26 @@ def harvest(s, conn, places, dry=False, log=LOG):
 
 def _safe_upsert(conn, row):
     return store.upsert_event(conn, row)
+
+
+def _commit(conn, log=LOG):
+    """Commit NOW instead of at the end of the pass.
+
+    THE RULE: a writer must never hold SQLite's write lock across SLOW work (a
+    model call, a REST lookup). Python's sqlite3 opens a transaction on the first
+    DML, so a pass that commits once at the END holds that lock for its whole
+    duration - a caption batch runs for up to `MAX_RUN_SECONDS` (240 s), which is
+    far beyond ANY `busy_timeout`, so every other writer (a manual
+    `--rebuild-episodes`, a second service) failed with `database is locked` while
+    nothing was actually wrong. Committing per frame/item keeps the lock held for
+    milliseconds; an interrupted batch is then merely a PARTIALLY WRITTEN batch,
+    and every caller re-derives from `events` anyway (upsert by event id, full
+    rebuild).
+    """
+    try:
+        conn.commit()
+    except sqlite3.Error as exc:
+        log("store commit failed (the pass-end commit retries it): {}".format(exc))
 
 
 def re_enrich(s, conn, places, log=LOG):
@@ -498,6 +519,7 @@ def re_enrich(s, conn, places, log=LOG):
                 meta.pop("frame_path", None)
                 meta.pop("frame_clean_path", None)
                 store.upsert_event(conn, meta)
+                _commit(conn, log)          # per ITEM, not per pass (see _commit)
                 fixed += 1
             except Exception as exc:  # noqa: BLE001
                 log("re-enrich: {} failed: {}".format(row["frigate_event_id"], exc))
@@ -548,6 +570,7 @@ def drain(s, conn, cap, dry=False, force=False, log=LOG):
         if image is None:
             if not dry:
                 store.mark_vlm(conn, row["id"], "missing")
+                _commit(conn, log)
             missing += 1
             continue
         if dry:
@@ -559,17 +582,23 @@ def drain(s, conn, cap, dry=False, force=False, log=LOG):
             prompt = s.vlm_prompt
             if row["description_meta"]:
                 prompt = prompt + " Facts: " + row["description_meta"]
+            # The model call is the SLOW part and it runs OUTSIDE any transaction:
+            # the outcome is written and committed immediately afterwards, so the
+            # store's write lock is held for milliseconds per frame instead of for
+            # the whole batch (see `_commit`).
             text, ms = cap.caption(image, prompt)
             store.mark_vlm(conn, row["id"], "ok" if text else "empty",
                            text=text or None, model=cap.name, latency_ms=ms)
+            _commit(conn, log)
             done += 1 if text else 0
             log("caption {} ({} ms): {}".format(row["frigate_event_id"], ms, text))
         except Exception as exc:  # noqa: BLE001 - one bad frame must not stop a batch
             store.mark_vlm(conn, row["id"], "error")
+            _commit(conn, log)
             failed += 1
             log("caption {} FAILED: {}".format(row["frigate_event_id"], exc))
     if not dry:
-        conn.commit()   # unconditional: any UPDATE above opened a transaction
+        conn.commit()   # unconditional (also persists anything a failed commit left)
     return {"captioner": done, "missing": missing, "failed": failed,
             "gate": why, "elapsed_s": round(time.monotonic() - started, 1)}
 
@@ -882,6 +911,7 @@ MODES (mutually exclusive; with NO flag the scheduler loop runs):
   --dry-run           like --once but NOTHING is written to the store
 
 EXIT CODES: 0 ok | 2 config/store/model error | 3 another instance holds the store
+            | 4 the store is momentarily busy (another writer) - safe to retry
 
 SAFETY: only ONE scheduler may run per store. A second one exits 3 (with the
 holder's pid) instead of fighting it for the SQLite write lock - `database is
@@ -1107,6 +1137,16 @@ def main(argv=None):
 
         run_forever(s, conn, places, cap)
         return 0
+    except sqlite3.OperationalError as exc:
+        # A one-shot command must never end in a raw traceback just because the
+        # scheduler happened to be mid-write: say what happened, that nothing was
+        # lost, and that retrying is safe (every mode is idempotent).
+        if store.is_locked_error(exc):
+            LOG("ERROR: the store at {} is busy - another writer holds it "
+                "(normally the scheduler's caption batch).".format(db_path(s)))
+            LOG("ERROR: nothing was lost; re-run in a moment.  detail: {}".format(exc))
+            return 4
+        raise
     finally:
         try:
             conn.close()

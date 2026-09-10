@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v14` |
+| Summary version | `v15` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.4.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -171,7 +171,7 @@ resident.
 | Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-{scheduler,cli}.lock` (flock single-instance guards; harmless when stale). **No image copies anywhere.** |
 | Volumes | `./scenereader:/scenereader:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
-| Concurrency | **One writer, by construction.** The CLI is a real `argparse` parser (`--help` works; an unknown flag exits 2) and a flock guard in the store dir refuses a SECOND `scheduler` (exit 3, with the holder's pid); two manual commands may not overlap either (a manual command may still run **beside** the daemon). Every pass commits, and a `release_txn()` net runs after each loop pass, so the service never idles holding the SQLite write lock — a leaked transaction from `prune()` was what made every other writer report `database is locked`. `--check`/`--status` open the store **read-only** and are safe next to the live service. |
+| Concurrency | **Short locks, one writer, by construction.** The CLI is a real `argparse` parser (`--help` works; an unknown flag exits 2) and a flock guard in the store dir refuses a SECOND `scheduler` (exit 3, with the holder's pid); two manual commands may not overlap either (a manual command may still run **beside** the daemon). The store's write lock is held for **milliseconds**: every ITEM is committed as it is written (`_commit`), a `release_txn()` net runs after each loop pass, and `prune()` commits unconditionally — a leaked transaction (or a batch that committed only at the end) was what made every other writer report `database is locked`. The one-shot CLI reports `exit 4` with a "store busy" message instead of a traceback. `--check`/`--status` open the store **read-only** and are safe next to the live service. |
 | Notes | Code/config edits need only `docker compose restart scenereader`. No host cron entry — the in-container scheduler does everything. It scans `clips/` every `SCAN_EVERY_S` (cheap disk work) and rebuilds episodes every `EPISODES_EVERY_S`; both are **rebuildable** from `events` so a `places.conf`/gap change needs no re-capture. The **only** expensive step — the VLM caption batch — runs at most every `DRAIN_EVERY_S` and ONLY while the **idle governor** is open (host `loadavg1 ≤ MAX_LOADAVG` and CPU temp `< MAX_CPU_TEMP_C`, read from the container's native `/proc` and `/sys/class/hwmon`), bounded by `MAX_EVENTS_PER_RUN` + `MAX_RUN_SECONDS`. The model is **loaded once and kept** (`MODEL_KEEP_LOADED=true`); unload-after-idle is a **deferred optimization**. Every event is scored 0-100 into a `tier` (high/normal/low). |
 
 ### 3.8 Service → development-file map (quick lookup)

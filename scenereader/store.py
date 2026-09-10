@@ -14,9 +14,15 @@ Two layers of data live here (see plans/event-scene-reader.md):
 
 Design notes
 ------------
-* Every function is explicit about its connection: callers own commit/rollback
-  where it matters (`upsert_event`, `replace_episodes`), so a scan pass is one
-  atomic unit rather than many tiny writes.
+* Every function is explicit about its connection: callers own commit/rollback.
+  The service now commits PER ITEM (`_commit` in scenereader.py) instead of once
+  per pass: SQLite holds its write lock for the WHOLE open transaction, so a pass
+  that commits only at the end (a caption batch lasts up to `MAX_RUN_SECONDS`, a
+  scan can fall back to the REST API) keeps every other writer waiting past any
+  `busy_timeout` - which is exactly how a manual `--rebuild-episodes` failed with
+  `database is locked` while the scheduler was healthy. Millisecond locks plus
+  idempotent, re-derivable items is the correct trade: a partially written pass is
+  harmless, a locked-out one is not.
 * "database is locked" is treated as WHAT IT IS - contention - never as a schema
   or data problem. The store has exactly one long-lived writer (the service, which
   commits once per pass) plus transient readers (the portal) and one-shot commands

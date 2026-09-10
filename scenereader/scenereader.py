@@ -42,6 +42,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import time
 
@@ -553,6 +554,34 @@ def _open(s):
     return conn, places
 
 
+def runtime_problems(cap):
+    """Missing shared libraries of the captioner's binaries, in one pass.
+
+    Running the binary only ever reveals the FIRST missing library, which turns
+    a dependency fix into several round trips (exactly what happened with
+    libllama.so then libgomp.so.1). `ldd` lists them all at once.
+    """
+    problems = []
+    for label, path in (("server", getattr(cap, "_server_bin", None)),
+                        ("cli", getattr(cap, "_cli_bin", None))):
+        if not path or not os.path.isfile(path):
+            problems.append("{}: {} not found".format(label, path or "(unset)"))
+            continue
+        try:
+            out = subprocess.run(["ldd", path], capture_output=True, text=True,
+                                 timeout=20)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # ldd may be absent in a slim image - not fatal, just unreportable
+            problems.append("{}: could not run ldd ({})".format(label, exc))
+            continue
+        missing = [ln.strip() for ln in (out.stdout or "").splitlines()
+                   if "not found" in ln]
+        if missing:
+            problems.append("{} {}: {}".format(
+                label, os.path.basename(path), "; ".join(missing)))
+    return problems
+
+
 def _consume_trigger(s):
     """True when the portal asked for a batch now (clears the flag file)."""
     if os.path.isfile(s.trigger_file):
@@ -720,6 +749,9 @@ def main():
             if cap is None:
                 LOG("ERROR: no captioner was built")
                 return 2
+            if getattr(cap, "backend", "") == "llamacpp":
+                for line in runtime_problems(cap):
+                    LOG("PREFLIGHT -> {}".format(line))
             if probe:
                 text, ms = cap.caption(probe)
                 LOG("probe caption ({} ms): {}".format(ms, text or "<empty>"))

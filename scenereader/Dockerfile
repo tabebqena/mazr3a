@@ -27,6 +27,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# llama.cpp's PREBUILT binaries link against the GNU OpenMP runtime (libgomp1)
+# and libstdc++, which python:3.11-slim does NOT ship - the release deliberately
+# bundles only its own libs (libllama/libggml/libmtmd), not these two. Without
+# them llama-server/llama-mtmd-cli exit 127 with
+#   "error while loading shared libraries: libgomp.so.1: cannot open shared object file"
+# and every caption silently comes back empty. `--check` now reports this.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgomp1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Unprivileged user: the container reads mounted files, writes ONLY its own text
 # store under /media/events, and makes outbound calls to Frigate.
 RUN useradd --create-home --uid 1000 scenereader

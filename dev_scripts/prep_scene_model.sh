@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================
-# Prepare the scenewatch scene-description model into the OpenVINO IR
-# directory scenewatch expects at models/scene/.
+# Prepare the RETAINED OpenVINO VLM for the scenereader service into
+# models/scene/ - the directory the `openvino` captioner backend reads.
+#
+# THIS IS THE LARGER, FALLBACK BACKEND. The DEFAULT (small) model is a GGUF
+# fetched by dev_scripts/prep_scene_model_llamacpp.sh and run by llama.cpp; this
+# script exists because the already-downloaded IR is KEPT so the operator can
+# reassess a bigger model later WITHOUT re-downloading it. It is ADD-ONLY: an
+# existing export is never replaced unless --force is given, so it can never
+# silently clobber what is on the host, and it never touches the small GGUF or
+# models/scene/bin/.
 #
 # DEFAULT (no deps): DOWNLOAD a pre-converted VLM OpenVINO export from the
 # Hugging Face Hub with plain `curl`. No optimum-cli, no torch, no pip.

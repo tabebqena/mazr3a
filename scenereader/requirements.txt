@@ -1,0 +1,22 @@
+# scenereader runtime dependencies (image only).
+#
+# The DEFAULT captioner backend is llama.cpp, which is NOT a pip package: its
+# binaries are fetched onto the host by dev_scripts/prep_scene_model_llamacpp.sh
+# into models/scene/bin/ and mounted read-only (see config/scenereader.conf).
+#
+# The dependencies below exist for two reasons:
+#   * Pillow      - decode the `-clean.webp` frame and feed the OpenVINO backend
+#   * openvino*   - the RETAINED 2B model backend. They are installed even though
+#                   llamacpp is the default, so switching MODEL_BACKEND=openvino
+#                   (to reassess the larger model) needs no image rebuild. That
+#                   is why this image is a few hundred MB heavier than firewatch.
+# HTTP to Frigate and the SQLite store use the Python standard library.
+#
+# openvino-genai pulls in openvino + openvino-tokenizers; they are listed
+# explicitly so the pin is visible and reproducible (same pins as the retired
+# scenewatch image, which is the version known to work on this host).
+openvino>=2024.4
+openvino-genai>=2024.4
+openvino-tokenizers>=2024.4
+numpy>=1.24,<3
+Pillow>=9.1,<12

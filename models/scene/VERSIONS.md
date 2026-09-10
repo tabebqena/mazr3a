@@ -1,15 +1,29 @@
-# Scene-description model — version registry
+# Scene-caption models — version registry
 
-Registry of the VLM export installed under this directory for the `scenewatch`
-service. Unlike [`models/fire/VERSIONS.md`](../fire/VERSIONS.md) there is no
-promote/archive helper: `models/scene/` is **git-ignored** and holds exactly one
-ACTIVE export (see [`README.md`](README.md)). Re-running
-[`dev_scripts/prep_scene_model.sh`](../../dev_scripts/prep_scene_model.sh) with
-`--force` replaces it.
+Registry of the models installed under this directory for the **`scenereader`**
+service. `models/scene/` is **git-ignored** and now holds **two** models that
+coexist deliberately (see [`README.md`](README.md)):
 
-**Rule:** after every `prep_scene_model.sh` run, append the line the script prints
-(date, source, how obtained, on-disk size, md5 of the largest `.bin`) and mark the
-superseded row `SUPERSEDED`.
+| Backend (`MODEL_BACKEND`) | Model | Fetched by | Notes |
+|---|---|---|---|
+| `llamacpp` (**default**) | SmolVLM2-500M GGUF + mmproj in `smolvlm2-500m/` | [`dev_scripts/prep_scene_model_llamacpp.sh`](../../dev_scripts/prep_scene_model_llamacpp.sh) | ADD-ONLY: skips existing files; `--force` replaces only what it fetches |
+| `openvino` (**retained**) | Qwen2-VL-2B-Instruct OpenVINO INT4 IR, directly in `models/scene/` | [`dev_scripts/prep_scene_model.sh`](../../dev_scripts/prep_scene_model.sh) | **KEPT — never deleted, never re-downloaded**; `--force` required to replace |
+
+**Rule:** after a successful fetch, append the line the script prints (date,
+source, how obtained, size, md5 of the largest weight file) and mark a replaced
+row `SUPERSEDED`. Do not delete a `SUPERSEDED` row — it is the rollback record.
+
+## 1. Small model — llama.cpp backend (DEFAULT)
+
+| Date (UTC) | Source repo | Files | Size | md5 (model `.gguf`) | Status |
+|---|---|---|---|---|---|
+| _none yet_ | `ggml-org/SmolVLM2-500M-Video-Instruct-GGUF` | `<model>.gguf` + `mmproj*.gguf` | ~0.4–0.6 GB | — | not fetched |
+
+The script picks the files **by pattern** at run time (prefers `Q8_0`, then
+`Q6_K`/`Q4_K_M`; `mmproj` prefers `f16`), so a quant rename upstream does not
+break it. Record the exact filenames it reported.
+
+## 2. Retained larger model — OpenVINO backend
 
 | Date (UTC) | Source | How | Architecture | Size | md5 (largest `.bin`) | Status |
 |---|---|---|---|---|---|---|
@@ -19,28 +33,27 @@ superseded row `SUPERSEDED`.
 
 | Column | Meaning |
 |---|---|
-| Date (UTC) | When the export was fetched/built |
-| Source | Upstream repo id (`--repo`), i.e. what `prep_scene_model.sh` printed |
-| How | `download` (pre-converted OV export via curl) or `export` (`optimum-cli`) |
-| Architecture | `config.json` `model_type` — **must** be one the runtime implements |
-| Size | `du -sh models/scene/` |
-| md5 | md5 of the largest `*.bin` (the language decoder — the bulk of the model) |
-| Status | `ACTIVE` (currently in `models/scene/`) or `SUPERSEDED` |
+| Date (UTC) | When the files were fetched/built |
+| Source | Upstream repo id (what the prep script printed) |
+| How | `download` (pre-converted export via curl) or `export` (`optimum-cli`) |
+| Architecture | OpenVINO only: `config.json` `model_type` — **must** be one the runtime implements |
+| Size | `du -sh` of the model's directory |
+| md5 | md5 of the largest weight file (the bulk of the model) |
+| Status | `ACTIVE` (in use) or `SUPERSEDED` (kept for rollback) |
 
 ## Notes
 
-- **Architecture is the hard constraint.** `openvino_genai.VLMPipeline` supports
-  only `llava`, `qwen2_vl`, `qwen2_5_vl`, `gemma3`, `minicpm`, `phi3_v`,
-  `phi4mm`. A model whose `config.json` says anything else (e.g. `smolvlm`)
-  fails at load with `Unsupported '<type>' VLM model type` — which is exactly
-  why the first SmolVLM attempt never started.
-  `prep_scene_model.sh` now checks `model_type` and refuses to install an
-  unsupported export.
-- **Size vs RAM.** The default ~1.76 GB export needs ~2 GB resident. The host
-  has ~7.5 GiB shared with Frigate + firewatch + portal, so watch
-  `machine-status.py` / `docker stats` after the first caption burst; if it is
-  tight, the escape hatches are fewer captions (raise `CAPTION_COOLDOWN_S` /
-  `BASELINE_EVERY_S`) rather than a smaller model, since no smaller supported
-  VLM exists.
-- **Device.** CPU vs iGPU is a runtime choice (`MODEL_DEVICE`), not an export
-  property. The default is `CPU` so the OpenVINO detector keeps the iGPU.
+- **Architecture is the hard constraint for the OpenVINO path only.**
+  `openvino_genai.VLMPipeline` supports just `llava`, `qwen2_vl`, `qwen2_5_vl`,
+  `gemma3`, `minicpm`, `phi3_v`, `phi4mm`. Anything else fails at load with
+  `Unsupported '<type>' VLM model type` — the failure that took the first
+  SmolVLM attempt down. The llama.cpp path has no such list, which is why the
+  small model lives there.
+- **Coexistence is intentional.** The 2B IR is a fallback the operator may
+  reassess; removing it would force a 1.76 GB re-download, so both stay.
+- **Device.** OpenVINO CPU vs iGPU is a runtime choice (`OPENVINO_DEVICE`), not
+  an export property. The default is `CPU` so Frigate's OpenVINO detector keeps
+  the iGPU.
+- **Resident cost.** Small ≈0.5–0.7 GB; retained 2B ≈2 GB. `mem_limit` in
+  compose is 1500m for the small default — raise it towards 3g before switching
+  `MODEL_BACKEND=openvino`.

@@ -1,103 +1,97 @@
-# Scene-description model — `models/scene/`
+# Scene-caption models — `models/scene/`
 
-Holds the **vision-language model** used by the `scenewatch` service
-(`scenewatch/scenewatch.py`, see [`plans/scene-description.md`](../../plans/scene-description.md)).
-The directory is mounted **read-only** at `/models/scene` in the `scenewatch`
-container, and `VLMPipeline` is pointed at it via `MODEL_DIR`.
+Holds the vision-language models used by the **`scenereader`** service
+([`scenereader/scenereader.py`](../../scenereader/scenereader.py), see
+[`plans/event-scene-reader.md`](../../plans/event-scene-reader.md)).
 
-## CHOSEN model
+The directory is mounted **read-only** at `/models` in the container
+(`/models/scene`), and it holds **TWO models on purpose**:
 
-**Qwen2-VL-2B-Instruct**, pre-converted to **OpenVINO INT4 IR** and run on
-**CPU** (`MODEL_DEVICE=CPU` in [`config/scenewatch.conf`](../../config/scenewatch.conf)).
-The iGPU is deliberately left to Frigate's OpenVINO detector.
+| # | Model | Backend (`MODEL_BACKEND`) | Role | On disk | Resident |
+|---|---|---|---|---|---|
+| 1 | **SmolVLM2-500M** GGUF + mmproj, under `smolvlm2-500m/` | `llamacpp` | **DEFAULT** — the smallest useful model; start here | ~0.4–0.6 GB | ~0.5–0.7 GB |
+| 2 | **Qwen2-VL-2B-Instruct** OpenVINO INT4 IR, directly here | `openvino` | **RETAINED fallback** — kept, never deleted, never re-downloaded | ~1.76 GB | ~2 GB |
+
+`MODEL_BACKEND` in [`config/scenereader.conf`](../../config/scenereader.conf)
+selects which one runs. Switching between them is a **config change only** —
+no code change, no re-download, no image rebuild.
+
+## Why the previous design failed (and what changed)
+
+The retired `scenewatch` service held the 2B model resident **and** ran a 15 s
+per-camera motion sweep, which filled RAM and drove the host hot; it was stopped
+by the operator. `scenereader` keeps the *event-driven, no-re-detection* design:
+Frigate's own captures are read from disk, and the model runs **only during an
+idle-gated batch**. See [`plans/event-scene-reader.md`](../../plans/event-scene-reader.md) §1.
+
+## 1. The DEFAULT small model (llama.cpp)
+
+**SmolVLM2-500M-Video-Instruct** converted to **GGUF** (+ its `mmproj` vision
+projector), served by a **resident `llama-server`** child process. Chosen first
+because the goal is the smallest useful model.
+
+**Fetch it on the host** (plain `curl` + `python3`, no pip/optimum/torch):
+
+```bash
+cd ~/frigate
+bash dev_scripts/prep_scene_model_llamacpp.sh            # GGUF + mmproj
+bash dev_scripts/prep_scene_model_llamacpp.sh --list     # inspect the repo first
+bash dev_scripts/prep_scene_model_llamacpp.sh --force    # replace what is there
+# llama.cpp itself (the server/CLI) as reproducible pinned binaries:
+bash dev_scripts/prep_scene_model_llamacpp.sh --bin --llamacpp-tag <tag>
+```
+
+The script is **ADD-ONLY**: it skips every file that already exists (even a
+`--force` only replaces what it fetches), and it **never touches the retained
+OpenVINO IR** below.
+
+The llama.cpp binaries are **not baked into the image** (no unverifiable release
+URL at build time); they land in `models/scene/bin/` and
+`config/scenereader.conf` points `LLAMA_SERVER_BIN` / `LLAMA_CLI_BIN` at them.
+
+## 2. The RETAINED OpenVINO model (`MODEL_BACKEND=openvino`)
 
 | | |
 |---|---|
-| Default repo | [`helenai/Qwen2-VL-2B-Instruct-ov-int4`](https://huggingface.co/helenai/Qwen2-VL-2B-Instruct-ov-int4) |
+| Repo | [`helenai/Qwen2-VL-2B-Instruct-ov-int4`](https://huggingface.co/helenai/Qwen2-VL-2B-Instruct-ov-int4) |
 | Architecture | `qwen2_vl` (2B params, INT4) |
-| On disk | **~1.76 GB** |
-| Resident RAM | ~2 GB (loaded once, kept for the process lifetime) |
+| Why it is still here | the operator may **reassess a larger model later**; deleting it would force a 1.76 GB re-download |
+| Refresh/re-install it | `bash dev_scripts/prep_scene_model.sh` (refuses to clobber without `--force`) |
 
-## Why not a 500 MB SmolVLM — the runtime decides
+### Why the small model is NOT downloadable through OpenVINO GenAI
 
-`openvino_genai.VLMPipeline` implements a **closed list of VLM architectures**.
-Verified against the shipped runtime (openvino-genai **2026.3.1**, the newest
-release on PyPI) by inspecting `libopenvino_genai.so` for architecture strings:
-
-> `llava` · `qwen2_vl` · `qwen2_5_vl` · `gemma3` · `minicpm` · `phi3_v` · `phi4mm`
-
-**SmolVLM is not on that list.** Its export fails at load with:
+`openvino_genai.VLMPipeline` implements a **closed list** of architectures —
+`llava`, `qwen2_vl`, `qwen2_5_vl`, `gemma3`, `minicpm`, `phi3_v`, `phi4mm`
+(verified by inspecting the shipped `libopenvino_genai.so`). **SmolVLM is not on
+that list**, so it cannot load there at all:
 
 ```
 Unsupported 'smolvlm' VLM model type
 ```
 
-Relabelling the export does not help either, because SmolVLM's parent
-architecture `idefics3` is absent too. Upgrading cannot help (2026.3.1 is
-already the newest release). So the small-SmolVLM idea is simply not available
-through OpenVINO GenAI, and **Qwen2-VL-2B is the smallest VLM that runtime can
-actually load**.
-
-> The alternatives considered were llama.cpp + SmolVLM2-500M GGUF (520 MB, a
-> second runtime) and converting a 2B model ourselves with `optimum-cli` (pulls
-> torch, ~2 GB). OpenVINO's own org publishes **only 7B** VLMs (Qwen2-VL-7B,
-> Qwen2.5-VL-7B, LLaVA-1.6-7B) — far too heavy for a 7.5 GB host.
-
-Because the architecture list is the real constraint, **any model from that
-list works** — only `MODEL_DIR` (and possibly the prompt) changes.
+Relabelling does not help (SmolVLM's parent `idefics3` is absent too) and
+upgrading cannot help. That is exactly why the **small** path uses a second, tiny
+runtime (llama.cpp) — and why the OpenVINO path exists only to keep what is
+already on the host usable. `prep_scene_model.sh` therefore asserts
+`config.json`'s `model_type` and refuses anything unsupported.
 
 ## Cost profile
 
-CPU is governed mostly by the **caption rate**, not by model size: the motion
-gate plus `CAPTION_COOLDOWN_S` and `BASELINE_EVERY_S` yield a handful of
-captions per hour rather than a continuous stream, and `INFERENCE_NUM_THREADS`
-caps the cores the model may use. Between captions the process is idle.
+CPU is governed by **how many frames are captioned**, not by model size: the
+harvest only reads disk, and the caption batch runs only while the **idle
+governor** (host loadavg + CPU temp) is open, bounded by `MAX_EVENTS_PER_RUN`
+and `MAX_RUN_SECONDS`. Both backends load **once and stay resident**
+(`MODEL_KEEP_LOADED=true`): for a ≤500M model the reload churn would burn CPU for
+no real RAM gain, so unload-after-idle is a **deferred optimization**
+(`MODEL_KEEP_LOADED=false`, `IDLE_UNLOAD_S`).
 
-## Required files
+## GIT POLICY — the models are **git-ignored**
 
-`prep_scene_model.sh` verifies all of these and **fails loudly** if any is missing:
-
-| File | Purpose |
-|---|---|
-| `config.json` | HF model config — its `model_type` must be a supported architecture |
-| `openvino_language_model.xml` / `.bin` | language decoder IR (**the big file**) |
-| `openvino_vision_embeddings_model.xml` / `.bin` | vision encoder IR |
-| `openvino_vision_embeddings_merger_model.xml` / `.bin` | Qwen2-VL vision→text merger |
-| `openvino_text_embeddings_model.xml` / `.bin` | token-embedding IR (**or** the merger above) |
-| `openvino_tokenizer.xml` / `.bin` | OpenVINO tokenizer IR (**or** `tokenizer.json`) |
-| `openvino_detokenizer.xml` / `.bin` | OpenVINO detokenizer IR (**or** `tokenizer.json`) |
-| `preprocessor_config.json`, `tokenizer_config.json`, `special_tokens_map.json`, `chat_template.*` | processor / chat-template assets |
-
-## GIT POLICY — this model is **git-ignored**
-
-Unlike the small models ([`models/fire/`](../fire/README.md) 20 MB,
-[`models/coco/`](../coco/README.md)) which ride `git pull`, **`models/scene/` is
-NOT tracked** — a ~1.76 GB binary must not live in git history, and the host
-pulls its own copy. [`../../.gitignore`](../../.gitignore) ignores
-`models/scene/*` but keeps this README and [`VERSIONS.md`](VERSIONS.md).
-
-## Fetch the model
-
-**On the host (needs only `curl` + `python3` — no optimum, no torch):**
-
-```bash
-cd ~/frigate
-bash dev_scripts/prep_scene_model.sh                     # Qwen2-VL-2B int4 (~1.76 GB)
-bash dev_scripts/prep_scene_model.sh --list              # curated alternatives
-bash dev_scripts/prep_scene_model.sh --force             # replace an existing export
-```
-
-Replacing a previously downloaded model (e.g. the earlier SmolVLM attempt)
-requires `--force`.
-
-**Building it yourself instead** (dev machine; needs `optimum[openvino]`, which
-pulls torch ~2 GB):
-
-```bash
-./dev_scripts/prep_scene_model.sh --export --model Qwen/Qwen2-VL-2B-Instruct
-```
+Far too large for git history (unlike the 20 MB [`models/fire/`](../fire/README.md)
+ACTIVE set). [`../../.gitignore`](../../.gitignore) ignores `models/scene/*` but
+keeps **this README and [`VERSIONS.md`](VERSIONS.md)**.
 
 ## Registry
 
-[`VERSIONS.md`](VERSIONS.md) records the installed export (repo, size, md5,
-date) so the deployed model is identifiable without inspecting the host.
+[`VERSIONS.md`](VERSIONS.md) records what is installed per backend (repo, size,
+md5, date) so the deployed models are identifiable without inspecting the host.

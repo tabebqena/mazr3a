@@ -33,11 +33,16 @@ models/fire/versions/
 # labelmap.txt ride the git deploy; frigate loads them from /models/coco via the
 # ./models:/models:ro mount. config/ holds ONLY config (no models).
 
-# scenewatch SmolVLM scene-description model is GIT-IGNORED (2026-09-10): the
-# OpenVINO INT4 export is ~500 MB, far too large for git history (unlike the
-# 20 MB models/fire/ ACTIVE set). It is produced by
-# dev_scripts/prep_scene_model.sh and fetched onto the host as a deploy
-# prerequisite. Provenance: models/scene/README.md + VERSIONS.md (tracked).
+# models/scene/ is GIT-IGNORED (2026-09-10): the models there are far too large
+# for git history (unlike the 20 MB models/fire/ ACTIVE set). TWO models live
+# there and BOTH are fetched onto the host as a deploy prerequisite:
+#   * the SMALL default - SmolVLM2 GGUF + mmproj under
+#     models/scene/smolvlm2-500m/, plus the llama.cpp binaries in
+#     models/scene/bin/  -> dev_scripts/prep_scene_model_llamacpp.sh
+#   * the RETAINED larger - the Qwen2-VL-2B int4 OpenVINO IR directly in
+#     models/scene/. It is KEPT deliberately (never deleted, never
+#     re-downloaded) so MODEL_BACKEND=openvino can be flipped back on.
+# Provenance: models/scene/README.md + VERSIONS.md (tracked).
 models/scene/*
 !models/scene/README.md
 !models/scene/VERSIONS.md

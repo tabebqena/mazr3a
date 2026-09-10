@@ -13,7 +13,7 @@
 # Frigate. A per-container ceiling makes the cgroup that OVERSHOOTS die first.
 # `oom_score_adj` states the preference explicitly (lower = killed later):
 #   frigate      -500  the NVR is the critical path; never kill it first
-#   scenewatch    200  the newest/largest consumer; kill it first
+#   scenereader   200  the newest consumer; kill it first
 #
 # NOTE: the ceilings deliberately SUM to more than the host's RAM (~8.25 GiB).
 # They are backstops against runaway growth, not a hard partition of memory -
@@ -132,49 +132,68 @@ services:
       - frigate
 
   # ------------------------------------------------------------------
-  # scenewatch - farm scene-description watchdog (see plans/scene-description.md).
-  # Mirrors firewatch's batched two-frame motion sweep: fetch frame A for
-  # every camera, sleep MOTION_GAP_S (> 1 s), fetch frame B, diff A/B, and
-  # when a camera shows motion caption that frame with a VLM and store a
-  # one-line description in a WAL SQLite DB.
-  # The model is loaded ONCE and stays resident in RAM (OpenVINO GenAI on
-  # CPU, so the iGPU stays entirely with Frigate's detector). Code/config are
-  # mounted read-only so edits need only `docker compose restart scenewatch`.
-  # The OpenVINO VLM under ./models/scene is GIT-IGNORED (~1.76 GB,
-  # Qwen2-VL-2B int4 - the smallest VLM openvino_genai can actually load): it
-  # is fetched with dev_scripts/prep_scene_model.sh on the host, NOT via git
-  # (see models/scene/README.md). Writes only under ./media/scenewatch.
-  # CPU is bounded by the caption RATE (MAX_CAPTIONS_PER_SWEEP +
-  # MIN_CAPTION_GAP_S in config/scenewatch.conf) and by cpus below.
+  # scenereader - cross-camera episode narrator (see plans/event-scene-reader.md).
+  # REPLACES the stopped scenewatch (plans/scene-description.md), which
+  # over-subscribed the CPU with a 15 s per-camera sweep and held a 2B VLM in RAM.
+  #
+  # It does NOT re-detect and does NOT sweep frames. Frigate already detected, so
+  # this service only reads what Frigate produced:
+  #   * the snapshot JPEGs/WebPs in Frigate's OWN media tree - read IN PLACE and
+  #     never copied (host ./media IS Frigate's /media/frigate);
+  #   * the matching `event` row in ./config/frigate.db, joined by the EXACT
+  #     event id carried in the snapshot filename, opened READ-ONLY.
+  # From those it writes a per-camera sentence and links cameras into person
+  # episodes ("Person A entered Field 1 (cam04) at 22:36; then went to Store").
+  #
+  # COST: a tiny periodic disk scan, plus a small (<=500M GGUF) VLM caption batch
+  # that runs ONLY when the idle governor (host loadavg + CPU temp) is open and is
+  # bounded by MAX_EVENTS_PER_RUN/MAX_RUN_SECONDS. The model is loaded ONCE and
+  # kept resident (MODEL_KEEP_LOADED=true) - for a small model, reload churn would
+  # cost CPU for no real RAM gain.
+  #
+  # MODEL SWITCHING: the previously-downloaded Qwen2-VL-2B OpenVINO IR stays in
+  # ./models/scene (git-ignored, KEPT - never deleted/re-downloaded) and is
+  # selected with MODEL_BACKEND=openvino, no re-download and no rebuild. The small
+  # GGUF + llama.cpp binaries are fetched by
+  # dev_scripts/prep_scene_model_llamacpp.sh.
+  #
+  # Code/config are mounted read-only so edits need only
+  # `docker compose restart scenereader`. It writes ONLY its text store under
+  # ./media/events (plus the portal's trigger/status/names files).
+  # NOTE: no /proc or /sys bind mount is needed. The container's own /proc/loadavg
+  # is host-wide, and its NATIVE read-only /sys/class/hwmon exposes coretemp -
+  # bind-mounting host /sys breaks hwmon's relative symlinks (see
+  # plans/telegram-bot-cpu-temp-n-a.md).
   # ------------------------------------------------------------------
-  scenewatch:
-    container_name: scenewatch
-    build: ./scenewatch
+  scenereader:
+    container_name: scenereader
+    build: ./scenereader
     restart: unless-stopped
-    # 4 of 8 cores, matching INFERENCE_NUM_THREADS=4 in scenewatch.conf, so a
-    # caption can never starve Frigate's decode/detect.
-    cpus: "4.0"
-    # ~2.0-2.4 GB expected (weights ~1.72 GB + KV/activations + python).
-    # Ceiling with headroom - do NOT tighten towards 2g until docker stats
-    # has confirmed the real figure, or the container will OOM-loop.
-    mem_limit: 3g
+    # 1 of 8 cores: a periodic disk scan plus a short, bounded caption batch -
+    # not a continuous sweep. Raise only if the drain is starved, never to 4.
+    cpus: "1.0"
+    # ~0.5-0.7 GB resident with the small model. Raise towards 3g ONLY if the
+    # retained 2B OpenVINO backend is selected (config/scenereader.conf).
+    mem_limit: 1500m
     # Prefer this container over Frigate when memory really runs out (below
     # Frigate's -500; the sidecar/portal defaults of 0 are between them).
     oom_score_adj: 200
     volumes:
-      - ./scenewatch:/scenewatch:ro   # scenewatch.py (the watcher)
-      - ./config:/config:ro           # scenewatch.conf
-      - ./models:/models:ro           # SmolVLM OpenVINO IR at /models/scene
-      # Scene store: <host>/media/scenewatch/scenewatch.db. Same git-ignored
-      # host media tree Frigate/firewatch use (no new host dir), in its own
-      # subdir so it never mixes with Frigate recordings. rw is required for
-      # the SQLite WAL (-wal/-shm) files.
+      - ./scenereader:/scenereader:ro   # scenereader.py + its modules
+      - ./config:/config:ro             # scenereader.conf, places.conf, frigate.db
+      - ./models:/models:ro             # small GGUF, llama.cpp bin, retained 2B IR
+      # Frigate's frames are read IN PLACE from this tree, and the TEXT store
+      # lives in its own subdir so it never mixes with Frigate media:
+      #   /media/events/{events.db,reader_status.json,.drain_request,names.json}
+      # rw is required for the SQLite WAL files and the portal's trigger file.
       - ./media:/media
     environment:
+      - SCENEREADER_CONF=/config/scenereader.conf
+      - PLACES_CONF=/config/places.conf
       - FRIGATE_API=http://frigate:5000   # compose network: frigate service
-      - SCENEWATCH_CONF=/config/scenewatch.conf
-      - MODEL_DIR=/models/scene
-      - STORE_DIR=/media/scenewatch
+      - FRIGATE_DB=/config/frigate.db
+      - FRIGATE_MEDIA_DIR=/media
+      - STORE_DIR=/media/events
     depends_on:
       - frigate
 

@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v12` |
+| Summary version | `v13` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.4.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
@@ -168,9 +168,10 @@ resident.
 | Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): Frigate's `config/frigate.db`, **read-only**, single denormalised `event` table, joined by the **exact** event id in the filename. `api` / `auto` fall back to `/api/events/<id>`. `score`/`top_score`/`box` columns are NULL → the live values are parsed from the `data` JSON. |
 | Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = a small **SmolVLM2-500M GGUF + mmproj** served by a **resident** `llama-server` (~0.5–0.7 GB); `openvino` = the **RETAINED** Qwen2-VL-2B INT4 IR that was already on the host (~2 GB). Switching is config-only — no re-download, no rebuild. |
 | Model prerequisite | **NOT deployed by git.** Small GGUF: [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) (**add-only**; never touches the retained IR). Retained OpenVINO IR: [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) (kept so the 2B never needs re-downloading) — see [`models/scene/README.md`](models/scene/README.md) |
-| Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases), `reader_status.json`, `.drain_request`, `names.json`. **No image copies anywhere.** |
+| Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-{scheduler,cli}.lock` (flock single-instance guards; harmless when stale). **No image copies anywhere.** |
 | Volumes | `./scenereader:/scenereader:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
+| Concurrency | **One writer, by construction.** The CLI is a real `argparse` parser (`--help` works; an unknown flag exits 2) and a flock guard in the store dir refuses a SECOND `scheduler` (exit 3, with the holder's pid); two manual commands may not overlap either (a manual command may still run **beside** the daemon). Every pass commits, and a `release_txn()` net runs after each loop pass, so the service never idles holding the SQLite write lock — a leaked transaction from `prune()` was what made every other writer report `database is locked`. `--check`/`--status` open the store **read-only** and are safe next to the live service. |
 | Notes | Code/config edits need only `docker compose restart scenereader`. No host cron entry — the in-container scheduler does everything. It scans `clips/` every `SCAN_EVERY_S` (cheap disk work) and rebuilds episodes every `EPISODES_EVERY_S`; both are **rebuildable** from `events` so a `places.conf`/gap change needs no re-capture. The **only** expensive step — the VLM caption batch — runs at most every `DRAIN_EVERY_S` and ONLY while the **idle governor** is open (host `loadavg1 ≤ MAX_LOADAVG` and CPU temp `< MAX_CPU_TEMP_C`, read from the container's native `/proc` and `/sys/class/hwmon`), bounded by `MAX_EVENTS_PER_RUN` + `MAX_RUN_SECONDS`. The model is **loaded once and kept** (`MODEL_KEEP_LOADED=true`); unload-after-idle is a **deferred optimization**. Every event is scored 0-100 into a `tier` (high/normal/low). |
 
 ### 3.8 Service → development-file map (quick lookup)
@@ -425,8 +426,11 @@ Workflow (**the orchestrator runs on the DEV MACHINE, not the host** — it SSHe
 > `MODEL_FILE`/`MMPROJ_FILE`/`LLAMA_*_BIN` at what it prints. The retained 2B IR
 > only needs fetching if it is ever lost (`prep_scene_model.sh`). Verify with
 > `docker compose exec scenereader python /scenereader/scenereader.py --check`
-> (reports the idle gate, the store/clips paths and any camera missing from
-> `config/places.conf`, then captions one stored frame).
+> (reports the idle gate, the scheduler/lock state, the store/clips paths and any
+> camera missing from `config/places.conf`, then captions one stored frame — it
+> opens the store **read-only**, so it is safe while the service runs, and it says
+> how long the probe may take). `--help` lists every mode; a second scheduler or a
+> second simultaneous manual command is refused with exit 3.
 >
 > **`config/places.conf` is an operator input, not a default:** without
 > `CAMERA_PLACES` + `ADJACENCY` the narrator still works but describes cameras

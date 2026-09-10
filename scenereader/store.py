@@ -17,6 +17,12 @@ Design notes
 * Every function is explicit about its connection: callers own commit/rollback
   where it matters (`upsert_event`, `replace_episodes`), so a scan pass is one
   atomic unit rather than many tiny writes.
+* "database is locked" is treated as WHAT IT IS - contention - never as a schema
+  or data problem. The store has exactly one long-lived writer (the service, which
+  commits once per pass) plus transient readers (the portal) and one-shot commands
+  (`--drain`), so the answer to a lock error is to WAIT AND RETRY (see
+  `retry_locked`), not to fail a pass. Diagnostics use `open_reader()` so a probe
+  can never hold the write lock.
 * The schema is created lazily and migrated idempotently: columns added after the
   first release are ALTERed in with defaults, and indexes that depend on a
   migrated column are created ONLY after the migration (the same bug class that
@@ -28,6 +34,36 @@ import json
 import os
 import sqlite3
 import time
+
+# ---------------------------------------------------------------------------
+# concurrency - "database is locked" is CONTENTION, not corruption
+# ---------------------------------------------------------------------------
+def is_locked_error(exc):
+    """True for SQLite's lock/busy errors (its message is all we get)."""
+    text = str(exc).lower()
+    return isinstance(exc, sqlite3.Error) and ("locked" in text or "busy" in text)
+
+
+def retry_locked(call, op="sqlite", attempts=6, delay=0.5, log=None):
+    """Run `call`, retrying SQLite lock/busy errors with a linear backoff.
+
+    SQLite never says WHO holds the lock or for how long, so a lock error tells us
+    only one thing: someone else is mid-write and will finish. Since every writer
+    here commits per pass (never holds a transaction across a model run), waiting
+    is always the correct answer - the retry succeeds as soon as they commit. Any
+    NON-lock error is raised unchanged, so real bugs never hide behind this.
+    """
+    for attempt in range(max(1, int(attempts))):
+        try:
+            return call()
+        except sqlite3.Error as exc:
+            if not is_locked_error(exc) or attempt + 1 >= attempts:
+                raise
+            if log:
+                log("store busy during {} (attempt {}/{}): {}".format(
+                    op, attempt + 1, attempts, exc))
+            time.sleep(delay * (attempt + 1))
+
 
 # ---------------------------------------------------------------------------
 # schema
@@ -116,6 +152,12 @@ _MIGRATIONS = (
     ("narrative_ar", "ALTER TABLE episodes ADD COLUMN narrative_ar TEXT"),
 )
 
+# Bumped whenever `_SCHEMA`/`_MIGRATIONS` change; stored in the DB's own
+# `user_version`. WHY: a writer used to run `executescript(_SCHEMA)` on EVERY
+# open - so a diagnostic or a one-shot command took the store's write lock just to
+# ask a question. DDL now runs only when this number says it must.
+_SCHEMA_VERSION = 1
+
 # Event columns the rest of the code may set on an existing row (enrichment).
 _ENRICH_COLS = (
     "label", "sub_label", "zones", "place", "start_time", "end_time", "duration",
@@ -126,24 +168,80 @@ _ENRICH_COLS = (
 )
 
 
-def open_writer(path):
-    """Open (creating if needed) the scenereader WAL DB for writing."""
+def _schema_outdated(conn):
+    """True when the DB's `user_version` is older than this module's schema."""
+    try:
+        row = conn.execute("PRAGMA user_version").fetchone()
+        version = int(row[0]) if row is not None else 0
+    except (sqlite3.Error, TypeError, ValueError, IndexError):
+        return True
+    return version < _SCHEMA_VERSION
+
+
+def open_writer(path, timeout=30.0):
+    """Open (creating if needed) the scenereader WAL DB for writing.
+
+    `busy_timeout` + `retry_locked` make a pass WAIT for the other writer (the
+    portal's reader, a cron helper, a concurrent one-shot) instead of dying with
+    SQLite's terse "database is locked". The 30 s default is deliberately generous:
+    the service commits once per pass, so the longest realistic wait is one commit.
+    """
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10.0)
+    conn = sqlite3.connect(path, timeout=float(timeout))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout={}".format(int(float(timeout) * 1000)))
+    # WAL is persistent, but the PRAGMA still has to take a lock to confirm it -
+    # which raises "database is locked" while another connection is mid-write.
+    retry_locked(lambda: conn.execute("PRAGMA journal_mode=WAL"),
+                 op="journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.executescript(_SCHEMA)
-    # Guarded, idempotent migrations (a column already present raises -> ignored).
-    for _name, ddl in _MIGRATIONS:
-        try:
-            conn.execute(ddl)
-        except sqlite3.Error:
-            pass
+    if _schema_outdated(conn):
+        retry_locked(lambda: conn.executescript(_SCHEMA), op="schema")
+        # Guarded, idempotent migrations. "duplicate column name" means the column
+        # is already there (ignore it) - but a LOCK must never be swallowed here:
+        # that would stamp the new user_version onto a HALF-migrated DB.
+        for _name, ddl in _MIGRATIONS:
+            try:
+                conn.execute(ddl)
+            except sqlite3.Error as exc:
+                if is_locked_error(exc):
+                    raise
+        conn.execute("PRAGMA user_version = {}".format(_SCHEMA_VERSION))
     conn.commit()
     return conn
+
+
+def open_reader(path, timeout=10.0):
+    """Open the store READ-ONLY - the mode for every diagnostic.
+
+    No DDL, no `journal_mode` switch, no write lock, so `--check`/status probes can
+    run against a LIVE store. `mode=ro` replays the WAL (newest rows visible);
+    `immutable=1` is the fallback for a filesystem where the WAL index cannot be
+    touched - it may lag by whatever is still in the WAL.
+    """
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError("store not found: {!r}".format(path))
+    last = None
+    for uri in ("file:" + path + "?mode=ro", "file:" + path + "?immutable=1"):
+        conn = None
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=float(timeout))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout={}".format(int(float(timeout) * 1000)))
+            conn.execute("PRAGMA query_only=ON")   # a diagnostic must never write
+            conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            return conn
+        except sqlite3.Error as exc:
+            last = exc
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+            continue
+    raise last if last is not None else sqlite3.OperationalError(
+        "cannot open the store READ-ONLY")
 
 
 # ---------------------------------------------------------------------------

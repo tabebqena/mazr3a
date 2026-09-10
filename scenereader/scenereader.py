@@ -28,23 +28,50 @@ Design notes
   scan/drain pass is guarded; SIGTERM/SIGINT set a stop flag checked each tick;
   the store/status writes are best-effort and never stop the loop.
 
-Usage:
+Usage:  (`python scenereader.py --help` is authoritative; see `_USAGE` below)
   python scenereader.py                  # run the scheduler loop
-  python scenereader.py --check          # config + places + model load probe
+  python scenereader.py --check          # READ-ONLY config/places/model probe
   python scenereader.py --scan-only      # harvest + rebuild episodes, exit
   python scenereader.py --drain          # force a caption batch, exit
   python scenereader.py --rebuild-episodes
   python scenereader.py --once           # scan + rebuild + drain, exit
   python scenereader.py --dry-run        # like --once but stores nothing
-  python scenereader.py --status
+  python scenereader.py --status         # print the heartbeat JSON, exit
+  python scenereader.py --help           # usage; an UNKNOWN flag is an ERROR
+
+The CLI is a REAL argument parser, and that is a fix, not cosmetics: unknown flags
+used to be ignored, so `--help` (or any typo) silently STARTED the scheduler - and
+a second scheduler writing the same SQLite store is exactly what produced the old
+`database is locked` noise. Only ONE scheduler may run per store (see
+`_InstanceLock`), `--check`/`--status` are read-only and may always run alongside it.
 """
+import argparse
 import json
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
+
+try:                      # POSIX only; elsewhere the guard degrades to "no lock"
+    import fcntl
+except ImportError:       # pragma: no cover - non-POSIX hosts
+    fcntl = None  # type: ignore[assignment]
+
+# The three flock flags + one wrapper: `fcntl` may be None (above), so every flock
+# call goes through here instead of touching module attributes at each call site.
+LOCK_EX = getattr(fcntl, "LOCK_EX", 0) if fcntl is not None else 0
+LOCK_NB = getattr(fcntl, "LOCK_NB", 0) if fcntl is not None else 0
+LOCK_UN = getattr(fcntl, "LOCK_UN", 0) if fcntl is not None else 0
+
+
+def _flock(fh, operation):
+    """flock(2); a no-op returning None where the platform has no flock."""
+    if fcntl is None:            # pragma: no cover - non-POSIX hosts
+        return None
+    return fcntl.flock(fh, operation)
 
 import captioners
 import describe
@@ -63,6 +90,23 @@ def LOG(*args):
 
 def _sig_stop(_signum, _frame):
     _STOP[0] = True
+
+
+def _install_signals():
+    """Make EVERY mode interruptible, not just the daemon loop.
+
+    The daemon used to be the only one registering SIGTERM/SIGINT, so a one-shot
+    (`--drain`, `--check`) could only be killed by the default handler - which is
+    how an interrupted probe left a half-finished pass behind.
+    """
+    for name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _sig_stop)
+        except (ValueError, OSError):   # not on the main thread - no matter
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +207,9 @@ class S:
         # Longest image side handed to the vision encoder (0 = no cap). Measured
         # on the host: encoding an uncapped 640x360 frame dominated the caption.
         self.vlm_max_image_px = 384
+        # Wall-clock ceiling for ONE one-shot CLI caption (the fallback path when
+        # llama-server is not usable). It is the only step that can look "hung".
+        self.vlm_timeout_s = 300.0
         self.vlm_prompt = captioners.DEFAULT_PROMPT
         self.only_person_captions = False
         # episodes
@@ -220,6 +267,7 @@ def resolve_settings(raw):
     s.vlm_ctx = max(512, _geti(raw, "VLM_CTX", 4096))
     s.vlm_max_tokens = max(1, _geti(raw, "VLM_MAX_TOKENS", 64))
     s.vlm_max_image_px = max(0, _geti(raw, "VLM_MAX_IMAGE_PX", 384))
+    s.vlm_timeout_s = max(30.0, _getf(raw, "VLM_TIMEOUT_S", 300))
     s.vlm_prompt = _get(raw, "VLM_PROMPT", captioners.DEFAULT_PROMPT)
     s.only_person_captions = _getb(raw, "ONLY_PERSON_CAPTIONS", False)
     s.episode_labels = [x.lower() for x in _list(raw, "EPISODE_LABELS", ["person"])]
@@ -448,8 +496,9 @@ def re_enrich(s, conn, places, log=LOG):
                 fixed += 1
             except Exception as exc:  # noqa: BLE001
                 log("re-enrich: {} failed: {}".format(row["frigate_event_id"], exc))
-        if fixed:
-            conn.commit()
+        # Unconditional (see `release_txn`): an upsert that changed nothing still
+        # opened a transaction, and leaving it open would block every other writer.
+        conn.commit()
     finally:
         if db_conn is not None:
             try:
@@ -515,7 +564,7 @@ def drain(s, conn, cap, dry=False, force=False, log=LOG):
             failed += 1
             log("caption {} FAILED: {}".format(row["frigate_event_id"], exc))
     if not dry:
-        conn.commit()
+        conn.commit()   # unconditional: any UPDATE above opened a transaction
     return {"captioner": done, "missing": missing, "failed": failed,
             "gate": why, "elapsed_s": round(time.monotonic() - started, 1)}
 
@@ -538,12 +587,40 @@ def rebuild_episodes(s, conn, places, dry=False, log=LOG):
     return count
 
 
+def release_txn(conn, log=LOG):
+    """Commit a transaction a pass left open. Returns True when one was pending.
+
+    THE INVARIANT THIS ENFORCES: while the service is idle it must hold NO SQLite
+    write lock. Python's sqlite3 opens a transaction on the first DML and holds it
+    until commit, so ONE forgotten commit in ANY pass holds the store's write lock
+    for the whole process lifetime: every other writer (a manual `--drain`, the
+    portal's next writer, a second service) then waits out its `busy_timeout` and
+    fails with `database is locked`, while the lock OWNER never notices anything
+    wrong. That is exactly the failure this store used to show. Committing here is
+    free when nothing is pending, and turns "some pass forgot" into a log line
+    instead of a mystery.
+    """
+    try:
+        if conn.in_transaction:
+            conn.commit()
+            log("NOTE: committed a transaction a pass left open (the store must "
+                "never hold a write lock while the service idles)")
+            return True
+    except sqlite3.Error as exc:
+        log("could not commit an open transaction: {}".format(exc))
+    return False
+
+
 def prune(s, conn, log=LOG):
     if s.events_retention_days <= 0:
         return 0
     removed = store.prune_events(conn, s.events_retention_days)
+    # COMMIT UNCONDITIONALLY. `prune_events` issues DELETEs, and the transaction
+    # starts with the first one even when it matches NOTHING - so committing only
+    # `if removed` left the write lock open for the life of the process (see
+    # `release_txn`), which is what made every other writer time out.
+    conn.commit()
     if removed:
-        conn.commit()
         log("pruned {} event(s) older than {:g} days".format(
             removed, s.events_retention_days))
     return removed
@@ -552,10 +629,9 @@ def prune(s, conn, log=LOG):
 # ---------------------------------------------------------------------------
 # run modes
 # ---------------------------------------------------------------------------
-def _open(s):
-    conn = store.open_writer(db_path(s))
-    places = episodes.Places.load(PLACES_PATH)
-    return conn, places
+# NOTE: the store is opened per MODE, not here. Diagnostics (`--check`) use
+# store.open_reader() so they can run against a LIVE scheduler without ever taking
+# its write lock; every other mode takes the writer.
 
 
 def runtime_problems(cap):
@@ -609,8 +685,7 @@ def run_forever(s, conn, places, cap):
     if places.unmapped(s.cameras):
         LOG("NOTE: cameras with no place mapping in {}: {}".format(
             PLACES_PATH, ",".join(places.unmapped(s.cameras))))
-    signal.signal(signal.SIGTERM, _sig_stop)
-    signal.signal(signal.SIGINT, _sig_stop)
+    _install_signals()
     next_scan = next_drain = next_episodes = time.monotonic()
     last_hb = time.monotonic()
     last_prune = 0.0
@@ -650,13 +725,26 @@ def run_forever(s, conn, places, cap):
                 if res.get("captioner") or res.get("missing") or triggered:
                     LOG("drain: {}".format(res))
                 next_drain = time.monotonic() + s.drain_every
+        except sqlite3.OperationalError as exc:
+            # A LOCK clash is contention, not a bug: name the file, wait, then let
+            # the next tick retry. Every pass is idempotent (upsert by event id +
+            # full episode rebuild), so retrying costs nothing but a tick.
+            LOG("store busy: {} - another writer holds {}; retrying in 5s".format(
+                exc, db_path(s)))
+            _sleep(5.0)
         except Exception as exc:  # noqa: BLE001 - a pass must never kill the loop
             LOG("pass error: {}: {}".format(type(exc).__name__, exc))
+        # SAFETY NET before the idle window: no pass may leave a write transaction
+        # open, or the service would hold the store's write lock while doing
+        # nothing at all (see `release_txn` for the failure this prevents).
+        release_txn(conn)
         now = time.monotonic()
         if now - last_prune >= 3600.0:
             last_prune = now
             try:
                 prune(s, conn)
+            except sqlite3.OperationalError as exc:
+                LOG("prune skipped: store busy ({})".format(exc))
             except Exception as exc:  # noqa: BLE001
                 LOG("prune error: {}".format(exc))
         if now - last_hb >= s.heartbeat_s:
@@ -678,10 +766,155 @@ def _sleep(secs):
 
 
 # ---------------------------------------------------------------------------
+# single instance (a second scheduler must never start)
+# ---------------------------------------------------------------------------
+class _InstanceLock:
+    """flock(2)-based single-instance guard living in the store directory.
+
+    WHY a file lock and not "let the DB tell us": SQLite's locking is per
+    TRANSACTION, so a second scheduler does not fail to START - it starts happily
+    and then fights the first one for the write lock on EVERY pass. That is exactly
+    the `database is locked` storm this prevents, and starting one by accident used
+    to be easy (an unknown flag, `--help` included, was ignored and the loop began).
+    A held flock is authoritative, and the KERNEL drops it even on SIGKILL, so a
+    stale lock file can never block a legitimate start.
+
+    Two names are used: `scheduler` (one long-lived daemon per store) and `cli` (one
+    manual command at a time). A manual command may still run BESIDE the daemon -
+    that is the documented workflow - but two of them may not.
+    """
+
+    def __init__(self, s, name):
+        self.path = os.path.join(s.store_dir, ".scenereader-{}.lock".format(name))
+        self._fh = None
+
+    def holder(self):
+        """The pid recorded while the lock is HELD, else None (also when stale)."""
+        if not os.path.isfile(self.path):
+            return None
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                pid = int((fh.read().strip() or "0"))
+        except (OSError, ValueError):
+            return None
+        if not pid:
+            return None
+        if fcntl is None:
+            return pid
+        # Probe with a READ-ONLY handle (flock works on any fd, and this must not
+        # create or rewrite the file): taking it proves the owner is gone.
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                _flock(fh, LOCK_EX | LOCK_NB)
+                _flock(fh, LOCK_UN)
+            return None
+        except OSError:
+            return pid
+
+    def acquire(self):
+        """Take the lock. None on success, else the holder's pid (0 if unknown)."""
+        if fcntl is None:            # non-POSIX: no guard is possible, do not lie
+            return None
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self._fh = open(self.path, "a+", encoding="utf-8")
+            try:
+                # World-writable on purpose: `docker compose exec` can run as a
+                # different uid than the service, and a lock file that one uid
+                # cannot open would look "held" forever to the others.
+                os.chmod(self.path, 0o666)
+            except OSError:
+                pass
+            _flock(self._fh, LOCK_EX | LOCK_NB)
+        except OSError as exc:
+            pid = self.holder()
+            self.release()
+            if pid is not None:
+                return pid
+            # The lock is FREE - the file simply could not be opened for writing
+            # (another uid owns it, unusual fs). Working without the guard beats
+            # refusing to run, but it is never silent.
+            LOG("WARNING: cannot use the lock file {} ({})".format(self.path, exc))
+            LOG("WARNING: continuing WITHOUT the single-instance guard")
+            return None
+        try:
+            self._fh.seek(0)
+            self._fh.truncate()
+            self._fh.write(str(os.getpid()))
+            self._fh.flush()
+        except OSError:
+            pass
+        return None
+
+    def release(self):
+        if self._fh is None:
+            return
+        try:
+            _flock(self._fh, LOCK_UN)
+        except (OSError, ValueError):
+            pass
+        try:
+            self._fh.close()
+        except OSError:
+            pass
+        self._fh = None
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+_USAGE = """\
+MODES (mutually exclusive; with NO flag the scheduler loop runs):
+  (none)              scheduler: scan -> enrich -> episodes -> idle-gated drain
+  --check             READ-ONLY preflight: idle gate, store/clips/places paths,
+                      model load + ONE real caption - safe beside a live service
+  --status            print the reader_status.json heartbeat the portal reads
+  --scan-only         one harvest + one episode rebuild, then exit
+  --rebuild-episodes  re-derive episodes + narratives from `events`, then exit
+  --drain             one caption batch NOW (the idle governor still decides)
+  --once              scan + rebuild + drain, then exit
+  --dry-run           like --once but NOTHING is written to the store
+
+EXIT CODES: 0 ok | 2 config/store/model error | 3 another instance holds the store
+
+SAFETY: only ONE scheduler may run per store. A second one exits 3 (with the
+holder's pid) instead of fighting it for the SQLite write lock - `database is
+locked` was what that fight looked like. `--check`/`--status` are read-only and
+may always run alongside the scheduler.
+"""
+
+
+def _build_parser():
+    parser = argparse.ArgumentParser(
+        prog="scenereader.py",
+        description="Cross-camera episode narrator: turns the captures Frigate "
+                    "already produced into per-camera sentences and anonymous "
+                    "cross-camera person episodes.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_USAGE)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="read-only preflight (idle gate, paths, model probe)")
+    mode.add_argument("--status", action="store_true",
+                      help="print the heartbeat JSON the portal reads, then exit")
+    mode.add_argument("--scan-only", action="store_true",
+                      help="one harvest + one episode rebuild, then exit")
+    mode.add_argument("--rebuild-episodes", action="store_true",
+                      help="re-derive episodes/narratives from `events`, then exit")
+    mode.add_argument("--drain", action="store_true",
+                      help="one caption batch now (the idle gate still applies)")
+    mode.add_argument("--once", action="store_true",
+                      help="scan + rebuild + drain once, then exit")
+    mode.add_argument("--dry-run", action="store_true",
+                      help="like --once but nothing is written to the store")
+    return parser
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-def main():
-    args = set(sys.argv[1:])
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
     raw = _raw_conf(CONF_PATH)
     if not raw:
         LOG("ERROR: no config at {} - aborting".format(CONF_PATH))
@@ -692,22 +925,65 @@ def main():
         pass
 
     s = resolve_settings(raw)
-    dry = "--dry-run" in args
+    _install_signals()
 
-    if "--status" in args:
+    if args.status:
         print(json.dumps(read_status(s.status_file), indent=2, sort_keys=True))
         return 0
 
-    try:
-        conn, places = _open(s)
-    except Exception as exc:  # noqa: BLE001
-        LOG("ERROR: cannot open the store at {}: {}".format(db_path(s), exc))
-        return 2
+    dry = bool(args.dry_run)
+    one_shot = bool(args.check or args.drain or args.once or args.dry_run
+                    or args.scan_only or args.rebuild_episodes)
+
+    # ---- ONE scheduler per store, ONE manual command at a time --------------
+    # A second scheduler is never useful (same clips, same store, twice the work)
+    # and is refused here - with the holder's pid - BEFORE a single write is tried.
+    locks = []
+    if not one_shot:
+        lock = _InstanceLock(s, "scheduler")
+        holder = lock.acquire()
+        if holder is not None:
+            LOG("ERROR: a scenereader scheduler is already running (pid {}) on {}"
+                .format(holder or "?", db_path(s)))
+            LOG("ERROR: refusing to start a SECOND writer on the same store - that "
+                "is what makes the store report 'database is locked'. Use --check "
+                "(read-only), or stop the running one first "
+                "(`docker compose restart scenereader`).")
+            return 3
+        locks.append(lock)
+    elif not args.check:
+        # Two manual commands at once is a mistake worth catching; a manual command
+        # beside the DAEMON is allowed (it is the documented maintenance path).
+        lock = _InstanceLock(s, "cli")
+        holder = lock.acquire()
+        if holder is not None:
+            LOG("ERROR: another scenereader command is already running (pid {})."
+                .format(holder or "?"))
+            return 3
+        locks.append(lock)
+
+    places = episodes.Places.load(PLACES_PATH)
+
+    if args.check:
+        # READ-ONLY on purpose. `--check` is a diagnostic, and it used to open the
+        # WRITER (schema DDL included) - i.e. it grabbed the store's write lock just
+        # to ask a question, which on a running service is a collision.
+        try:
+            conn = store.open_reader(db_path(s))
+        except Exception as exc:  # noqa: BLE001
+            LOG("ERROR: cannot read the store at {}: {}".format(db_path(s), exc))
+            return 2
+    else:
+        try:
+            conn = store.open_writer(db_path(s))
+        except Exception as exc:  # noqa: BLE001
+            LOG("ERROR: cannot open the store at {}: {}".format(db_path(s), exc))
+            return 2
 
     # An explicit model-requiring FLAG must fail loudly, but the long-running
     # service must NOT: a missing model only disables captions, not the narrator.
-    strict_model = bool({"--check", "--drain", "--once", "--dry-run"} & args)
-    attempt_model = strict_model or not args
+    strict_model = bool(args.check or args.drain or args.once or args.dry_run)
+    attempt_model = strict_model or not one_shot
     cap = None
     if attempt_model:
         try:
@@ -724,9 +1000,12 @@ def main():
             cap = None
 
     try:
-        if "--check" in args:
+        if args.check:
             ok, why = governor_state(s)
             LOG("idle gate: {} ({})".format("OPEN" if ok else "CLOSED", why))
+            holder = _InstanceLock(s, "scheduler").holder()
+            LOG("scheduler: {} | store opened READ-ONLY".format(
+                "running (pid {})".format(holder) if holder else "not running"))
             LOG("store: {} | clips: {} | places: {}".format(
                 db_path(s), clips_dir(s), PLACES_PATH))
             unmapped = places.unmapped(s.cameras)
@@ -763,6 +1042,13 @@ def main():
                 LOG("runtime: server {} | cli {}".format(
                     server_state, getattr(cap, "_cli_bin", None) or "not found"))
             if probe:
+                # SAY what is starting and how long it may take. A real caption on
+                # 2 CPU threads takes tens of seconds (an mtmd-CLI fallback can take
+                # minutes), and a silent minute looks exactly like a hang - which is
+                # how this probe ends up Ctrl-C'd mid-run.
+                LOG("probe: captioning {} with {} ... (one attempt, up to {:g}s; "
+                    "the timing IS the measurement)".format(
+                        probe, getattr(cap, "name", "?"), s.vlm_timeout_s))
                 text, ms = cap.caption(probe)
                 LOG("probe caption ({} ms): {}".format(ms, text or "<empty>"))
                 if not text:
@@ -786,25 +1072,25 @@ def main():
                 LOG("no stored frame on disk yet - skipped the caption probe")
             return 0
 
-        if "--rebuild-episodes" in args:
+        if args.rebuild_episodes:
             rebuild_episodes(s, conn, places, dry=dry)
             write_status(s, conn, cap if s.model_keep_loaded else None)
             return 0
 
-        if "--scan-only" in args:
+        if args.scan_only:
             LOG("scan: {}".format(harvest(s, conn, places, dry=dry)))
             rebuild_episodes(s, conn, places, dry=dry)
             write_status(s, conn, cap if cap else None)
             return 0
 
-        if "--drain" in args:
+        if args.drain:
             LOG("drain: {}".format(drain(s, conn, cap, dry=dry, force=True)))
             if not dry:
                 rebuild_episodes(s, conn, places)
             write_status(s, conn, cap)
             return 0
 
-        if "--once" in args or dry:
+        if args.once or dry:
             LOG("scan: {}".format(harvest(s, conn, places, dry=dry)))
             rebuild_episodes(s, conn, places, dry=dry)
             LOG("drain: {}".format(drain(s, conn, cap, dry=dry, force=True)))
@@ -822,6 +1108,8 @@ def main():
             pass
         if cap is not None:
             cap.close()
+        for lock in locks:
+            lock.release()
 
 
 if __name__ == "__main__":

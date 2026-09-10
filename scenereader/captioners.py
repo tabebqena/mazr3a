@@ -88,7 +88,7 @@ class LlamaCppCaptioner(Captioner):
     def __init__(self, model_file, mmproj_file, server_bin="llama-server",
                  cli_bin="llama-mtmd-cli", n_threads=2, ctx=4096, max_tokens=64,
                  keep_loaded=True, port=8737, start_timeout=180.0,
-                 max_image_px=384, prompt=None):
+                 max_image_px=384, cli_timeout=300.0, prompt=None):
         if not model_file or not os.path.isfile(model_file):
             raise RuntimeError("MODEL_FILE not found: {!r} (run "
                                "dev_scripts/prep_scene_model_llamacpp.sh)".format(model_file))
@@ -107,6 +107,11 @@ class LlamaCppCaptioner(Captioner):
         # passes), while SmolVLM2's encoder works at 384 px - feeding it a smaller
         # image cuts the dominant cost with no loss of usable detail. 0 disables.
         self.max_image_px = max(0, int(max_image_px or 0))
+        # Wall-clock ceiling for ONE one-shot CLI caption (VLM_TIMEOUT_S). The CLI
+        # fallback is the slowest path (a full model load + encode + generate per
+        # call), and the ONLY step that can look like a hang - so it is bounded,
+        # reported, and the failure says how to fix it.
+        self.cli_timeout = max(30.0, float(cli_timeout or 300.0))
         self.prompt = prompt or DEFAULT_PROMPT
         self._proc = None
         self._port = int(port)
@@ -307,7 +312,14 @@ class LlamaCppCaptioner(Captioner):
                "--image", image_path, "-p", prompt, "-n", str(self.max_tokens),
                "-t", str(self.n_threads), "--jinja"]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=self.cli_timeout)
+        except subprocess.TimeoutExpired:
+            self.last_error = ("{} timed out after {:g}s on {} threads - raise "
+                               "VLM_TIMEOUT_S (or lower VLM_MAX_IMAGE_PX) and "
+                               "retry".format(os.path.basename(self._cli_bin),
+                                              self.cli_timeout, self.n_threads))
+            return None
         except (OSError, subprocess.SubprocessError) as exc:
             self.last_error = "{} failed: {}".format(self._cli_bin, exc)
             return None
@@ -445,5 +457,6 @@ def make_captioner(settings):
             keep_loaded=bool(getattr(settings, "model_keep_loaded", True)),
             port=int(getattr(settings, "llama_port", 8737) or 8737),
             max_image_px=int(getattr(settings, "vlm_max_image_px", 384) or 384),
+            cli_timeout=float(getattr(settings, "vlm_timeout_s", 300) or 300),
             prompt=prompt)
     raise RuntimeError("unknown MODEL_BACKEND {!r} (use llamacpp|openvino)".format(backend))

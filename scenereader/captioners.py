@@ -79,7 +79,7 @@ class LlamaCppCaptioner(Captioner):
 
     def __init__(self, model_file, mmproj_file, server_bin="llama-server",
                  cli_bin="llama-mtmd-cli", n_threads=2, ctx=4096, max_tokens=64,
-                 keep_loaded=True, port=8737, start_timeout=90.0, prompt=None):
+                 keep_loaded=True, port=8737, start_timeout=180.0, prompt=None):
         if not model_file or not os.path.isfile(model_file):
             raise RuntimeError("MODEL_FILE not found: {!r} (run "
                                "dev_scripts/prep_scene_model_llamacpp.sh)".format(model_file))
@@ -101,6 +101,11 @@ class LlamaCppCaptioner(Captioner):
         # makes this class of failure so confusing, so the reason is kept and
         # surfaced by the service's --check.
         self.last_error = ""
+        # Which path produced the last answer ("server"/"cli"), and the raw CLI
+        # text, so --check can show what actually came back instead of just
+        # "empty".
+        self.last_path = ""
+        self.last_raw = ""
         self._logfh = None
         self._log_path = os.path.join(tempfile.gettempdir(), "llama-server.log")
         self._server_bin = _which([server_bin, "llama-server"])
@@ -110,8 +115,12 @@ class LlamaCppCaptioner(Captioner):
 
     # -- server lifecycle ---------------------------------------------------
     def _start_server(self, timeout):
+        # --jinja: apply the model's OWN chat template. SmolVLM2 is an INSTRUCT
+        # model; without its template it answers an unframed prompt with an
+        # immediate EOS, which surfaces as an empty caption after a full
+        # generation run.
         cmd = [self._server_bin, "-m", self.model_file, "--mmproj", self.mmproj_file,
-               "-c", str(self.ctx), "-t", str(self.n_threads),
+               "-c", str(self.ctx), "-t", str(self.n_threads), "--jinja",
                "--host", "127.0.0.1", "--port", str(self._port), "-ngl", "0"]
         try:
             # Keep the server's own output: when it exits immediately (most often
@@ -208,8 +217,11 @@ class LlamaCppCaptioner(Captioner):
             text = None
             if self._proc is not None and self._proc.poll() is None:
                 text = self._caption_server(prepared, prompt)
+                if text is not None:
+                    self.last_path = "server"
             if text is None:
                 text = self._caption_cli(prepared, prompt)
+                self.last_path = "cli"
         finally:
             if is_temp:
                 try:
@@ -251,7 +263,7 @@ class LlamaCppCaptioner(Captioner):
             return None
         cmd = [self._cli_bin, "-m", self.model_file, "--mmproj", self.mmproj_file,
                "--image", image_path, "-p", prompt, "-n", str(self.max_tokens),
-               "-t", str(self.n_threads), "--log-disable"]
+               "-t", str(self.n_threads), "--jinja", "--log-disable"]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -263,7 +275,9 @@ class LlamaCppCaptioner(Captioner):
                 os.path.basename(self._cli_bin), out.returncode, detail[-400:])
             return None
         # --log-disable keeps the timestamped log lines out; the CLI still echoes
-        # the prompt first, so strip that too.
+        # the prompt first, so strip that too. Keep the raw text for --check.
+        self.last_raw = ((out.stdout or "") + "\n---stderr---\n"
+                         + (out.stderr or ""))[-800:]
         lines = [ln.strip() for ln in (out.stdout or "").splitlines()]
         body = [ln for ln in lines if ln and not ln.startswith("llama_")
                 and prompt.strip()[:24] not in ln]

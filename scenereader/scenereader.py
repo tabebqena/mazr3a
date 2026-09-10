@@ -752,6 +752,12 @@ def main():
             if getattr(cap, "backend", "") == "llamacpp":
                 for line in runtime_problems(cap):
                     LOG("PREFLIGHT -> {}".format(line))
+                server = getattr(cap, "_proc", None)
+                server_state = "ready" if (server is not None and server.poll() is None) \
+                    else ("failed: " + (getattr(cap, "last_error", "") or "not started")
+                          if getattr(cap, "_server_bin", None) else "not found")
+                LOG("runtime: server {} | cli {}".format(
+                    server_state, getattr(cap, "_cli_bin", None) or "not found"))
             if probe:
                 text, ms = cap.caption(probe)
                 LOG("probe caption ({} ms): {}".format(ms, text or "<empty>"))
@@ -762,6 +768,11 @@ def main():
                     if reason:
                         LOG("  reason: {}".format(
                             " | ".join(reason.splitlines())[-400:]))
+                    raw = getattr(cap, "last_raw", "")
+                    if raw:
+                        LOG("  path: {} | raw output: {}".format(
+                            getattr(cap, "last_path", "?"),
+                            " | ".join(raw.splitlines())[-400:]))
             else:
                 LOG("no stored frame on disk yet - skipped the caption probe")
             return 0

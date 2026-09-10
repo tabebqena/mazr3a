@@ -43,9 +43,10 @@ Storage (git-ignored host files - never written into the tracked tree):
               the deploy dir is not writable (e.g. cron running as a non-owner).
 
   NOTE (2026-09-10): the columns gpu_usage_pct,gpu_temp_c were APPENDED to the
-  CSV. Rows written by an older version therefore have two fewer fields than
-  the header; the in-repo reader is index-based and unaffected, but start a new
-  --tag (e.g. "yolo11s_after") for a clean, uniform file.
+  CSV. A file whose header is from an older schema is MIGRATED in place on the
+  next tick (ensure_csv rewrites the header and pads the legacy rows with empty
+  fields), so every row always matches the current column count - existing
+  files keep their history and just gain two blank columns.
 
 Tunables: CLI args or WATCHDOG_* env vars, each with a baked-in default.
   --cron / WATCHDOG_CRON=1       one-shot cron sampling mode
@@ -331,7 +332,15 @@ def row_values(run, sample):
 
 
 def ensure_csv(csv_path, run, sample):
-    """Create the CSV with a header when it does not exist yet."""
+    """Create the CSV with a header, or migrate an older-schema one in place.
+
+    * missing/empty file -> write the current header;
+    * existing file whose header already matches -> leave it alone;
+    * existing file with an OLDER header (e.g. before the gpu_* columns were
+      appended) -> rewrite the header and pad each legacy row with empty fields,
+      so every row matches the current column count. History is preserved and
+      the appended columns simply read blank for the pre-existing period.
+    """
     if not os.path.isfile(csv_path) or os.path.getsize(csv_path) == 0:
         try:
             with open(csv_path, "w", encoding="utf-8") as fh:
@@ -339,6 +348,35 @@ def ensure_csv(csv_path, run, sample):
                 fh.flush()
         except OSError:
             return False
+        return True
+
+    try:
+        with open(csv_path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return True  # unreadable -> don't touch it; the append will still work
+
+    if not lines or lines[0] == CSV_HEADER:
+        return True
+
+    width = len(CSV_HEADER.split(","))
+    migrated = [CSV_HEADER]
+    for line in lines[1:]:
+        if not line:
+            continue
+        fields = line.split(",")
+        if len(fields) < width:
+            fields += [""] * (width - len(fields))
+        migrated.append(",".join(fields))
+
+    tmp = csv_path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(migrated) + "\n")
+            fh.flush()
+        os.replace(tmp, csv_path)
+    except OSError:
+        pass  # keep appending with the old header rather than failing the tick
     return True
 
 

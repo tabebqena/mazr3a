@@ -726,6 +726,10 @@ def main():
                 if not text:
                     LOG("WARNING: the captioner returned NO text - treat captions "
                         "as unproven until this probe prints a sentence.")
+                    reason = getattr(cap, "last_error", "")
+                    if reason:
+                        LOG("  reason: {}".format(
+                            " | ".join(reason.splitlines())[-400:]))
             else:
                 LOG("no stored frame on disk yet - skipped the caption probe")
             return 0

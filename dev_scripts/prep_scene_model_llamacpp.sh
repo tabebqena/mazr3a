@@ -207,21 +207,36 @@ for a in d.get("assets", []):
       unzip -q -o "$ZIP" -d "$tmp" ;;
     *) echo "ERROR: unsupported archive ${ASSET}" >&2; exit 1 ;;
   esac
-  # flatten: the archive nests the binaries in a subdir; copy the two we run
-  found=0
-  for want in llama-server llama-mtmd-cli; do
-    src="$(find "$tmp" -type f -name "$want" | head -n1)"
-    if [ -n "$src" ]; then
-      cp -f "$src" "${BIN_DIR}/${want}"
-      chmod 755 "${BIN_DIR}/${want}"
-      echo "   OK     ${BIN_DIR}/${want}"
-      found=1
-    else
-      echo "   MISS   ${want} (is this the plain CPU build?)" >&2
-    fi
-  done
+  # The archive is FLAT: the executables and ALL their shared libraries live in
+  # one directory. Copy the WHOLE directory, not just the two binaries - the
+  # binaries link against libllama/libggml/libmtmd and ggml also dlopen()s the
+  # per-CPU libggml-cpu-*.so at runtime, so anything left behind makes the
+  # binary die instantly with "cannot open shared object file" (which showed up
+  # as a 1 ms empty caption). Copying them side by side keeps the $ORIGIN RPATH
+  # working, and the paths in config/scenereader.conf unchanged.
+  SRV="$(find "$tmp" -type f -name llama-server | head -n1)"
+  if [ -z "$SRV" ]; then
+    echo "ERROR: llama-server not found in ${ASSET} (is this the plain CPU build?)" >&2
+    rm -rf "$tmp"
+    exit 1
+  fi
+  SRCDIR="$(dirname "$SRV")"
+  cp -a "$SRCDIR"/. "$BIN_DIR"/
+  chmod 755 "${BIN_DIR}/llama-server" 2>/dev/null || true
+  chmod 755 "${BIN_DIR}/llama-mtmd-cli" 2>/dev/null || true
+  nfiles=$(find "$BIN_DIR" -maxdepth 1 -type f | wc -l)
+  nlibs=$(find "$BIN_DIR" -maxdepth 1 -type f -name '*.so*' | wc -l)
+  echo "   OK     ${BIN_DIR}/llama-server"
+  [ -x "${BIN_DIR}/llama-mtmd-cli" ] && echo "   OK     ${BIN_DIR}/llama-mtmd-cli" \
+    || echo "   MISS   llama-mtmd-cli (llama-server alone still works)" >&2
+  echo "   copied ${nfiles} file(s), ${nlibs} shared librar(y|ies)"
+  if [ "$nlibs" -eq 0 ]; then
+    echo "ERROR: no shared libraries were copied - the binaries would fail to" >&2
+    echo "       start with 'cannot open shared object file'." >&2
+    rm -rf "$tmp"
+    exit 1
+  fi
   rm -rf "$tmp"
-  [ "$found" = "1" ] || { echo "ERROR: neither binary found in ${ASSET}" >&2; exit 1; }
 fi
 
 # ---------------------------------------------------------------

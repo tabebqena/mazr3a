@@ -23,6 +23,7 @@ import base64
 import json
 import os
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -95,6 +96,13 @@ class LlamaCppCaptioner(Captioner):
         self.prompt = prompt or DEFAULT_PROMPT
         self._proc = None
         self._port = int(port)
+        # WHY a caption came back empty: a missing runtime, a binary that cannot
+        # find its shared libraries, a bad model file... Silence here is what
+        # makes this class of failure so confusing, so the reason is kept and
+        # surfaced by the service's --check.
+        self.last_error = ""
+        self._logfh = None
+        self._log_path = os.path.join(tempfile.gettempdir(), "llama-server.log")
         self._server_bin = _which([server_bin, "llama-server"])
         self._cli_bin = _which([cli_bin, "llama-mtmd-cli", "llama-mtmd"])
         if self.keep_loaded and self._server_bin:
@@ -106,19 +114,34 @@ class LlamaCppCaptioner(Captioner):
                "-c", str(self.ctx), "-t", str(self.n_threads),
                "--host", "127.0.0.1", "--port", str(self._port), "-ngl", "0"]
         try:
+            # Keep the server's own output: when it exits immediately (most often
+            # a missing/incompatible shared library) that text IS the diagnosis.
+            self._logfh = open(self._log_path, "wb")
             self._proc = subprocess.Popen(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError:
+                cmd, stdout=self._logfh, stderr=subprocess.STDOUT)
+        except OSError as exc:
             self._proc = None
+            self.last_error = "cannot start {}: {}".format(self._server_bin, exc)
             return
         deadline = time.monotonic() + max(1.0, timeout)
         while time.monotonic() < deadline:
             if self._proc.poll() is not None:
+                self.last_error = self._log_tail() or (
+                    "llama-server exited with code {}".format(self._proc.returncode))
                 self._proc = None            # crashed - fall back to the CLI
                 return
             if self._health():
                 return
             time.sleep(0.5)
+        self.last_error = self._log_tail() or "llama-server did not become ready"
+
+    def _log_tail(self, limit=600):
+        """Last lines of the server log (its startup failure reason)."""
+        try:
+            with open(self._log_path, "rb") as fh:
+                return fh.read()[-limit:].decode("utf-8", "replace").strip()
+        except OSError:
+            return ""
 
     def _health(self):
         try:
@@ -143,6 +166,12 @@ class LlamaCppCaptioner(Captioner):
                 except Exception:  # noqa: BLE001
                     pass
             self._proc = None
+        if self._logfh is not None:
+            try:
+                self._logfh.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._logfh = None
 
     # -- captioning ---------------------------------------------------------
     def caption(self, image_path, prompt=None):
@@ -191,9 +220,13 @@ class LlamaCppCaptioner(Captioner):
                "-t", str(self.n_threads)]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.last_error = "{} failed: {}".format(self._cli_bin, exc)
             return None
         if out.returncode != 0:
+            detail = ((out.stderr or "") + (out.stdout or "")).strip()
+            self.last_error = "{} exited {}: {}".format(
+                os.path.basename(self._cli_bin), out.returncode, detail[-400:])
             return None
         # the CLI echoes the prompt back; keep the answer lines only
         lines = [ln.strip() for ln in (out.stdout or "").splitlines()]

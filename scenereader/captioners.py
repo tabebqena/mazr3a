@@ -174,14 +174,48 @@ class LlamaCppCaptioner(Captioner):
             self._logfh = None
 
     # -- captioning ---------------------------------------------------------
+    # Formats llama.cpp's BUILT-IN decoder handles on its own. Anything else
+    # (notably WebP - which is what the scan prefers, the un-annotated
+    # `-clean.webp`) makes mtmd reach for ffprobe/ffmpeg and fail:
+    #   "failed to launch ffprobe" -> "failed to decode webp buffer"
+    _NATIVE_IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp")
+
+    def _prepare_image(self, image_path):
+        """(path_to_use, is_temp). Transcodes unsupported formats via Pillow.
+
+        Pillow is already a dependency (the OpenVINO backend needs it), so this
+        avoids shipping ffmpeg purely to decode WebP, and it normalises whatever
+        Frigate happens to write.
+        """
+        if os.path.splitext(image_path)[1].lower() in self._NATIVE_IMAGE_EXT:
+            return image_path, False
+        try:
+            from PIL import Image
+            out = os.path.join(tempfile.gettempdir(),
+                               "scenereader-{}.jpg".format(os.getpid()))
+            with Image.open(image_path) as img:
+                img.convert("RGB").save(out, "JPEG", quality=90)
+            return out, True
+        except Exception as exc:  # noqa: BLE001 - fall back and let the model speak
+            self.last_error = "cannot convert {}: {}".format(image_path, exc)
+            return image_path, False
+
     def caption(self, image_path, prompt=None):
         prompt = prompt or self.prompt
         started = time.monotonic()
-        text = None
-        if self._proc is not None and self._proc.poll() is None:
-            text = self._caption_server(image_path, prompt)
-        if text is None:
-            text = self._caption_cli(image_path, prompt)
+        prepared, is_temp = self._prepare_image(image_path)
+        try:
+            text = None
+            if self._proc is not None and self._proc.poll() is None:
+                text = self._caption_server(prepared, prompt)
+            if text is None:
+                text = self._caption_cli(prepared, prompt)
+        finally:
+            if is_temp:
+                try:
+                    os.remove(prepared)
+                except OSError:
+                    pass
         return (text or "").strip(), int((time.monotonic() - started) * 1000)
 
     def _caption_server(self, image_path, prompt):
@@ -217,7 +251,7 @@ class LlamaCppCaptioner(Captioner):
             return None
         cmd = [self._cli_bin, "-m", self.model_file, "--mmproj", self.mmproj_file,
                "--image", image_path, "-p", prompt, "-n", str(self.max_tokens),
-               "-t", str(self.n_threads)]
+               "-t", str(self.n_threads), "--log-disable"]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -228,11 +262,16 @@ class LlamaCppCaptioner(Captioner):
             self.last_error = "{} exited {}: {}".format(
                 os.path.basename(self._cli_bin), out.returncode, detail[-400:])
             return None
-        # the CLI echoes the prompt back; keep the answer lines only
+        # --log-disable keeps the timestamped log lines out; the CLI still echoes
+        # the prompt first, so strip that too.
         lines = [ln.strip() for ln in (out.stdout or "").splitlines()]
         body = [ln for ln in lines if ln and not ln.startswith("llama_")
                 and prompt.strip()[:24] not in ln]
-        return " ".join(body).strip() or None
+        text = " ".join(body).strip()
+        echo = prompt.strip()
+        if echo and text.startswith(echo):
+            text = text[len(echo):].strip(" :\n\t-")
+        return text or None
 
 
 # ---------------------------------------------------------------------------

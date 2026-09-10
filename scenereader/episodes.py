@@ -81,13 +81,15 @@ class Places:
     """The human layer over Frigate's identifiers (config/places.conf)."""
 
     def __init__(self, camera_places=None, zone_places=None, adjacency=None,
-                 coords=None):
+                 coords=None, place_ar=None):
         # camera (lower) -> place
         self.camera_places = {k.lower(): v for k, v in (camera_places or {}).items()}
         # "camera.zone" (lower) -> place
         self.zone_places = {k.lower(): v for k, v in (zone_places or {}).items()}
         self.adjacency = set(adjacency or ())          # {("cam04","cam07"), ...}
         self.coords = coords or {}                     # place(lower) -> (x, y)
+        # place (lower) -> Arabic place name, for the Arabic narrative
+        self.place_ar = {k.lower(): v for k, v in (place_ar or {}).items()}
 
     @classmethod
     def load(cls, path):
@@ -107,7 +109,8 @@ class Places:
         return cls(_pairs(cfg.get("CAMERA_PLACES")),
                    _pairs(cfg.get("ZONE_PLACES")),
                    _route_pairs(cfg.get("ADJACENCY")),
-                   coords)
+                   coords,
+                   _pairs(cfg.get("PLACE_AR")))
 
     # -- L1 lookups ---------------------------------------------------------
     def resolve(self, camera, zones=()):
@@ -148,6 +151,15 @@ class Places:
         """Cameras with no CAMERA_PLACES entry (reported in reader_status.json)."""
         return [c for c in cameras if (c or "").strip().lower() not in self.camera_places]
 
+    def place_name_ar(self, place):
+        """Arabic name of a place, falling back to the English name verbatim.
+
+        A missing translation is never an error - the Arabic sentence simply
+        carries the English place name so the narrative stays readable.
+        """
+        text = str(place or "").strip()
+        return self.place_ar.get(text.lower(), text)
+
 
 # ---------------------------------------------------------------------------
 # L2/L3 - episodes
@@ -166,6 +178,30 @@ def _anon_name(index):
 
 def _utc_day(epoch):
     return datetime.datetime.fromtimestamp(float(epoch), datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+# Arabic alphabet order, used for anonymous person labels ("الشخص ا").
+_AR_LETTERS = "ابتثجحخدذرزسشصضطظعغفقكلمنهوي"
+
+
+def _anon_name_ar(index):
+    """0 -> 'الشخص ا' ... 27 -> 'الشخص ي', then 'الشخص ا2' (mirrors the Latin scheme)."""
+    n = int(index)
+    letter = _AR_LETTERS[n % len(_AR_LETTERS)]
+    suffix = "" if n < len(_AR_LETTERS) else str(n // len(_AR_LETTERS) + 1)
+    return "الشخص " + letter + suffix
+
+
+def _anon_ar_from_en(anon_name):
+    """'Person B' -> 'الشخص ب'; a real name (e.g. 'Ali' or 'علي') passes through."""
+    text = str(anon_name or "").strip()
+    if not text.lower().startswith("person "):
+        return text
+    index = 0
+    for ch in text[7:].strip().upper():
+        if "A" <= ch <= "Z":
+            index = index * 26 + (ord(ch) - ord("A") + 1)
+    return _anon_name_ar(max(0, index - 1))
 
 
 def person_events(conn, labels=DEFAULT_LABELS, after=None, before=None):
@@ -319,6 +355,23 @@ def _minutes(seconds):
     return max(1, int(round(float(seconds) / 60.0)))
 
 
+def _minutes_ar(seconds):
+    """Arabic duration phrase, honouring its plural rules.
+
+    3-10 take the plural (دقائق) while 11+ take the singular (دقيقة); 1 and 2 have
+    their own forms. Getting this wrong reads as broken Arabic to a native
+    speaker, so it is done explicitly rather than with a naive format().
+    """
+    n = _minutes(seconds)
+    if n == 1:
+        return "دقيقة واحدة"
+    if n == 2:
+        return "دقيقتان"
+    if 3 <= n <= 10:
+        return "{} دقائق".format(n)
+    return "{} دقيقة".format(n)
+
+
 def compose_narrative(episode, aliases=None, tz_offset_h=0.0):
     """One deterministic sentence over the ordered visits. No model involved.
 
@@ -361,19 +414,61 @@ def compose_narrative(episode, aliases=None, tz_offset_h=0.0):
     return (text[0].upper() + text[1:]) if text else text
 
 
+def compose_narrative_ar(episode, aliases=None, tz_offset_h=0.0, places=None):
+    """The Arabic narrative, from the SAME structured facts as the English one.
+
+    Deliberately built with verbal nouns ("وصول ... ثم الانتقال ...") rather than
+    gendered verbs, so it reads correctly for a person of any gender and needs no
+    model. Example:
+
+        "وصول الشخص ا إلى الحقل 1 (cam04) في 22:36، مدة البقاء 12 دقيقة؛
+         ثم الانتقال إلى المخزن (cam07) في 22:49 برفقة الشخص ب؛ المغادرة في 22:51."
+    """
+    aliases = aliases or {}
+    visits = episode.get("visits") or []
+    if not visits:
+        return ""
+    name = aliases.get(episode["anon_name"]) or _anon_ar_from_en(episode["anon_name"])
+
+    def place_text(visit):
+        raw = visit["place"] or visit["camera"]
+        return places.place_name_ar(raw) if places is not None else raw
+
+    parts = []
+    for idx, visit in enumerate(visits):
+        clock = _clock(visit["enter_time"], tz_offset_h)
+        if idx == 0:
+            segment = "وصول {} إلى {} ({}) في {}".format(
+                name, place_text(visit), visit["camera"], clock)
+        else:
+            segment = "ثم الانتقال إلى {} ({}) في {}".format(
+                place_text(visit), visit["camera"], clock)
+        if visit.get("duration_s") is not None:
+            segment += "، مدة البقاء {}".format(_minutes_ar(visit["duration_s"]))
+        parts.append(segment)
+    partners = [aliases.get(p) or _anon_ar_from_en(p)
+                for p in (episode.get("partners") or [])]
+    if partners:
+        parts[-1] += " برفقة " + "، ".join(partners)
+    return "؛ ".join(parts) + "؛ المغادرة في {}.".format(
+        _clock(visits[-1]["leave_time"], tz_offset_h))
+
+
 def rebuild(conn, places, store, labels=DEFAULT_LABELS, reid_max_gap_s=90.0,
             episode_gap_s=600.0, visit_min_s=0.0, tz_offset_h=0.0):
-    """Re-derive every episode from `events`, write it, and return the count."""
+    """Re-derive every episode from `events`, write it, and return the count.
+
+    Each episode gets BOTH narratives (English + Arabic) from the same facts, so
+    the portal can show either without a second pass or any model.
+    """
     rows = person_events(conn, labels=labels)
     episodes = build_episodes(rows, places, reid_max_gap_s=reid_max_gap_s,
                               episode_gap_s=episode_gap_s, visit_min_s=visit_min_s)
     write_episodes(conn, episodes, store)
-    # narrate, honouring the day-scoped aliases
     for ep in episodes:
         aliases = store.get_aliases(conn, ep["day"])
-        conn.execute("UPDATE episodes SET narrative = ?, updated_at = ?"
-                     " WHERE day = ? AND anon_name = ?",
-                     (compose_narrative(ep, aliases, tz_offset_h), time.time(),
-                      ep["day"], ep["anon_name"]))
+        store.set_narratives(conn, ep["day"], ep["anon_name"],
+                             compose_narrative(ep, aliases, tz_offset_h),
+                             compose_narrative_ar(ep, aliases, tz_offset_h, places))
     conn.commit()
     return len(episodes)

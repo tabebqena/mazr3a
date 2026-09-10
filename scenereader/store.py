@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     start_time       REAL    NOT NULL DEFAULT 0,
     end_time         REAL,
     narrative        TEXT,
+    narrative_ar     TEXT,
     person_name      TEXT,
     link_confidence  REAL,
     created_at       REAL    NOT NULL DEFAULT 0,
@@ -112,6 +113,7 @@ _MIGRATIONS = (
     ("frame_clean_path", "ALTER TABLE events ADD COLUMN frame_clean_path TEXT"),
     ("description_attr", "ALTER TABLE events ADD COLUMN description_attr TEXT"),
     ("link_confidence", "ALTER TABLE episodes ADD COLUMN link_confidence REAL"),
+    ("narrative_ar", "ALTER TABLE episodes ADD COLUMN narrative_ar TEXT"),
 )
 
 # Event columns the rest of the code may set on an existing row (enrichment).
@@ -295,6 +297,19 @@ def insert_episode(conn, day, anon_name, label, start_time, end_time,
          person_name, link_confidence, now, now),
     )
     return cur.lastrowid
+
+
+def set_narratives(conn, day, anon_name, narrative, narrative_ar):
+    """Write BOTH language variants of one episode's narrative.
+
+    The Arabic text is built by the same deterministic composer as the English
+    one - it is a translation of structured facts, never a model's guess.
+    """
+    conn.execute(
+        "UPDATE episodes SET narrative = ?, narrative_ar = ?, updated_at = ?"
+        " WHERE day = ? AND anon_name = ?",
+        (narrative, narrative_ar, time.time(), day, anon_name),
+    )
 
 
 def add_visit(conn, episode_id, event_id, seq, place, enter_time, leave_time,

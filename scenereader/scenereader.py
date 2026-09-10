@@ -699,6 +699,15 @@ def main():
             unmapped = places.unmapped(s.cameras)
             if unmapped:
                 LOG("WARN unmapped cameras: {}".format(",".join(unmapped)))
+            # The model files and the RUNTIME are separate prerequisites: a GGUF
+            # alone cannot caption without the llama.cpp binary, and that would
+            # otherwise show up only as empty captions much later. Say it here.
+            if cap is not None and getattr(cap, "backend", "") == "llamacpp" \
+                    and not cap.alive():
+                LOG("WARNING: no llama.cpp runtime found (looked for {}). Captions "
+                    "will be EMPTY until it is fetched: `bash "
+                    "dev_scripts/prep_scene_model_llamacpp.sh --bin "
+                    "--llamacpp-tag b10900`".format(s.llama_server_bin))
             probe = None
             rows = conn.execute(
                 "SELECT frame_clean_path, frame_path FROM events"
@@ -714,6 +723,9 @@ def main():
             if probe:
                 text, ms = cap.caption(probe)
                 LOG("probe caption ({} ms): {}".format(ms, text or "<empty>"))
+                if not text:
+                    LOG("WARNING: the captioner returned NO text - treat captions "
+                        "as unproven until this probe prints a sentence.")
             else:
                 LOG("no stored frame on disk yet - skipped the caption probe")
             return 0

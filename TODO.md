@@ -7,6 +7,14 @@ Loose follow-ups that are not yet a full plan.
 
 ## Follow-ups
 
+- **firewatch false positives — cam01 dogs scored as FIRE.** The last 4 firewatch alerts
+  (2026-09-10 ids 98/105/109/114, all cam01) are dogs: v4 scores raw fire 0.54–0.73 and
+  the +0.15 `MOTION_BONUS` then confirms via `MIN_HITS=3/4` (verified with a COCO `dog`
+  cross-check). Fix options — data fix (dog negatives → v5 fine-tune, recommended),
+  animal-overlap guard, per-cam01 stop-gap — evidence + method in
+  [`plans/firewatch-dog-false-positives.md`](plans/firewatch-dog-false-positives.md) and
+  re-scorer [`dev_scripts/analyze_fire_alert_frames.py`](dev_scripts/analyze_fire_alert_frames.py).
+  **No production change made — awaiting explicit permission** before implementing.
 - we swap the model to **YOLO11s**, make sure to check the machine monitor after time.
 
 <!--

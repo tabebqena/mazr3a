@@ -106,35 +106,38 @@ nav a.active { color: var(--text); background: var(--panel2); }
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
 .view { padding-bottom: 8px; }
 
-/* Filter/search bars (Events + Fire alerts + Debug): ONE compact horizontal
-   toolbar. Each "label + field" is a single inline item (caption left of the
-   field) at its natural width - NEVER full width. The row NEVER wraps: on a
-   narrow (mobile) screen it scrolls horizontally instead of stacking into many
-   rows, so the filter bar keeps the same single-row shape everywhere. */
+/* Filter/search bars (Events + Fire alerts + Debug): a compact responsive GRID
+   of "caption ABOVE field" cells. Stacking the caption on top removes its
+   horizontal footprint, so camera/class/time/etc. pack into a few tidy columns
+   on a phone with NO horizontal scrolling (an accepted mobile form pattern).
+   The count of columns adapts to the width (2 on a phone, more on tablet /
+   desktop). The .hidden class (JS toggle) on .time-custom still wins over the
+   display:contents below (display:none !important). */
 .controls {
-  display: flex; flex-flow: row nowrap; align-items: flex-end;
-  gap: 8px 12px; margin-bottom: 14px;
-  overflow-x: auto; overflow-y: hidden;
-  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
-  padding-bottom: 2px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 12px; align-items: end; margin-bottom: 14px;
 }
 .controls label {
-  display: flex; flex-direction: row; align-items: center; gap: 6px;
-  color: var(--muted); font-size: 13px; white-space: nowrap;
-  min-height: var(--tap-h); flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap;
 }
 .controls input:not([type="checkbox"]), .controls select {
-  width: auto; min-width: 130px;
+  width: 100%; min-width: 0;
 }
-.controls label.check { gap: 8px; }
+/* "alerts only" is a self-contained checkbox, not a stacked field: keep its box
+   and caption side by side, bottom-aligned with the neighbouring fields. */
+.controls label.check {
+  flex-direction: row; align-items: center; gap: 8px;
+  align-self: end; min-height: var(--tap-h);
+}
 .controls label.check input { width: auto; min-width: 0; flex: 0 0 auto; }
-.controls button { width: auto; align-self: auto; white-space: nowrap; flex: 0 0 auto; }
-/* Custom From/To: the wrap is transparent (display: contents) so its From/To
-   fields join the SAME single toolbar row as the other filters. The .hidden
-   class (JS toggle) still wins over this (display:none !important). */
+.controls button { width: 100%; align-self: end; white-space: nowrap; }
+/* Custom From/To: the wrap is transparent (display: contents) so its two fields
+   join the SAME grid as the other filters (no separate block). */
 .time-custom { display: contents; }
-.time-custom label { flex-direction: row; }
-.time-custom input { min-width: 170px; }
+.time-custom label { flex-direction: column; }
+.time-custom input { min-width: 0; }
 
 .status {
   color: var(--muted); font-size: 13px; margin: 4px 0 10px;
@@ -562,11 +565,11 @@ body.lb-open { overflow: hidden; }
   nav { order: 0; width: auto; flex: 1; overflow: visible; justify-content: flex-start; }
   nav a { flex: 0 0 auto; padding: 7px 13px; }
 
-  .controls { gap: 8px 14px; }
-  .controls label { min-height: auto; font-size: 12px; }
+  .controls { gap: 10px 14px; }
+  .controls label { font-size: 12px; }
   .controls input, .controls select { min-height: auto; padding: 8px 10px; }
-  .controls label.check { align-self: center; }
-  .controls button { min-height: auto; padding: 6px 14px; }
+  .controls label.check { align-self: end; }
+  .controls button { min-height: auto; padding: 8px 14px; }
 
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 

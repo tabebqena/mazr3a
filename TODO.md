@@ -24,3 +24,100 @@ Accept: sum(detection_fps) still tracks sum(process_fps) on all online cameras
 and inference_speed stays under the ~100 ms frame budget. If it does not, revert
 the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
 -->
+
+## scenereader — cross-camera episode narrator (in progress)
+
+Replaces `scenewatch`, which was stopped for over-subscribing the CPU, filling RAM,
+raising host temperature and producing low-accuracy captions. Full design and
+rationale: `plans/event-scene-reader.md` (git-ignored working doc).
+
+**Mission.** Turn Frigate's captures into **episodes plus a narrative**, e.g.
+*"Person A entered Field 1, stayed ~12 min, then went to the Store with Person B."*
+Anonymous IDs first; real names later via assisted labeling, then an optional face
+gallery.
+
+**Decided.**
+- Event-driven from Frigate only — no `latest.jpg` sweep, no in-house motion.
+- Frames are read **in place** from Frigate's `media/clips/` — never copied; we add
+text tables only (`events`, `episodes`, `episode_events`, `person_aliases`).
+- Metadata-first descriptions (deterministic, zero hallucination); the VLM only
+enriches.
+- The small model (SmolVLM2-500M GGUF via llama.cpp) is kept **resident**
+(`MODEL_KEEP_LOADED=true`); load/unload is **deferred to an optimization**.
+- The existing 2B OpenVINO export is **kept and never re-downloaded**; switching is
+a config flip (`MODEL_BACKEND=llamacpp|openvino`). Model prep is add-only.
+- Idle-gated drain (loadavg + CPU temp), plus a portal **Process now** button and a
+CLI `--drain`.
+
+**Host-verified 2026-09-10** (read-only as `ai`): event snapshots live in
+`media/clips/` (there is **no** `media/snapshots/`), named
+`<camera>-<event_id>.jpg` with an un-annotated `-clean.webp` sibling; `clips/`
+subdirs `previews,thumbs,export,review,cache` must be skipped; `config/frigate.db`
+`event` table opens **`mode=ro`** while Frigate runs and the filename's id joins it
+**exactly**; `score`/`top_score`/`box` columns are NULL — the values live in the
+`data` JSON; corpus 4 001 events (person 3 709, cow 149, motorcycle 129, truck 10,
+car 2, dog 2); `zones = []` (none defined yet).
+
+### Done
+- [x] Host reconnaissance (layout, filename convention, DB read-only, exact-id join).
+- [x] `scenereader/store.py` — WAL store: events (UNIQUE `frigate_event_id` upsert),
+   episodes + `episode_events` visits, `person_aliases`, guarded migrations,
+   rebuild-safe `clear_episodes()`, retention prune. *(commit 30a4fc3)*
+- [x] `scenereader/frigate.py` — `scan_clips()` (top level only, exact event-id
+   parse, `-clean.webp` pairing, cursor) + `open_frigate_db()` (mode=ro) +
+   `lookup_event()` (score/box from `data` JSON) + `/api/events/<id>` fallback.
+   *(commit 3b0d4e8)*
+
+### Next — Phase 1
+- [ ] L0 metadata description builder + importance/tier scoring.
+- [ ] Captioner backend interface: `llamacpp` (default) + retained `openvino-genai`.
+- [ ] Idle governor (loadavg + CPU temp) and the scan/drain/reconcile scheduler.
+- [ ] CLI flags (`--check`, `--once`, `--scan-only`, `--drain`,
+   `--rebuild-episodes`, `--dry-run`, `--status`) + trigger/status/names files.
+- [ ] L1 place naming — scaffold `config/places.conf` + resolver (zone beats camera).
+- [ ] L2 anonymous entity resolution — cross-camera linking by gap + adjacency with a
+   stored confidence.
+- [ ] L3 episode builder — visits, durations, episode-gap close, co-presence.
+- [ ] L4 narrative composer — deterministic template (optional tiny text LLM later).
+- [ ] `docker-compose.yml` — add `scenereader`, remove `scenewatch` (`./media` for
+   in-place frames + rw text store, `./config` ro for `frigate.db`; `cpus 1.0`,
+   `mem_limit 1.5g`, `oom_score_adj 200`).
+- [ ] `config/scenereader.conf` (`FRIGATE_METADATA_SOURCE=db`,
+   `FRIGATE_SNAPSHOT_DIRS=clips`, `MODEL_BACKEND`, `MODEL_KEEP_LOADED=true`,
+   `IDLE_UNLOAD_S=0`) + scaffolded `config/places.conf`.
+- [ ] `scenereader/Dockerfile` + `requirements.txt` (prebuilt llama.cpp binary plus
+   the openvino-genai runtime retained for the 2B IR; no torch).
+- [ ] `dev_scripts/prep_scene_model_llamacpp.sh` — add-only GGUF + mmproj fetcher
+   into its own subdir under `models/scene/`.
+- [ ] Update `models/scene/README.md` + `VERSIONS.md` (both models documented; the
+   2B IR stays on disk untouched).
+- [ ] Remove/deprecate scenewatch files (`scenewatch/`, `config/scenewatch.conf`,
+   `config/stores/scenewatch.conf`) and update `.gitignore`.
+- [ ] Portal: `/api/episodes*`, `/api/scenelog*`, status, drain; Episodes timeline +
+   Scene log + **name this person**; reuse the existing
+   `/api/events/{id}/snapshot.jpg`; bump `APP_VERSION`.
+- [ ] Update `SYSTEM_SUMMARY.md` (services/map/ports/stores/config/RAM) +
+   `README.md`; bump the summary version.
+- [ ] Local verification (unit tests + a synthetic end-to-end episode assert).
+
+### Phase 2
+- [ ] Person attributes (CLIP zero-shot on the `data.box` crop → `description_attr`;
+   daylight-only `ATTR_NIGHT_LUMA` gate) + `ATTR_*` keys.
+- [ ] Use attribute agreement as an L2 link-confidence bonus; include attributes in
+   the narrative.
+- [ ] Appearance ReID as a cross-camera link tie-breaker.
+- [ ] Tiny text LLM narrative polish.
+- [ ] Compare the small GGUF vs the retained 2B OpenVINO on real captures; pick via
+   `MODEL_BACKEND`.
+- [ ] Farm dataset + LoRA fine-tune of SmolVLM2-500M, GGUF export, eval harness and
+   promote script.
+
+### Deferred
+- [ ] Residency optimization (`MODEL_KEEP_LOADED=false` + `IDLE_UNLOAD_S`) only if
+   RAM becomes contended, e.g. with the larger retained model.
+- [ ] Face recognition names (after assisted labeling), action recognition, gait.
+
+### Needs from the operator
+- [ ] Fill `config/places.conf`: `CAMERA_PLACES` (cam01…cam10 → human place names),
+   optional `ZONE_PLACES`, and `ADJACENCY` (the plausible walking routes).
+- [ ] Decide whether to add Frigate **zones** (config/config.yaml) for finer places.

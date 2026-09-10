@@ -87,7 +87,8 @@ with `docker compose up -d` / `docker compose down`.
 | Ports | `5000` HTTP UI/API · `8971` TLS UI · `8554` RTSP restream · `8555` tcp+udp WebRTC |
 | Volumes | `./config:/config` · `./media:/media/frigate` · `./models:/models:ro` · tmpfs `/tmp/cache` (1 GB) |
 | Device / limits | `/dev/dri/renderD128`; `shm_size: 256mb` |
-| Notes | Event-only recording (detect substream); software decode (`ffmpeg.hwaccel_args: []`) |
+| Zones | **11 zone polygons** defined per camera (cam01 diwan1/diwan2/estraha_door/estraha_front/estraha_road; cam02 solar_panels; cam03 zone_a3829a54/hoash_door_1/estraha_road_2; cam06 housh_2_door; cam09 field_west). Drawn in the Frigate UI. `scenereader` consumes them through `ZONE_PLACES` in [`config/places.conf`](config/places.conf) so a sentence names the sub-place, and each event carries them in its `zones` array. |
+| Notes | Event-only recording (detect substream); software decode (`ffmpeg.hwaccel_args: []`). **`config/config.yaml` is the CANONICAL copy of the host file** — the Frigate UI rewrites it via `ruamel.yaml` (comments are preserved, values may be re-wrapped), so after ANY UI edit it must be re-adopted verbatim into the repo and committed, or the next `git pull --ff-only` refuses to run ("local changes would be overwritten"). |
 
 ### 3.2 `mqtt` — Mosquitto broker
 | | |
@@ -306,7 +307,7 @@ sudo apt install -y git python3
 ### 7.1 Git-tracked config (safe to commit — no secrets)
 | File | Consumer |
 |---|---|
-| [`config/config.yaml`](config/config.yaml) | Frigate 0.17 (cameras, go2rtc, model, detector, record, motion) |
+| [`config/config.yaml`](config/config.yaml) | Frigate 0.17 (cameras, **zones**, go2rtc, model, detector, record, motion). Kept byte-identical to the host file — see the `frigate` service Notes for the re-adopt-after-UI-edit rule. |
 | [`config/firewatch.conf`](config/firewatch.conf) | firewatch tunables (motion gate, thresholds, store) |
 | [`config/scenereader.conf`](config/scenereader.conf) | scenereader tunables (Frigate access, scan/drain timing, idle governor, model backend, episodes, store) |
 | [`config/places.conf`](config/places.conf) | **The human layer**: camera/zone → place names + the `ADJACENCY` routes that link one person across cameras (edit this to name the farm) |

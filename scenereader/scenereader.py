@@ -160,6 +160,9 @@ class S:
         self.vlm_n_threads = 2
         self.vlm_ctx = 4096
         self.vlm_max_tokens = 64
+        # Longest image side handed to the vision encoder (0 = no cap). Measured
+        # on the host: encoding an uncapped 640x360 frame dominated the caption.
+        self.vlm_max_image_px = 384
         self.vlm_prompt = captioners.DEFAULT_PROMPT
         self.only_person_captions = False
         # episodes
@@ -216,6 +219,7 @@ def resolve_settings(raw):
     s.vlm_n_threads = max(1, _geti(raw, "VLM_N_THREADS", 2))
     s.vlm_ctx = max(512, _geti(raw, "VLM_CTX", 4096))
     s.vlm_max_tokens = max(1, _geti(raw, "VLM_MAX_TOKENS", 64))
+    s.vlm_max_image_px = max(0, _geti(raw, "VLM_MAX_IMAGE_PX", 384))
     s.vlm_prompt = _get(raw, "VLM_PROMPT", captioners.DEFAULT_PROMPT)
     s.only_person_captions = _getb(raw, "ONLY_PERSON_CAPTIONS", False)
     s.episode_labels = [x.lower() for x in _list(raw, "EPISODE_LABELS", ["person"])]
@@ -768,11 +772,16 @@ def main():
                     if reason:
                         LOG("  reason: {}".format(
                             " | ".join(reason.splitlines())[-400:]))
+                    serr = getattr(cap, "server_error", "")
+                    if serr:
+                        LOG("  server error: {}".format(serr))
                     raw = getattr(cap, "last_raw", "")
                     if raw:
                         LOG("  path: {} | raw output: {}".format(
                             getattr(cap, "last_path", "?"),
                             " | ".join(raw.splitlines())[-400:]))
+                    elif getattr(cap, "last_path", "") == "server":
+                        LOG("  path: server (it answered, with empty text)")
             else:
                 LOG("no stored frame on disk yet - skipped the caption probe")
             return 0

@@ -22,6 +22,7 @@ Nothing here decides WHEN to caption - the service's idle governor does that.
 import base64
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -34,6 +35,13 @@ _MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
 DEFAULT_PROMPT = ("Describe this CCTV frame in one short sentence. Use the given "
                   "facts and add only what is plainly visible. Do not invent "
                   "places, names or activity.")
+
+# llama.cpp prefixes its own log lines with a timestamp + level, e.g.
+#   "0.00.495.942 I main: loading model: ..."   /  "0.00.499.568 E probe: ..."
+# We filter by THIS pattern rather than passing --log-disable: that flag
+# silences the generated text too (the completion goes through the same logging
+# stream in this build), which is why the CLI exited 0 with EMPTY stdout.
+_LOG_LINE_RE = re.compile(r"^\s*\d+(?:\.\d+)+\s+[IWED]\s")
 
 
 def _which(names):
@@ -79,7 +87,8 @@ class LlamaCppCaptioner(Captioner):
 
     def __init__(self, model_file, mmproj_file, server_bin="llama-server",
                  cli_bin="llama-mtmd-cli", n_threads=2, ctx=4096, max_tokens=64,
-                 keep_loaded=True, port=8737, start_timeout=180.0, prompt=None):
+                 keep_loaded=True, port=8737, start_timeout=180.0,
+                 max_image_px=384, prompt=None):
         if not model_file or not os.path.isfile(model_file):
             raise RuntimeError("MODEL_FILE not found: {!r} (run "
                                "dev_scripts/prep_scene_model_llamacpp.sh)".format(model_file))
@@ -93,6 +102,11 @@ class LlamaCppCaptioner(Captioner):
         self.n_threads = max(1, int(n_threads))
         self.ctx = max(512, int(ctx))
         self.keep_loaded = bool(keep_loaded)
+        # Cap the longest side handed to the vision encoder. Measured on the host:
+        # encoding a 640x360 frame cost ~58 s of an ~87 s caption (two ~29 s mtmd
+        # passes), while SmolVLM2's encoder works at 384 px - feeding it a smaller
+        # image cuts the dominant cost with no loss of usable detail. 0 disables.
+        self.max_image_px = max(0, int(max_image_px or 0))
         self.prompt = prompt or DEFAULT_PROMPT
         self._proc = None
         self._port = int(port)
@@ -106,6 +120,9 @@ class LlamaCppCaptioner(Captioner):
         # "empty".
         self.last_path = ""
         self.last_raw = ""
+        # Kept SEPARATELY from last_error (which describes the CLI), so a server
+        # failure is never masked by the CLI that ran afterwards.
+        self.server_error = ""
         self._logfh = None
         self._log_path = os.path.join(tempfile.gettempdir(), "llama-server.log")
         self._server_bin = _which([server_bin, "llama-server"])
@@ -190,23 +207,38 @@ class LlamaCppCaptioner(Captioner):
     _NATIVE_IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp")
 
     def _prepare_image(self, image_path):
-        """(path_to_use, is_temp). Transcodes unsupported formats via Pillow.
+        """(path_to_use, is_temp): transcode if needed and cap the size.
 
         Pillow is already a dependency (the OpenVINO backend needs it), so this
-        avoids shipping ffmpeg purely to decode WebP, and it normalises whatever
-        Frigate happens to write.
+        avoids shipping ffmpeg purely to decode WebP (mtmd shells out to
+        ffprobe/ffmpeg for it and fails), and downscaling to the encoder's own
+        working size is the single biggest CPU saving per caption.
+
+        A native image that is already small enough is passed through untouched.
         """
-        if os.path.splitext(image_path)[1].lower() in self._NATIVE_IMAGE_EXT:
-            return image_path, False
+        native = os.path.splitext(image_path)[1].lower() in self._NATIVE_IMAGE_EXT
         try:
             from PIL import Image
-            out = os.path.join(tempfile.gettempdir(),
-                               "scenereader-{}.jpg".format(os.getpid()))
             with Image.open(image_path) as img:
-                img.convert("RGB").save(out, "JPEG", quality=90)
-            return out, True
+                frame = img.convert("RGB")
+                width, height = frame.size
+                longest = max(width, height)
+                if native and (not self.max_image_px or longest <= self.max_image_px):
+                    return image_path, False
+                if self.max_image_px and longest > self.max_image_px:
+                    scale = float(self.max_image_px) / float(longest)
+                    # Image.LANCZOS is alive across the pinned Pillow range
+                    # (>=9.1,<12) as an alias of Image.Resampling.LANCZOS; the
+                    # stub lags, hence the ignore.
+                    frame = frame.resize(
+                        (max(1, int(width * scale)), max(1, int(height * scale))),
+                        Image.LANCZOS)  # type: ignore[attr-defined]
+                out = os.path.join(tempfile.gettempdir(),
+                                   "scenereader-{}.jpg".format(os.getpid()))
+                frame.save(out, "JPEG", quality=90)
+                return out, True
         except Exception as exc:  # noqa: BLE001 - fall back and let the model speak
-            self.last_error = "cannot convert {}: {}".format(image_path, exc)
+            self.last_error = "cannot prepare {}: {}".format(image_path, exc)
             return image_path, False
 
     def caption(self, image_path, prompt=None):
@@ -253,9 +285,19 @@ class LlamaCppCaptioner(Captioner):
             headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                obj = json.loads(resp.read().decode("utf-8", "replace"))
-            return obj["choices"][0]["message"]["content"]
-        except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError):
+                raw = resp.read().decode("utf-8", "replace")
+            content = json.loads(raw)["choices"][0]["message"]["content"]
+            self.server_error = ""
+            return content
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            self.server_error = "HTTP {}: {}".format(exc.code, detail.strip())
+            return None
+        except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError) as exc:
+            self.server_error = "{}: {}".format(type(exc).__name__, exc)
             return None
 
     def _caption_cli(self, image_path, prompt):
@@ -263,7 +305,7 @@ class LlamaCppCaptioner(Captioner):
             return None
         cmd = [self._cli_bin, "-m", self.model_file, "--mmproj", self.mmproj_file,
                "--image", image_path, "-p", prompt, "-n", str(self.max_tokens),
-               "-t", str(self.n_threads), "--jinja", "--log-disable"]
+               "-t", str(self.n_threads), "--jinja"]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -274,14 +316,27 @@ class LlamaCppCaptioner(Captioner):
             self.last_error = "{} exited {}: {}".format(
                 os.path.basename(self._cli_bin), out.returncode, detail[-400:])
             return None
-        # --log-disable keeps the timestamped log lines out; the CLI still echoes
-        # the prompt first, so strip that too. Keep the raw text for --check.
+        # Keep the raw text for --check, drop llama.cpp's own log lines by
+        # PATTERN (not --log-disable, which also hides the answer), then drop the
+        # echoed prompt.
         self.last_raw = ((out.stdout or "") + "\n---stderr---\n"
                          + (out.stderr or ""))[-800:]
-        lines = [ln.strip() for ln in (out.stdout or "").splitlines()]
-        body = [ln for ln in lines if ln and not ln.startswith("llama_")
-                and prompt.strip()[:24] not in ln]
-        text = " ".join(body).strip()
+        # Take everything AFTER the LAST log-prefixed line. Line-by-line filtering
+        # is not enough: --jinja also dumps a multi-line "chat template example"
+        # whose continuation lines have no timestamp, and those would leak into
+        # the caption. The generated answer is always printed after the final
+        # "mtmd batch encoding done" line, so the tail is exactly what we want.
+        body = []
+        for block in ((out.stdout or ""), (out.stderr or "")):
+            lines = block.splitlines()
+            last_log = -1
+            for idx, ln in enumerate(lines):
+                if _LOG_LINE_RE.match(ln):
+                    last_log = idx
+            body.extend(lines[last_log + 1:])
+        head = prompt.strip()[:24]
+        text = " ".join(ln.strip() for ln in body
+                        if ln.strip() and not (head and head in ln)).strip()
         echo = prompt.strip()
         if echo and text.startswith(echo):
             text = text[len(echo):].strip(" :\n\t-")
@@ -388,5 +443,7 @@ def make_captioner(settings):
             n_threads=threads, ctx=int(getattr(settings, "vlm_ctx", 4096) or 4096),
             max_tokens=max_tokens,
             keep_loaded=bool(getattr(settings, "model_keep_loaded", True)),
-            port=int(getattr(settings, "llama_port", 8737) or 8737), prompt=prompt)
+            port=int(getattr(settings, "llama_port", 8737) or 8737),
+            max_image_px=int(getattr(settings, "vlm_max_image_px", 384) or 384),
+            prompt=prompt)
     raise RuntimeError("unknown MODEL_BACKEND {!r} (use llamacpp|openvino)".format(backend))

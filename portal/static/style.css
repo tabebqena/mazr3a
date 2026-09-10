@@ -623,6 +623,12 @@ body.lb-open { overflow: hidden; }
 /* `baseline` = the periodic describe of a still scene (no motion triggered it);
    `motion` reuses the firewatch motion tag colour. */
 .tag.baseline { background: #1d3a2a; color: #7bdca0; }
+/* Writer-side importance tier (see score_importance in scenewatch.py). The
+   Scenes tab defaults to `tier-high`, so the badge should read as the reason
+   the row is on screen. */
+.tag.tier-high { background: #4a3a12; color: #ffd479; border: 1px solid #8a6a1f; }
+.tag.tier-normal { background: #2a2a33; color: #c9c9d4; }
+.tag.tier-low { background: #23232a; color: #8b8b95; }
 /* The caption text, on its own line inside the lightbox meta row. */
 .fw-lb-meta .lb-desc {
   flex-basis: 100%;

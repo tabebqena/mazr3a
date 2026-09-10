@@ -193,14 +193,25 @@
         </div>
       </section>
 
-      <!-- scenewatch scene descriptions: one card per caption, newest first.
-           Mirrors the Fire alerts tab (camera/trigger/time filters, numbered
-           pagination). Each card shows the description + camera + time; the
-           stored frame is the card image and opens in a lightbox on click.
-           Rows captured while STORE_IMAGES=false have no image. -->
+      <!-- scenewatch scene descriptions. Mirrors the Fire alerts tab
+           (camera/trigger/time filters, numbered pagination), but DEFAULTS to
+           the important ones: scenewatch scores every caption 0-100 and tiers
+           it (see score_importance), so "Show: important only" + "Sort: most
+           important" surfaces the few rows worth seeing on first opening.
+           Widen "Show" to dig into the rest. Each card shows the description +
+           camera + time; the stored frame is the card image and opens in a
+           lightbox on click. Rows captured while STORE_IMAGES=false have no
+           image. -->
       <section id="view-scenes" class="view hidden">
         <div class="controls">
           <label>Camera <select id="sc-cam"></select></label>
+          <label>Show
+            <select id="sc-tier" title="How important a scene must be to be listed">
+              <option value="high" selected>important only</option>
+              <option value="normal">important + normal</option>
+              <option value="all">everything</option>
+            </select>
+          </label>
           <label>Trigger
             <select id="sc-reason">
               <option value="">all</option>
@@ -213,6 +224,12 @@
             <label>From <input id="sc-from" type="datetime-local"></label>
             <label>To <input id="sc-to" type="datetime-local"></label>
           </div>
+          <label>Sort
+            <select id="sc-sort">
+              <option value="importance" selected>most important</option>
+              <option value="time">newest first</option>
+            </select>
+          </label>
           <button id="sc-refresh" type="button" title="Reload scene descriptions">Refresh</button>
         </div>
         <div id="sc-status" class="status"></div>

@@ -45,9 +45,34 @@ def open_db(path):
     return conn
 
 
-def _conditions(camera=None, reason=None, after=None, before=None,
-                with_image=None):
-    """Build (sql, params) for the scenes WHERE clause."""
+# Importance tiers the writer assigns (scenewatch score_importance). Ordering
+# matters: a "at least this tier" filter is expressed as a set of tiers.
+_TIER_ORDER = ("high", "normal", "low")
+
+
+def _col(row, name, default=None):
+    """sqlite3.Row has no .get(): tolerate a column added by a later writer."""
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return default
+
+
+def _table_columns(conn, table):
+    try:
+        return {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table)}
+    except sqlite3.Error:
+        return set()
+
+
+def _conditions(camera=None, reason=None, min_tier=None, after=None,
+                before=None, with_image=None, cols=None):
+    """Build (sql, params) for the scenes WHERE clause.
+
+    `min_tier` is "at least this important": 'high' -> only high; 'normal' ->
+    high+normal; 'low'/None -> no tier restriction.
+    """
+    cols = cols or set()
     clauses, params = [], []
     if camera:
         clauses.append("camera = ?")
@@ -55,6 +80,10 @@ def _conditions(camera=None, reason=None, after=None, before=None,
     if reason:
         clauses.append("reason = ?")
         params.append(reason)
+    if min_tier in _TIER_ORDER and "tier" in cols:
+        keep = _TIER_ORDER[: _TIER_ORDER.index(min_tier) + 1]
+        clauses.append("tier IN (" + ",".join("?" * len(keep)) + ")")
+        params.extend(keep)
     if after is not None:
         clauses.append("captured_at >= ?")
         params.append(float(after))
@@ -81,32 +110,48 @@ def _row_to_dict(row):
         "reason": row["reason"],
         "model": row["model"],
         "latency_ms": int(_num(row["latency_ms"])),
+        # Writer-side importance (0-100 + coarse tier). Defaults keep rows from
+        # a pre-importance DB visible rather than hiding everything.
+        "importance": int(_num(_col(row, "importance", 0))),
+        "tier": _col(row, "tier", "normal") or "normal",
         "has_image": bool(jpg),
         "image_url": "/api/scenes/{}/image.jpg".format(row["id"]) if jpg else None,
     }
 
 
-def list_scenes(db_path, *, camera=None, reason=None, after=None, before=None,
-                with_image=None, limit=50, offset=0):
-    """Return {items: [...], total: n} newest-first.
+def list_scenes(db_path, *, camera=None, reason=None, min_tier=None,
+                after=None, before=None, with_image=None, sort="importance",
+                limit=50, offset=0):
+    """Return {items: [...], total: n}.
 
-    Degrades to an empty list (with a `note`) when the DB or the `scenes` table
-    does not exist yet - e.g. scenewatch has not started or has never captioned.
+    `sort` is "importance" (most important first, then newest - the Scenes tab
+    default, so the rows that matter appear on first opening) or "time"
+    (newest first). Degrades to an empty list (with a `note`) when the DB or the
+    `scenes` table does not exist yet - e.g. scenewatch never captioned.
     """
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
     if not db_path or not os.path.exists(db_path):
         return {"items": [], "total": 0, "note": "scene DB not found"}
-    where, params = _conditions(camera, reason, after, before, with_image)
     conn = open_db(db_path)
     try:
+        cols = _table_columns(conn, "scenes")
+        if not cols:
+            return {"items": [], "total": 0, "note": "scenes table not found"}
+        where, params = _conditions(camera, reason, min_tier, after, before,
+                                    with_image, cols)
+        # Importance ordering needs the column; fall back to time otherwise.
+        if sort == "time" or "importance" not in cols:
+            order = "ORDER BY captured_at DESC, id DESC"
+        else:
+            order = "ORDER BY importance DESC, captured_at DESC, id DESC"
         try:
             total = conn.execute(
                 "SELECT COUNT(*) FROM scenes " + where, params
             ).fetchone()[0]
             rows = conn.execute(
-                "SELECT * FROM scenes " + where +
-                " ORDER BY captured_at DESC, id DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM scenes " + where + " " + order +
+                " LIMIT ? OFFSET ?",
                 params + [limit, offset],
             ).fetchall()
         except sqlite3.OperationalError as exc:

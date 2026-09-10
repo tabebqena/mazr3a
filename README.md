@@ -395,16 +395,24 @@ How it works:
 - The model runs **only** on cameras whose motion gate passed (or whose periodic
   `BASELINE_EVERY_S` is due), and a per-camera `CAPTION_COOLDOWN_S` stops a slow
   object being re-described on every sweep.
-- The SmolVLM OpenVINO INT4 IR (git-ignored, [`models/scene/`](models/scene/README.md))
-  is loaded **once** and stays resident in RAM; it runs on **CPU**
-  (`MODEL_DEVICE=CPU`) so the iGPU stays with Frigate's detector.
+- The VLM (Qwen2-VL-2B **INT4** OpenVINO IR, git-ignored in
+  [`models/scene/`](models/scene/README.md), ~1.76 GB) is loaded **once** and
+  stays resident in RAM; it runs on **CPU** (`MODEL_DEVICE=CPU`) so the iGPU
+  stays with Frigate's detector. The model is dictated by the runtime:
+  `openvino_genai.VLMPipeline` implements only `llava` / `qwen2_vl` /
+  `qwen2_5_vl` / `gemma3` / `minicpm` / `phi3_v` / `phi4mm` — SmolVLM fails to
+  load, which is why a 2B Qwen2-VL is used instead of a ~500 MB SmolVLM.
 - Descriptions go to a WAL SQLite DB at `./media/scenewatch/scenewatch.db`
   (`scenes` table). `STORE_IMAGES=true` additionally keeps the captioned JPEG.
+- Each caption is **scored 0-100 and tiered** (`high`/`normal`/`low`) at write
+  time from its text, the motion amount and novelty — no second model — so the
+  portal can surface the few rows that matter.
 
 Operate:
 ```bash
 # PREREQUISITE: the model is NOT in git - fetch it first (curl only, no pip/torch)
-bash dev_scripts/prep_scene_model.sh       # default --repo int4 (~356 MB)
+bash dev_scripts/prep_scene_model.sh       # Qwen2-VL-2B int4 (~1.76 GB)
+bash dev_scripts/prep_scene_model.sh --force   # replace an earlier export
 docker compose up -d --build scenewatch
 docker compose logs -f scenewatch          # watch captions / skips
 docker compose exec scenewatch python /scenewatch/scenewatch.py --check     # load + probe caption
@@ -475,12 +483,15 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   auto-refreshes when any filter changes.
 - **Scenes** — the scene descriptions written by the **scenewatch** service
   ([`portal/scenestore.py`](portal/scenestore.py) reads its WAL DB read-only). One card per
-  caption, newest first, showing the **description text** plus camera, trigger
-  (`motion`/`baseline`), time, motion fraction and inference latency. The card image is the
-  frame stored with that caption — **click it to open the picture full-size** in a lightbox.
-  Filterable by camera/trigger with the same numbered pagination + preset/custom time filter.
+  caption showing the **description text** plus camera, trigger (`motion`/`baseline`), time,
+  motion fraction, latency and its **importance score/tier**. The card image is the frame
+  stored with that caption — **click it to open the picture full-size** in a lightbox.
+  Because a camera captioned all day produces thousands of dull rows, the tab **defaults to
+  `Show: important only` sorted by `most important`**, so the handful worth seeing appear on
+  first opening; **`Show: important + normal` / `everything`** reveals the rest. Also
+  filterable by camera/trigger with the same numbered pagination + preset/custom time filter.
   (Cards for rows captured while `STORE_IMAGES=false` list the text with a
-  "no image stored" placeholder.)
+  "no image stored" placeholder, and rows from a pre-importance DB read as `normal`.)
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
 `live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the Access policy,

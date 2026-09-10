@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v8` |
+| Summary version | `v9` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.3.17` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.3.18` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -137,7 +137,7 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenewatch scene descriptions** (Scenes tab: caption list + the stored frame in a lightbox, read-only via [`portal/scenestore.py`](portal/scenestore.py)), admin Debug tab |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenewatch scene descriptions** (Scenes tab: caption list + the stored frame in a lightbox, read-only via [`portal/scenestore.py`](portal/scenestore.py); **defaults to the important tier**, with Show/Sort controls to dig into the rest), admin Debug tab |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/scenestore.py`](portal/scenestore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
@@ -156,12 +156,12 @@ See [`plans/scene-description.md`](plans/scene-description.md).
 | Purpose | Two-frame motion sweep of `/api/<cam>/latest.jpg`; on motion (or a periodic baseline) caption the frame with a small SmolVLM VLM and store the description |
 | Dev files | [`scenewatch/scenewatch.py`](scenewatch/scenewatch.py) (watcher), [`scenewatch/requirements.txt`](scenewatch/requirements.txt), model [`models/scene/`](models/scene/) (git-ignored) |
 | Config | [`config/scenewatch.conf`](config/scenewatch.conf) (`/config/scenewatch.conf`) |
-| Model | SmolVLM2-500M-Instruct, OpenVINO **INT4** IR, resident in RAM; `MODEL_DEVICE=CPU` (iGPU stays with Frigate's detector) |
-| Model prerequisite | **NOT deployed by git**: fetch with [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) (`--repo int4` default ~356 MB, `int8` ~509 MB; plain `curl`, no optimum/torch) — see [`models/scene/README.md`](models/scene/README.md) |
+| Model | **Qwen2-VL-2B-Instruct**, OpenVINO **INT4** IR (~1.76 GB on disk, ~2 GB resident), loaded once and kept; `MODEL_DEVICE=CPU` (iGPU stays with Frigate's detector). `qwen2_vl` is one of the few architectures `openvino_genai.VLMPipeline` implements — **SmolVLM cannot be loaded by it** at all. |
+| Model prerequisite | **NOT deployed by git**: fetch with [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) (default `--repo 2b` ~1.76 GB; `--force` replaces an existing export; plain `curl`, no optimum/torch) — see [`models/scene/README.md`](models/scene/README.md) |
 | Scene store | `./media/scenewatch/` (`scenewatch.db` WAL + `<cam>/*.jpg` — `STORE_IMAGES=true` by default so the portal's Scenes tab has a frame to open) |
 | Volumes | `./scenewatch:/scenewatch:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
-| Notes | Code/config edits need only `docker compose restart scenewatch`. No host cron entry — the sweep loop runs in-container. Mirrors firewatch's motion gate; per-camera `CAPTION_COOLDOWN_S` bounds the caption cost. |
+| Notes | Code/config edits need only `docker compose restart scenewatch`. No host cron entry — the sweep loop runs in-container. Mirrors firewatch's motion gate; per-camera `CAPTION_COOLDOWN_S` bounds the caption cost. Every caption is scored 0-100 into a `tier` (high/normal/low) at write time, which is what the portal's Scenes tab filters and sorts on. |
 
 ### 3.8 Service → development-file map (quick lookup)
 | Service | Primary code / config in repo |

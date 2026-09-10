@@ -12,18 +12,30 @@ firewatch motion sweep (firewatch/firewatch.py `_do_sweep`):
   4. diff A/B into a denoised motion mask per camera,
 
 and when a camera's motion gate passes (or its periodic baseline is due) it
-runs a small **SmolVLM** vision-language model on frame B and stores a
-one-line scene description in a WAL-mode SQLite DB.
+captions frame B with a small vision-language model and stores a one-line
+scene description in a WAL-mode SQLite DB.
 
 The model is loaded ONCE at startup and stays resident in RAM for the life of
 the process - it is never reloaded per caption (see models/scene/README.md).
 
 Design notes:
-  * Runtime = OpenVINO GenAI on CPU. The iGPU is left entirely to Frigate's
-    OpenVINO detector (config.yaml), which already saturates it.
-  * Motion gate + per-camera CAPTION_COOLDOWN_S keep the expensive caption
-    step bounded; BASELINE_EVERY_S guarantees a still-but-interesting scene
-    still gets described occasionally.
+  * MODEL CHOICE IS CONSTRAINED BY THE RUNTIME. `openvino_genai.VLMPipeline`
+    implements a closed list of VLM architectures - llava, qwen2_vl,
+    qwen2_5_vl, gemma3, minicpm, phi3_v, phi4mm - verified by inspecting the
+    symbols in libopenvino_genai.so. SmolVLM (model_type "smolvlm"/"idefics3")
+    is NOT among them, so **Qwen2-VL-2B-Instruct** is used: the smallest VLM
+    this runtime can load (int4, ~1.76 GB on disk). Any model in that list
+    works - only MODEL_DIR changes.
+  * Runtime = OpenVINO GenAI on **CPU**. The iGPU is left entirely to
+    Frigate's OpenVINO detector (config.yaml), which already saturates it.
+    INFERENCE_NUM_THREADS caps the cores the captioner may use.
+  * CPU is bounded by RATE, not only by model size: the motion gate +
+    per-camera CAPTION_COOLDOWN_S + BASELINE_EVERY_S mean a handful of
+    captions per hour rather than a continuous stream. Between captions the
+    process is idle (no polling of the model).
+  * Each caption is scored 0-100 into a coarse `tier` (high/normal/low) so the
+    portal can show the few that matter by default and reveal the rest on
+    demand - see score_importance().
   * Bounded + exception-isolated (firewatch spec 13): the while-loop is the
     only unbounded loop; every fetch/caption has a hard timeout; every
     per-camera operation is isolated at the camera boundary; timers use
@@ -36,6 +48,7 @@ Usage:
   python scenewatch.py --dry-run  # like --once but describe WITHOUT storing
   python scenewatch.py --check    # validate config + load model + one caption
 """
+import collections
 import io
 import os
 import signal
@@ -56,6 +69,42 @@ _STOP = [False]  # set by SIGTERM/SIGINT -> clean, prompt shutdown
 DEFAULT_PROMPT = ("Describe this CCTV scene in one short sentence. Mention "
                   "people, vehicles, animals or notable activity. If nothing "
                   "is happening, say so.")
+
+# ---------------------------------------------------------------------------
+# IMPORTANCE annotation (writer-side, see score_importance below).
+#
+# A camera captioned every few minutes for a day produces thousands of rows,
+# most of them dull. Rather than run a second model, each caption is scored
+# 0-100 from signals we ALREADY have, then bucketed into a coarse `tier` so the
+# portal can show the few that matter by default and reveal the rest on demand:
+#
+#   * TEXT    - does the caption mention something notable (person, vehicle,
+#               animal, fire...) or explicitly say the scene is empty?
+#   * MOTION  - how much actually moved, saturating at MOTION_IMPORTANCE_SCALE.
+#   * UNUSUAL - motion far above THIS camera's own recent median: a spike on an
+#               otherwise quiet camera is more interesting than the same amount
+#               of motion on an always-busy one.
+#   * NOVELTY - a caption identical to the camera's previous one inside
+#               NOVELTY_WINDOW_S is demoted, so a bird that sits in frame gets
+#               one interesting row instead of one per sweep.
+#
+# tier = high (>= TIER_HIGH_MIN) | normal (>= TIER_NORMAL_MIN) | low.
+# Terms/thresholds are all config-overridable (config/scenewatch.conf).
+# ---------------------------------------------------------------------------
+DEFAULT_IMPORTANT_TERMS = (
+    "person,people,man,woman,men,women,child,children,boy,girl,human,worker,"
+    "crowd,vehicle,car,truck,van,motorcycle,bike,bicycle,tractor,animal,cow,"
+    "sheep,goat,dog,cat,horse,camel,bird,chicken,fire,smoke,flame")
+DEFAULT_LOW_TERMS = (
+    "nothing,no one,no-one,nobody,no people,no vehicles,no activity,"
+    "no movement,empty,quiet,still,calm,blank,unchanged,undisturbed,unclear,"
+    "not clear,low light")
+
+
+def _norm_text(text):
+    """Lowercase + collapse to alphanumerics - for repeat/novelty detection."""
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in (text or "").lower())
+    return " ".join(cleaned.split())
 
 
 def _sig_stop(signum, frame):  # noqa: ARG001 - signal handler
@@ -184,7 +233,7 @@ def _motion_of(s, a_bytes, b_bytes):
 
 
 # ---------------------------------------------------------------------------
-# SmolVLM captioner (OpenVINO GenAI, resident in RAM)
+# VLM captioner (OpenVINO GenAI, resident in RAM)
 # ---------------------------------------------------------------------------
 def _result_text(res):
     """Normalize a VLMPipeline result to a plain string.
@@ -199,17 +248,22 @@ def _result_text(res):
 
 
 class Captioner:
-    """Loads a SmolVLM OpenVINO IR pipeline once and captions PIL images."""
+    """Loads an OpenVINO GenAI VLM pipeline once and captions PIL images.
+
+    MODEL_DIR must hold a VLM export whose architecture the runtime implements
+    (Qwen2-VL-2B int4 by default - see the module docstring for the supported
+    list and why SmolVLM cannot be used).
+    """
 
     def __init__(self, model_dir, device="CPU", threads=4, prompt=None,
-                 max_new_tokens=48):
+                 max_new_tokens=64):
         from openvino import Core  # noqa: F401 - imported for a clear error
         import openvino_genai as ov_genai  # type: ignore[import-not-found]
 
         model_dir = str(model_dir).rstrip("/")
         if not os.path.isfile(os.path.join(model_dir, "config.json")):
             raise RuntimeError(
-                f"no OpenVINO model at {model_dir} (config.json missing) - run "
+                f"no OpenVINO VLM at {model_dir} (config.json missing) - run "
                 "dev_scripts/prep_scene_model.sh and point MODEL_DIR at it")
         self.model_dir = model_dir
         self.model_name = os.path.basename(model_dir) or model_dir
@@ -285,11 +339,19 @@ CREATE TABLE IF NOT EXISTS scenes (
     reason      TEXT    NOT NULL DEFAULT 'motion',
     model       TEXT    NOT NULL DEFAULT '',
     latency_ms  INTEGER NOT NULL DEFAULT 0,
-    jpg_path    TEXT
+    jpg_path    TEXT,
+    importance  INTEGER NOT NULL DEFAULT 0,
+    tier        TEXT    NOT NULL DEFAULT 'normal'
 );
 CREATE INDEX IF NOT EXISTS idx_scenes_camera_ts ON scenes(camera, captured_at);
 CREATE INDEX IF NOT EXISTS idx_scenes_ts        ON scenes(captured_at);
 """
+# NOTE: the (tier, importance) index is created AFTER the guarded migration in
+# _store_conn(), never here: on a legacy DB (table exists without those columns)
+# an index over them would make executescript() raise "no such column: tier"
+# BEFORE the ALTER statements could add them.
+_SCHEMA_TIER_INDEX = ("CREATE INDEX IF NOT EXISTS idx_scenes_tier "
+                      "ON scenes(tier, importance)")
 
 
 def _store_db_path(cfg):
@@ -318,6 +380,23 @@ def _store_conn(cfg):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(_SCHEMA)
+        # Guarded idempotent migrations for DBs created before importance
+        # existed. Defaults keep legacy rows visible ('normal' tier, score 0).
+        for _col, ddl in (
+            ("importance", "ALTER TABLE scenes ADD COLUMN "
+                           "importance INTEGER NOT NULL DEFAULT 0"),
+            ("tier", "ALTER TABLE scenes ADD COLUMN "
+                     "tier TEXT NOT NULL DEFAULT 'normal'"),
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.Error:
+                pass  # column already present
+        # ...and only now the index that depends on them.
+        try:
+            conn.execute(_SCHEMA_TIER_INDEX)
+        except sqlite3.Error:
+            pass
         _STORE_CONN = conn
     return _STORE_CONN
 
@@ -338,8 +417,48 @@ def _prune_store(cfg, conn):
         LOG(f"store: pruned {cur.rowcount} scene record(s) older than {days:g} days")
 
 
+def _list_conf(cfg, key, default):
+    """Comma-separated conf value -> lowercase list (empty entries dropped)."""
+    return [t.strip().lower() for t in _get(cfg, key, default).split(",") if t.strip()]
+
+
+def score_importance(s, description, reason, motion_frac, recent_fracs, repeat):
+    """Heuristic (0-100 score, tier) for one caption - no extra inference.
+
+    A pure function of signals already in hand, so it adds no CPU cost and is
+    easy to reason about and tune. See the IMPORTANCE comment block near the
+    top; the tier cut-offs are TIER_HIGH_MIN / TIER_NORMAL_MIN.
+    """
+    text = (description or "").lower()
+    notable = any(t in text for t in s.important_terms)
+    dull = any(t in text for t in s.low_terms)
+    score = 0.0
+    if notable:
+        score += s.important_bonus
+    elif dull:
+        # Only penalise an explicit "nothing here" if nothing notable matched.
+        score -= s.low_penalty
+    # How much actually moved (saturating: past the scale it stops adding).
+    if s.motion_scale > 0:
+        score += s.motion_bonus * min(1.0,
+                                      max(0.0, float(motion_frac)) / s.motion_scale)
+    # A spike relative to this camera's own recent norm.
+    if reason == "motion" and recent_fracs:
+        ordered = sorted(recent_fracs)
+        median = ordered[len(ordered) // 2]
+        if median > 0 and float(motion_frac) > s.unusual_factor * median:
+            score += s.unusual_bonus
+    if repeat:
+        score -= s.novelty_penalty
+    score = max(0.0, min(100.0, score))
+    value = int(round(score))
+    tier = ("high" if value >= s.tier_high_min
+            else "normal" if value >= s.tier_normal_min else "low")
+    return value, tier
+
+
 def store_scene(cfg, cam, jpeg_bytes, description, motion_frac, reason,
-                model_name, latency_ms):
+                model_name, latency_ms, importance=0, tier="normal"):
     """Best-effort persist one description (+ optional JPEG). Never raises."""
     global _STORE_CONN
     if not _getb(cfg, "STORE_ENABLED", True):
@@ -366,16 +485,18 @@ def store_scene(cfg, cam, jpeg_bytes, description, motion_frac, reason,
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO scenes (camera, captured_at, ts_utc, description, "
-            "motion_frac, reason, model, latency_ms, jpg_path) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "motion_frac, reason, model, latency_ms, jpg_path, importance, "
+            "tier) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (cam, now,
              time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
              description, round(float(motion_frac), 6), reason,
-             model_name, int(latency_ms), jpg_path),
+             model_name, int(latency_ms), jpg_path,
+             int(importance), str(tier)),
         )
         conn.commit()
         _prune_store(cfg, conn)
-        LOG(f"{cam}: stored scene #{cur.lastrowid} ({reason})")
+        LOG(f"{cam}: stored scene #{cur.lastrowid} "
+            f"({reason}, {tier} {importance})")
     except Exception as exc:  # noqa: BLE001 - store must never kill the loop
         _STORE_CONN = None
         LOG(f"{cam}: store FAILED: {exc}")
@@ -418,6 +539,23 @@ class S:
         self.store_enabled = True
         self.tick_min = 0.25
         self.heartbeat_s = 300.0
+        # Importance scoring (score_importance): text + motion + novelty.
+        self.important_terms = []
+        self.low_terms = []
+        # Calibration: IMPORTANT_BONUS alone reaches TIER_HIGH_MIN, so "the
+        # caption mentions something worth looking at" is by itself enough to
+        # be high; motion and novelty only adjust from there.
+        self.important_bonus = 60.0
+        self.low_penalty = 30.0
+        self.motion_bonus = 30.0
+        self.motion_scale = 0.05
+        self.unusual_factor = 3.0
+        self.unusual_bonus = 10.0
+        self.novelty_penalty = 20.0
+        self.novelty_window_s = 1800.0
+        self.tier_high_min = 60
+        self.tier_normal_min = 30
+        self.motion_history = 20
 
 
 def _resolve_settings(cfg, cameras):
@@ -442,6 +580,21 @@ def _resolve_settings(cfg, cameras):
     s.store_enabled = _getb(cfg, "STORE_ENABLED", True)
     s.tick_min = 0.25
     s.heartbeat_s = max(30.0, _getf(cfg, "HEARTBEAT_S", 300))
+    # --- importance scoring (see score_importance) ---
+    s.important_terms = _list_conf(cfg, "IMPORTANT_TERMS", DEFAULT_IMPORTANT_TERMS)
+    s.low_terms = _list_conf(cfg, "LOW_TERMS", DEFAULT_LOW_TERMS)
+    s.important_bonus = _clampf(_getf(cfg, "IMPORTANT_BONUS", 60), 0, 100, 60)
+    s.low_penalty = _clampf(_getf(cfg, "LOW_PENALTY", 30), 0, 100, 30)
+    s.motion_bonus = _clampf(_getf(cfg, "MOTION_IMPORTANCE_BONUS", 30), 0, 100, 30)
+    s.motion_scale = max(1e-6, _getf(cfg, "MOTION_IMPORTANCE_SCALE", 0.05))
+    s.unusual_factor = max(1.0, _getf(cfg, "MOTION_UNUSUAL_FACTOR", 3.0))
+    s.unusual_bonus = _clampf(_getf(cfg, "MOTION_UNUSUAL_BONUS", 10), 0, 100, 10)
+    s.novelty_penalty = _clampf(_getf(cfg, "NOVELTY_PENALTY", 20), 0, 100, 20)
+    s.novelty_window_s = max(0.0, _getf(cfg, "NOVELTY_WINDOW_S", 1800))
+    s.tier_high_min = int(_clampf(_getf(cfg, "TIER_HIGH_MIN", 60), 1, 100, 60))
+    s.tier_normal_min = int(_clampf(_getf(cfg, "TIER_NORMAL_MIN", 30), 0,
+                                    s.tier_high_min, 30))
+    s.motion_history = max(1, _geti(cfg, "MOTION_HISTORY", 20))
     return s
 
 
@@ -453,6 +606,9 @@ def _new_state(s, cameras):
             "last_caption": 0.0,   # monotonic of the last caption attempt
             "cool_until": 0.0,     # monotonic cooldown end
             "captions": 0,         # captions taken (this process)
+            "fracs": collections.deque(maxlen=max(1, s.motion_history)),
+            "last_desc": None,     # normalized previous caption (novelty)
+            "last_desc_t": 0.0,
             "err_count": 0,
             "_err_logged": False,
         }
@@ -557,10 +713,23 @@ def _do_sweep(s, cfg, cap, state, dry=False):
             st["cool_until"] = st["last_caption"] + s.caption_cooldown
             st["captions"] += 1
             captioned += 1
-            LOG(f"{cam}: [{reason} frac {frac:.4f}] {text} ({ms} ms)")
+            # Importance (score_importance). A caption identical to this
+            # camera's previous one inside NOVELTY_WINDOW_S is demoted, so a
+            # bird sitting in frame yields one interesting row, not one per
+            # sweep.
+            norm = _norm_text(text)
+            repeat = (norm == st["last_desc"]
+                      and (time.time() - st["last_desc_t"]) < s.novelty_window_s)
+            importance, tier = score_importance(
+                s, text, reason, frac, list(st["fracs"]), repeat)
+            st["last_desc"], st["last_desc_t"] = norm, time.time()
+            if reason == "motion":
+                st["fracs"].append(float(frac))
+            LOG(f"{cam}: [{reason} frac {frac:.4f} {tier} {importance}] "
+                f"{text} ({ms} ms)")
             if s.store_enabled and not dry:
                 store_scene(cfg, cam, b_bytes, text, frac, reason,
-                            cap.model_name, ms)
+                            cap.model_name, ms, importance, tier)
         except Exception as exc:  # noqa: BLE001 - isolate the whole camera turn
             _cam_err(cam, s, st, exc)
     return {"captioned": captioned, "skipped": skipped}

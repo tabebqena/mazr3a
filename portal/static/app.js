@@ -1654,6 +1654,8 @@ function reloadScenes() {
 $('#sc-refresh').addEventListener('click', reloadScenes);
 $('#sc-cam').addEventListener('change', reloadScenes);
 $('#sc-reason').addEventListener('change', reloadScenes);
+$('#sc-tier').addEventListener('change', reloadScenes);
+$('#sc-sort').addEventListener('change', reloadScenes);
 wireTimeControls('sc', reloadScenes);
 $('#sc-prev').addEventListener('click', () => {
   if (scPage > 1) { scPage--; loadScenes(); }
@@ -1675,6 +1677,11 @@ async function loadScenes() {
     });
     const cam = $('#sc-cam').value; if (cam) p.set('camera', cam);
     const rsn = $('#sc-reason').value; if (rsn) p.set('reason', rsn);
+    // "Show" = how important a scene must be. Default 'high' keeps the tab on
+    // the handful of rows worth seeing; 'all' is the "dig deeper" escape.
+    const tier = $('#sc-tier').value;
+    if (tier && tier !== 'all') p.set('min_tier', tier);
+    p.set('sort', $('#sc-sort').value || 'importance');
     if (after) p.set('after', String(after));
     if (before) p.set('before', String(before));
     const data = await api('/api/scenes?' + p.toString());
@@ -1686,7 +1693,14 @@ async function loadScenes() {
       (data.note ? (total ? ' — ' : '') + data.note : '');
     box.innerHTML = '';
     if (!data.items.length) {
-      box.innerHTML = '<div class="empty">No scene descriptions</div>';
+      // Spell out the way out when the importance filter is the reason the
+      // list is empty - otherwise a quiet window looks like a broken tab.
+      const hint = ($('#sc-tier').value === 'high')
+        ? '<br>No <b>important</b> scenes in this range. Set <b>Show</b> to '
+          + '&ldquo;important + normal&rdquo; or &ldquo;everything&rdquo; '
+          + 'to dig deeper.'
+        : '';
+      box.innerHTML = '<div class="empty">No scene descriptions.' + hint + '</div>';
       hidePager('sc');
       return;
     }
@@ -1701,9 +1715,16 @@ async function loadScenes() {
   }
 }
 
+/* Importance (writer-side, see score_importance in scenewatch.py): `tier` is
+   high/normal/low and `importance` the 0-100 score behind it. */
 function sceneTags(s) {
-  return '<span class="tag ' + (s.reason === 'baseline' ? 'baseline' : 'motion') + '">' +
-    esc(s.reason || '') + '</span>';
+  const tier = s.tier || 'normal';
+  const label = tier === 'high' ? 'important' : tier;
+  return '<span class="tag tier-' + esc(tier) + '" title="Importance score ' +
+      Number(s.importance || 0) + '/100 (scored when the caption was written)">' +
+      esc(label) + ' ' + Number(s.importance || 0) + '</span>' +
+    '<span class="tag ' + (s.reason === 'baseline' ? 'baseline' : 'motion') + '">' +
+      esc(s.reason || '') + '</span>';
 }
 
 function sceneCard(s) {

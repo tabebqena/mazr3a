@@ -37,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.3.17"
+APP_VERSION = "0.3.18"
 _HTMX = None
 
 
@@ -596,15 +596,22 @@ def _scene_db(request: Request) -> str:
 @app.get("/api/scenes")
 async def scenes(request: Request, user: dict = Depends(current_user),
                  camera: Optional[str] = None, reason: Optional[str] = None,
+                 min_tier: Optional[str] = None,
                  with_image: Optional[int] = None,
                  after: Optional[float] = None, before: Optional[float] = None,
+                 sort: str = "importance",
                  limit: int = 50, offset: int = 0):
+    # min_tier = "at least this important" (high | normal | low); the SPA
+    # defaults to high so the Scenes tab opens on the few rows that matter.
+    # sort = importance (most important first) | time (newest first).
     return scenestore.list_scenes(
         _scene_db(request),
         camera=camera or None,
         reason=reason or None,
+        min_tier=min_tier or None,
         with_image=None if with_image is None else bool(with_image),
         after=after, before=before,
+        sort=sort if sort in ("importance", "time") else "importance",
         limit=limit, offset=offset,
     )
 

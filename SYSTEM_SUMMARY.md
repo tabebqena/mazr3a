@@ -16,7 +16,7 @@
 | Summary version | `v12` |
 | Last updated | 2026-09-10 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.3.18` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.4.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -141,8 +141,8 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenewatch scene descriptions** (Scenes tab: caption list + the stored frame in a lightbox, read-only via [`portal/scenestore.py`](portal/scenestore.py); **defaults to the important tier**, with Show/Sort controls to dig into the rest), admin Debug tab |
-| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/scenestore.py`](portal/scenestore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scene log** of every capture with its tier — both read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab |
+| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw for SQLite WAL read) |

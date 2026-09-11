@@ -1233,8 +1233,8 @@ function rememberCam(cam) {
   state.live.cam = cam;                 // startStream also sets it (idempotent)
   try { localStorage.setItem('portal.lastCam', cam); } catch (e) { /* ignore */ }
 }
-/* Pick a camera from the thumbnail row / modal / prev-next buttons. Clicking
-   the camera that is already streaming just closes the picker (no restart). */
+/* Pick a camera from the thumbnail row / modal. Clicking the camera that is
+   already streaming just closes the picker (no restart). */
 function selectCam(cam) {
   if (!cam || camNames().indexOf(cam) < 0) return;
   closeCamModal();
@@ -1412,7 +1412,7 @@ const EV_IDLE_MS = 60000;   // idle stop: 1 minute (fixed; Live uses STREAM_IDLE
 const EV_STORE = { cam: 'portal.evCam', label: 'portal.evLabel' };
 
 let evAll = [];             // current filter's full event array (newest first)
-let evPage = 1;             // strip page (window of EV_PAGE)
+let evShown = 0;            // how many clips are in the strip (grows on Load more)
 let evSelIdx = -1;          // index into evAll of the clip in the stage
 let evPlaylist = false;     // auto-advance switch
 let evPlaylistResume = false;  // playlist was ON when the idle stop fired
@@ -1540,9 +1540,13 @@ function evSelect(idx, autoplay) {
   if (!ev.has_clip) evPlaylist = false;   // nothing to auto-advance from a still
   syncEvPlaylist();
   renderEvNow();
-  const page = Math.floor(idx / EV_PAGE) + 1;
-  if (page !== evPage) { evPage = page; renderEvPage(); }   // renderEvPage re-marks
-  else markEvActive();
+  if (idx >= evShown) {
+    // Selected beyond the rendered window (e.g. playlist advance): grow it.
+    evShown = Math.min(evAll.length, Math.ceil((idx + 1) / EV_PAGE) * EV_PAGE);
+    renderEvClips();
+  } else {
+    markEvActive();
+  }
 }
 function renderEvNow() {
   const el = $('#ev-now');
@@ -1595,20 +1599,16 @@ $('#ev-clips-toggle').addEventListener('click', () => {
   const collapsed = document.body.classList.toggle('ev-clips-collapsed');
   $('#ev-clips-toggle').setAttribute('aria-expanded', collapsed ? 'false' : 'true');
 });
-$('#ev-prev').addEventListener('click', () => {
-  if (evPage > 1) { evPage--; renderEvPage(); }
-});
-$('#ev-next').addEventListener('click', () => {
-  if (evPage < Math.max(1, Math.ceil(evAll.length / EV_PAGE))) { evPage++; renderEvPage(); }
-});
-
 // Playlist auto-advance: the current clip ended -> play the next one.
 $('#ev-video').addEventListener('ended', () => { if (evPlaylist) evAdvance(); });
 // Any interaction inside the tab is a user present: (re)arm the idle stop.
 ['pointerdown', 'keydown', 'wheel'].forEach(evt =>
   $('#view-events').addEventListener(evt, armEvIdle, { passive: true }));
-// Click a clip in the strip: select + play it in the large frame.
+// Click a clip in the strip: select + play it in the large frame. The trailing
+// "Load more" button appends the next window of clips - the SAME behaviour
+// whether the strip is horizontal (phones/tablet) or vertical (phone landscape).
 $('#ev-strip').addEventListener('click', (e) => {
+  if (e.target.closest('#ev-loadmore')) { loadMoreEvClips(); return; }
   const btn = e.target.closest('.ev-clip');
   if (!btn) return;
   evPlaylistResume = false;
@@ -1618,7 +1618,6 @@ $('#ev-strip').addEventListener('click', (e) => {
 async function loadEvents() {
   const st = $('#ev-status');
   st.textContent = 'Loading…';
-  hidePager('ev');
   try {
     const { after, before } = timeRange($('#ev-time'), $('#ev-from'), $('#ev-to'));
     const p = new URLSearchParams({ limit: String(EV_MAX) });
@@ -1628,10 +1627,10 @@ async function loadEvents() {
     if (before) p.set('before', String(before));
     const events = await api('/api/events?' + p.toString());
     evAll = Array.isArray(events) ? events : [];
-    evPage = 1;
+    evShown = Math.min(evAll.length, EV_PAGE);
     evTeardown();                     // new filter: drop the old clip + playlist
     st.textContent = '';
-    renderEvPage();
+    renderEvClips();
     // Ready the frame with the first PLAYABLE clip's poster (no autoplay): the
     // stage is populated without spending bandwidth until the user presses play.
     const first = evAll.findIndex(x => x && x.has_clip);
@@ -1639,49 +1638,79 @@ async function loadEvents() {
     else if (evAll.length) evSelect(0, false);   // snapshots only
   } catch (e) {
     evAll = [];
+    evShown = 0;
     evTeardown();
     st.textContent = '';
+    const cnt = $('#ev-count'); if (cnt) cnt.textContent = '';
     $('#ev-strip').innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
-    hidePager('ev');
   }
 }
 
-function renderEvPage() {
-  const pages = Math.max(1, Math.ceil(evAll.length / EV_PAGE));
-  if (evPage > pages) evPage = pages;
-  const base = (evPage - 1) * EV_PAGE;
-  const slice = evAll.slice(base, base + EV_PAGE);
-  $('#ev-status').textContent =
-    (evAll.length ? evAll.length + ' event(s)' : '') +
-    (evAll.length >= EV_MAX ? ' (older events omitted - narrow the time filter)' : '');
-  renderEvStrip(slice, base);
-  renderPager('ev', evPage, pages);
+// Render the clip list: the first evShown events plus a trailing control -
+// "Load more" while events remain, or "No more videos" once all are shown.
+// evShown grows by EV_PAGE per click; ONE rendering serves both the horizontal
+// strip (phones/tablet) and the vertical strip (phone landscape).
+function renderEvClips() {
+  if (evShown > evAll.length) evShown = evAll.length;
+  if (evShown <= 0) evShown = Math.min(evAll.length, EV_PAGE);
+  const cnt = $('#ev-count');
+  if (cnt) {
+    cnt.textContent = evAll.length
+      ? evAll.length + ' event(s)' +
+        (evAll.length >= EV_MAX ? ' (older omitted)' : '')
+      : '';
+  }
+  renderEvStrip(evAll.slice(0, evShown), 0);
 }
 
-// The lower horizontal navigation: one button per clip in the current page.
+// One clip button (shared by the first render and the "Load more" append).
+function evClipHtml(ev, idx) {
+  const glyph = ev.has_clip ? '<span class="ev-playglyph">&#9654;</span>' : '';
+  const thumb = ev.has_snapshot
+    ? '<img loading="lazy" src="' + evSnapUrl(ev) + '" alt="">'
+    : '<span class="ev-noclip">no preview</span>';
+  return '<button class="ev-clip" type="button" role="option" data-idx="' + idx +
+    '" aria-selected="false" title="' + esc(fmtDT(ev.start_time)) + '">' +
+    '<span class="ev-thumb">' + thumb + glyph + '</span>' +
+    '<span class="ev-meta">' +
+      '<span class="ev-lab">' + esc(ev.label || 'detection') + '</span>' +
+      '<span class="ev-time">' + esc(ev.camera || '') + ' &middot; ' +
+        esc(fmtDT(ev.start_time)) + '</span>' +
+    '</span>' +
+  '</button>';
+}
+// The trailing control: "Load more" while events remain, else "No more videos"
+// (uniform for the horizontal strip and the vertical landscape strip).
+function evTailHtml() {
+  return evShown < evAll.length
+    ? '<button id="ev-loadmore" class="ev-loadmore" type="button">Load more</button>'
+    : '<div class="ev-end">No more videos</div>';
+}
+// The lower navigation: one button per clip, then the trailing control.
 function renderEvStrip(events, baseIdx) {
   const box = $('#ev-strip');
   if (!Array.isArray(events) || !events.length) {
     box.innerHTML = '<div class="empty">No events</div>';
     return;
   }
-  box.innerHTML = events.map((ev, i) => {
-    const idx = baseIdx + i;
-    const glyph = ev.has_clip ? '<span class="ev-playglyph">&#9654;</span>' : '';
-    const thumb = ev.has_snapshot
-      ? '<img loading="lazy" src="' + evSnapUrl(ev) + '" alt="">'
-      : '<span class="ev-noclip">no preview</span>';
-    return '<button class="ev-clip" type="button" role="option" data-idx="' + idx +
-      '" aria-selected="false" title="' + esc(fmtDT(ev.start_time)) + '">' +
-      '<span class="ev-thumb">' + thumb + glyph + '</span>' +
-      '<span class="ev-meta">' +
-        '<span class="ev-lab">' + esc(ev.label || 'detection') + '</span>' +
-        '<span class="ev-time">' + esc(ev.camera || '') + ' &middot; ' +
-          esc(fmtDT(ev.start_time)) + '</span>' +
-      '</span>' +
-    '</button>';
-  }).join('');
+  box.innerHTML = events.map((ev, i) => evClipHtml(ev, baseIdx + i)).join('') +
+    evTailHtml();
   markEvActive();
+}
+// "Load more": APPEND the next window (preserving the scroll position) by
+// replacing the old trailing control with the new clips + a fresh control. The
+// already-active clip is left untouched (so nothing scrolls out from under the
+// user - do NOT call markEvActive here).
+function loadMoreEvClips() {
+  if (evShown >= evAll.length) return;
+  const box = $('#ev-strip');
+  const from = evShown;
+  evShown = Math.min(evAll.length, evShown + EV_PAGE);
+  const html = evAll.slice(from, evShown)
+    .map((ev, i) => evClipHtml(ev, from + i)).join('') + evTailHtml();
+  const tail = $('#ev-loadmore', box) || $('.ev-end', box);
+  if (tail) tail.outerHTML = html;
+  else box.insertAdjacentHTML('beforeend', html);
 }
 
 /* ---------------- Firewatch fire detections & alerts (paged + time-filtered) -- */

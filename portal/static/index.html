@@ -222,20 +222,20 @@
              in every other layout the strip sits below the player and the
              toggle is hidden (CSS). -->
         <div id="ev-clips" class="ev-clips">
-          <button id="ev-clips-toggle" class="ev-clips-toggle" type="button"
-                  aria-expanded="true" aria-controls="ev-strip"
-                  title="Show / hide clip thumbnails">
-            <span class="ev-clips-icon" aria-hidden="true">&#9776;</span>
-            <span class="ev-clips-name">Clips</span>
-          </button>
+          <div class="ev-clips-head">
+            <button id="ev-clips-toggle" class="ev-clips-toggle" type="button"
+                    aria-expanded="true" aria-controls="ev-strip"
+                    title="Show / hide clip thumbnails">
+              <span class="ev-clips-icon" aria-hidden="true">&#9776;</span>
+              <span class="ev-clips-name">Clips</span>
+            </button>
+            <!-- Count of the current filter's events, shown at the TOP of the
+                 scrollable thumbnails (filled by app.js). -->
+            <span id="ev-count" class="ev-clips-count"></span>
+          </div>
           <div id="ev-strip" class="ev-strip" role="listbox" aria-label="Clips"></div>
         </div>
 
-        <div id="ev-pager" class="pager hidden">
-          <button id="ev-prev" type="button">&#8249; Prev</button>
-          <span id="ev-pageno" class="pageno"></span>
-          <button id="ev-next" type="button">Next &#8250;</button>
-        </div>
       </section>
 
       <!-- Firewatch fire detections & alerts -->

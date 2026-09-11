@@ -502,6 +502,30 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
    strip so the layout is unchanged. */
 .ev-clips { display: block; }
 .ev-clips-toggle { display: none; }
+/* Header above the thumbnails: the collapse toggle (shown only in the landscape
+   3-column layout) + the event COUNT. On phones only the count shows, pinned to
+   the TOP of the scrollable thumbnail area. */
+.ev-clips-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px;
+}
+.ev-clips-count { color: var(--muted); font-size: 13px; white-space: nowrap; }
+/* The strip sits just under the header (no big gap of its own). */
+.ev-clips .ev-strip { margin-top: 6px; }
+/* Trailing control at the end of the clip list. "Load more" while events
+   remain; "No more videos" once every event is shown. Sized for BOTH the
+   horizontal strip (phones/tablet) and the vertical strip (phone landscape). */
+.ev-loadmore {
+  flex: 0 0 auto; align-self: center;
+  width: auto; min-width: 132px; margin: 4px 6px; padding: 8px 16px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--accent); font-weight: 600;
+}
+.ev-end {
+  flex: 0 0 auto; align-self: center;
+  margin: 4px 6px; padding: 8px 12px;
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+}
 
 /* Lower horizontal navigation: one button per clip in the current page. */
 .ev-strip {
@@ -917,7 +941,7 @@ body.lb-open { overflow: hidden; }
     grid-template-rows: minmax(0, 1fr) auto;
     grid-template-areas:
       "filters stage clips"
-      "status  pager clips";
+      "status  .     clips";
     gap: 6px 8px;
   }
   /* Collapsed clips: shrink the third column to a slim handle. */
@@ -950,12 +974,18 @@ body.lb-open { overflow: hidden; }
     height: 100%; min-height: 0;
   }
   body.events-full #view-events #ev-status { grid-area: status; margin: 0; }
-  body.events-full #view-events #ev-pager { grid-area: pager; margin: 0; }
-  /* [3] Clips: a header toggle + a VERTICAL, scrollable strip. */
+  /* [3] Clips: a header (toggle + count) + a VERTICAL, scrollable strip. */
   body.events-full #view-events .ev-clips {
     grid-area: clips;
     display: flex; flex-direction: column; gap: 6px;
     height: 100%; min-height: 0;
+  }
+  body.events-full #view-events .ev-clips-head {
+    display: flex; flex-direction: column; align-items: stretch;
+    gap: 4px; margin: 0; flex: 0 0 auto;
+  }
+  body.events-full #view-events .ev-clips-count {
+    text-align: center; white-space: normal;
   }
   body.events-full #view-events .ev-clips-toggle {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -974,6 +1004,11 @@ body.lb-open { overflow: hidden; }
     -webkit-overflow-scrolling: touch;
   }
   body.events-full #view-events .ev-clip { width: 100%; }
+  /* Trailing Load more / No more videos: full column width. */
+  body.events-full #view-events .ev-loadmore,
+  body.events-full #view-events .ev-end {
+    width: 100%; min-width: 0; align-self: stretch; margin: 6px 0; text-align: center;
+  }
   /* Collapsed: hide the strip; the toggle becomes a slim vertical handle. */
   body.ev-clips-collapsed #view-events .ev-strip { display: none; }
   body.ev-clips-collapsed #view-events .ev-clips-toggle {

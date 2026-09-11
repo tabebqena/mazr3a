@@ -148,6 +148,7 @@ nav .nav-user {
   color: var(--text); font-weight: 600; font-size: 13px;
   line-height: 1.25;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-height: 32px; max-height: 32px;
 }
 /* Username for the HORIZONTAL nav layout (tablet/desktop): hidden on phones. */
 .user-chip { display: none; }

@@ -754,6 +754,68 @@ nav .nav-install {
 }
 nav .nav-install:hover { background: rgba(53,194,111,.12); }
 
+/* ================= NOTIFICATIONS =================
+   The portal REQUIRES the browser Notification permission to run: when it is
+   not granted, app.js hides #app and shows this full-screen card, which either
+   asks for the permission (Enable) or explains how to allow it when it is
+   BLOCKED (Retry re-reads it). See plans/portal-notifications.md. */
+.notify-gate {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; overflow-y: auto;
+  background: radial-gradient(1200px 600px at 20% -10%, #15202b 0%, var(--bg) 55%);
+}
+.notify-gate-card {
+  width: 100%; max-width: 440px;
+  padding: 24px; border-radius: var(--radius);
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 18px 50px rgba(0,0,0,.5); text-align: center;
+}
+.notify-gate-icon { font-size: 40px; line-height: 1; margin-bottom: 8px; }
+.notify-gate-card h1 { margin: 0 0 6px; font-size: 22px; }
+.notify-gate-card .sub { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.notify-steps {
+  text-align: left; font-size: 13px; line-height: 1.6;
+  color: var(--text); background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 16px;
+}
+.notify-gate-card button { margin-top: 8px; }
+#nt-gate-btn {
+  background: var(--accent); color: #06210f; font-weight: 700; border: 0;
+}
+
+/* Unread count badge on the Notifications nav link (inline row AND the phone
+   collapsed menu). */
+.nav-badge {
+  display: inline-block; margin-left: 7px; padding: 0 7px;
+  min-width: 18px; border-radius: 9px;
+  background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+  line-height: 18px; text-align: center; vertical-align: middle;
+}
+
+/* Notification feed (Notifications tab). */
+.nt-list { display: flex; flex-direction: column; gap: 8px; }
+.nt-card {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%;
+  text-align: left; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.nt-card:hover { border-color: var(--accent); }
+.nt-card.unread { border-left: 3px solid var(--accent); }
+.nt-dot {
+  flex: 0 0 auto; width: 9px; height: 9px; margin-top: 6px;
+  border-radius: 50%; background: var(--line);
+}
+.nt-card.unread .nt-dot { background: var(--accent); }
+.nt-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nt-title { font-weight: 700; }
+.nt-text { font-size: 13px; color: var(--text); }
+.nt-meta { font-size: 11.5px; color: var(--muted); }
+/* Admin-only publish row. */
+.nt-pub { align-items: flex-end; }
+
 /* ================= FOOTER BAR (large screens) =================
    A REAL, full-width footer at the bottom of the page holding the quota
    progress bar + the version label. It is part of the normal document flow -

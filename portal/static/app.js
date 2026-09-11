@@ -18,6 +18,10 @@ const state = {
   manageTarget: null,// Manage tab: username selected for editing
   userTarget: null,  // Account tab: always the signed-in user
   userPhoto: '',     // Account tab: pending profile photo data URL
+  notifications: [], // notification feed, newest first (/api/notifications)
+  notifyUnread: 0,   // unread count shown on the nav badge
+  lastNotifiedId: null, // highest id already ALERTED (the poller's baseline)
+  booted: false,     // guard: continueBoot() runs once per signed-in session
   live: { cam: null, playing: false, mode: '', sound: false, imgLive: false,
           revealed: false },   // true once this live attempt dropped the poster
   // imgLive: the <img> is the poster shown while a live attempt is starting
@@ -253,6 +257,286 @@ function initInstallPrompt() {
   });
 }
 
+/* ---------------- notifications (feed + browser alerts + access gate) --------
+   The portal keeps a server-side notification FEED (portal/notifstore.py): a
+   portal background watcher records ONE item per new Firewatch fire alert and an
+   admin can publish a system message. This SPA:
+     * GATES the whole app on the browser Notification permission - the
+       requirement is that the user must ALLOW notifications to run the app;
+     * polls the feed for NEW items and raises a real browser/OS notification for
+       each, via the notification-only service worker /sw.js (REQUIRED on Android
+       Chrome, where `new Notification()` throws `Illegal constructor`);
+     * shows the feed in the Notifications tab with an unread nav badge.
+   There is deliberately NO Web Push: the feed is derived by polling. */
+const NOTIFY_POLL_MS = 30000;   // look for new notifications every 30 s
+const NOTIFY_PAGE = 50;         // feed page size
+// Icon for the OS notification: reuse the fingerprinted apple-touch icon the
+// page already links, so the icon matches the installed app and no hashed URL
+// is hard-coded here.
+const NOTIFY_ICON = (function () {
+  const link = document.querySelector('link[rel="apple-touch-icon"]');
+  return (link && link.getAttribute('href')) || '/favicon.ico';
+})();
+let notifyTimer = null;
+
+function notificationSupported() { return ('Notification' in window); }
+function notificationPermission() {
+  if (!notificationSupported()) return 'unsupported';
+  try { return Notification.permission; } catch (e) { return 'unsupported'; }
+}
+function notificationGranted() { return notificationPermission() === 'granted'; }
+
+/* ---- access gate: the portal requires notification permission ---- */
+function isAndroidUA() { return /android/i.test(navigator.userAgent || ''); }
+function isIOSUA() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent || '')
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+/* Platform-specific "how to allow it" text for the gate's DENIED state. */
+function notifyGateInstructions(perm) {
+  if (perm === 'unsupported') {
+    return 'This browser cannot show notifications, so the portal cannot run ' +
+      'here. Open it in a supported browser (Chrome, Edge, Firefox or Safari).';
+  }
+  if (perm === 'denied') {
+    if (isIOSUA()) {
+      return 'Notifications are blocked. Open <b>Settings \u2192 mazr3a</b> ' +
+        '(or <b>Settings \u2192 Safari</b>) <b>\u2192 Notifications</b> and ' +
+        'turn them <b>on</b>, then tap Retry.';
+    }
+    if (isAndroidUA()) {
+      return 'Notifications are blocked. In <b>Chrome</b> open <b>\u22ee ' +
+        '\u2192 Settings \u2192 Site settings \u2192 Notifications</b>, find ' +
+        'this site and choose <b>Allow</b>. For the installed app: <b>Android ' +
+        'Settings \u2192 Apps \u2192 mazr3a \u2192 Notifications \u2192 ' +
+        'Allow</b>. Then tap Retry.';
+    }
+    return 'Notifications are blocked. Click the <b>lock / \u24d8 icon</b> in ' +
+      'the address bar \u2192 <b>Site settings \u2192 Notifications \u2192 ' +
+      'Allow</b>, then click Retry.';
+  }
+  return 'This app needs your permission to show notifications. Tap ' +
+    '<b>Enable notifications</b> and choose <b>Allow</b>.';
+}
+function showNotifyGate() {
+  const gate = $('#notify-gate');
+  if (!gate) return;
+  $('#app').classList.add('hidden');   // the gate REPLACES the dashboard
+  const perm = notificationPermission();
+  const blocked = perm === 'denied' || perm === 'unsupported';
+  $('#nt-gate-title').textContent = blocked
+    ? 'Notifications are blocked' : 'Notifications required';
+  $('#nt-gate-msg').textContent = blocked
+    ? 'The portal cannot run until notifications are allowed.'
+    : 'Allow notifications to continue to the portal.';
+  $('#nt-gate-steps').innerHTML = notifyGateInstructions(perm);
+  const btn = $('#nt-gate-btn');
+  btn.classList.toggle('hidden', blocked);
+  btn.disabled = false;
+  $('#nt-gate-retry').classList.toggle('hidden', !blocked);
+  gate.classList.remove('hidden');
+}
+function hideNotifyGate() {
+  const gate = $('#notify-gate');
+  if (gate) gate.classList.add('hidden');
+  const app = $('#app');
+  if (app) app.classList.remove('hidden');
+}
+async function requestNotificationAccess() {
+  if (!notificationSupported()) { showNotifyGate(); return; }
+  let perm;
+  try { perm = await Notification.requestPermission(); }
+  catch (e) { perm = notificationPermission(); }
+  if (perm === 'granted') { hideNotifyGate(); await continueBoot(); }
+  else showNotifyGate();
+}
+/* Gate wiring runs at MODULE LOAD (not from boot): the buttons must work while
+   the gate is up, which is BEFORE continueBoot() ever runs. */
+function initNotifyGate() {
+  const btn = $('#nt-gate-btn');
+  if (btn) btn.addEventListener('click', () => {
+    btn.disabled = true;
+    requestNotificationAccess();
+  });
+  const retry = $('#nt-gate-retry');
+  if (retry) retry.addEventListener('click', () => {
+    // The user changed the permission in browser/OS settings: re-read it.
+    if (notificationGranted()) { hideNotifyGate(); continueBoot(); }
+    else showNotifyGate();
+  });
+}
+initNotifyGate();
+
+/* ---- service worker + browser notifications ---- */
+async function registerNotifyWorker() {
+  if (!('serviceWorker' in navigator)) return null;
+  try { return await navigator.serviceWorker.register('/sw.js'); }
+  catch (e) { return null; }
+}
+async function showBrowserNotification(n) {
+  if (!notificationGranted()) return;
+  const opts = {
+    body: n.body || '',
+    tag: 'mazr3a-' + n.id,
+    icon: NOTIFY_ICON,
+    badge: NOTIFY_ICON,
+    data: { url: n.url || '#/notifications' },
+  };
+  const title = n.title || 'mazr3a CCTV';
+  if ('serviceWorker' in navigator) {
+    try {
+      // `new Notification()` is desktop-only; never hang if the worker did not
+      // register - race the readiness promise with a short timeout.
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise(res => setTimeout(() => res(null), 3000)),
+      ]);
+      if (reg && reg.showNotification) {
+        await reg.showNotification(title, opts);
+        return;
+      }
+    } catch (e) { /* fall through to the constructor */ }
+  }
+  try { new Notification(title, opts); } catch (e) { /* desktop fallback only */ }
+}
+
+/* ---- feed ---- */
+function updateNotifyBadge() {
+  const b = $('#nav-notify-badge');
+  if (!b) return;
+  const n = Number(state.notifyUnread) || 0;
+  if (n > 0) {
+    b.textContent = n > 99 ? '99+' : String(n);
+    b.classList.remove('hidden');
+  } else {
+    b.classList.add('hidden');
+  }
+}
+function notifCard(n) {
+  return '<button type="button" class="nt-card' + (n.read ? '' : ' unread') +
+    '" data-notif-id="' + Number(n.id) + '"' +
+    (n.url ? ' data-notif-url="' + esc(n.url) + '"' : '') + '>' +
+    '<span class="nt-dot" aria-hidden="true"></span>' +
+    '<span class="nt-body">' +
+      '<span class="nt-title">' + esc(n.title || '') + '</span>' +
+      (n.body ? '<span class="nt-text">' + esc(n.body) + '</span>' : '') +
+      '<span class="nt-meta">' + esc(n.kind || '') +
+        (n.camera ? ' \u00b7 ' + esc(n.camera) : '') +
+        ' \u00b7 ' + esc(fmtDT(n.created_at)) + '</span>' +
+    '</span>' +
+  '</button>';
+}
+function renderNotifications() {
+  const box = $('#nt-list');
+  if (!box) return;
+  const items = state.notifications || [];
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">No notifications yet.</div>';
+    return;
+  }
+  box.innerHTML = items.map(notifCard).join('');
+}
+async function refreshNotifications() {
+  const adm = $('#nt-admin');
+  if (adm) adm.classList.toggle('hidden', !isAdmin());
+  let data;
+  try { data = await api('/api/notifications?limit=' + NOTIFY_PAGE); }
+  catch (e) { return; }
+  state.notifications = data.items || [];
+  state.notifyUnread = Number(data.unread) || 0;
+  // Baseline the poller on the FIRST load so the existing backlog is NOT
+  // re-raised as a burst of OS notifications.
+  const latest = Number(data.latest_id) || 0;
+  state.lastNotifiedId = state.lastNotifiedId == null
+    ? latest : Math.max(state.lastNotifiedId, latest);
+  updateNotifyBadge();
+  renderNotifications();
+}
+async function pollNotifications() {
+  if (!notificationGranted()) return;
+  let data;
+  try {
+    data = await api('/api/notifications?after_id=' +
+      encodeURIComponent(state.lastNotifiedId == null ? 0 : state.lastNotifiedId));
+  } catch (e) { return; }
+  const items = data.items || [];
+  if (items.length) {
+    state.lastNotifiedId = Math.max(
+      state.lastNotifiedId || 0, Number(data.latest_id) || 0);
+    items.forEach(showBrowserNotification);   // one OS alert per new item
+    state.notifications = items.slice().reverse()
+      .concat(state.notifications || []).slice(0, NOTIFY_PAGE);
+  }
+  state.notifyUnread = Number(data.unread) || 0;
+  updateNotifyBadge();
+  if (items.length) renderNotifications();
+}
+function initNotifications() {
+  registerNotifyWorker();
+  refreshNotifications();
+  if (notifyTimer) clearInterval(notifyTimer);
+  notifyTimer = setInterval(() => {
+    if (!document.hidden) pollNotifications();
+  }, NOTIFY_POLL_MS);
+}
+function loadNotifications() { return refreshNotifications(); }
+
+async function markNotifications(ids, all) {
+  return api('/api/notifications/read', {
+    method: 'POST',
+    body: all ? { all: true } : { ids: ids },
+  });
+}
+$('#nt-refresh').addEventListener('click', refreshNotifications);
+$('#nt-readall').addEventListener('click', async () => {
+  try {
+    const r = await markNotifications([], true);
+    state.notifyUnread = Number(r.unread) || 0;
+  } catch (e) { /* leave the badge as-is */ }
+  (state.notifications || []).forEach(n => { n.read = true; });
+  updateNotifyBadge();
+  renderNotifications();
+});
+$('#nt-list').addEventListener('click', async (e) => {
+  const card = e.target.closest('.nt-card');
+  if (!card) return;
+  const id = Number(card.dataset.notifId);
+  try {
+    const r = await markNotifications([id], false);
+    state.notifyUnread = Number(r.unread) || 0;
+  } catch (e) { /* ignore */ }
+  const item = (state.notifications || []).find(n => Number(n.id) === id);
+  if (item) item.read = true;
+  card.classList.remove('unread');
+  updateNotifyBadge();
+  const url = card.dataset.notifUrl || '';
+  if (url && url !== location.hash) location.hash = url;
+});
+$('#nt-pub').addEventListener('click', async () => {
+  const msg = $('#nt-msg');
+  const title = ($('#nt-pub-title').value || '').trim();
+  if (!title) { msg.textContent = 'Title is required.'; return; }
+  msg.textContent = '';
+  const btn = $('#nt-pub');
+  btn.disabled = true;
+  try {
+    await api('/api/admin/notifications', { method: 'POST', body: {
+      title: title,
+      body: ($('#nt-pub-body').value || '').trim(),
+      url: '#/notifications',
+    }});
+    $('#nt-pub-title').value = '';
+    $('#nt-pub-body').value = '';
+    msg.textContent = 'Published.';
+    await pollNotifications();      // surface it immediately as an OS alert
+    await refreshNotifications();
+  } catch (e) {
+    msg.textContent = 'Could not publish: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ---------------- boot / router ---------------- */
 async function boot() {
   try {
@@ -270,6 +554,18 @@ async function boot() {
   // Nav visibility: the admin-only Debug/Manage links, plus each `tab_*` a
   // non-admin was granted (empty = none). The server remains the real gate.
   applyNavPermissions();
+  // The app REQUIRES notification access to run. Until the browser Notification
+  // permission is GRANTED the dashboard stays hidden behind the gate, whose
+  // buttons call continueBoot() once it is allowed.
+  if (!notificationGranted()) { showNotifyGate(); return; }
+  await continueBoot();
+}
+
+/* Everything AFTER the notification access gate. Guarded by state.booted so
+   granting permission in the gate can never start the app twice. */
+async function continueBoot() {
+  if (state.booted) return;
+  state.booted = true;
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
@@ -286,6 +582,7 @@ async function boot() {
   loadUsageSelf();     // footer/nav self-view (non-blocking)
   await loadCameras();
   initInstallPrompt(); // PWA install UI (no-op unless Chrome offers it)
+  initNotifications(); // notification feed polling + browser alerts + badge
   window.addEventListener('hashchange', onRoute);
   onRoute();
   // Keep the self-view roughly current while the tab is visible (a tiny JSON).
@@ -296,7 +593,7 @@ function onRoute() {
   setNavOpen(false);   // a route change always dismisses the collapsed menu
   const raw = (location.hash || '#/live').replace(/^#\//, '');
   const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes',
-                 'debug', 'manage', 'user'];
+                 'notifications', 'debug', 'manage', 'user'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
   if (raw === 'usage') view = 'user';   // the Usage tab was removed
   // Debug/Manage are admin-only, and a non-admin who lands on a tab they were
@@ -318,6 +615,7 @@ function onRoute() {
   else if (view === 'episodes') reloadEpisodes();  // page-based: reset to page 1
   else if (view === 'adaptive') reloadAdaptiveScenes();  // page-based: reset to page 1
   else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
+  else if (view === 'notifications') loadNotifications();  // refresh the feed
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
   else if (view === 'manage') loadManage(); // admin: users + tab_* permissions
   else if (view === 'user') loadUserView(); // account tab (usage embedded)
@@ -2621,7 +2919,7 @@ async function loadAllUsage() {
    container restart. Keep TABS in sync with AVAILABLE_TABS in userstore.py. */
 const TABS = [['live', 'Live'], ['events', 'Events'], ['fire', 'Fire alerts'],
               ['episodes', 'Episodes'], ['adaptive', 'Scenes'],
-              ['scenes', 'Scene log']];
+              ['scenes', 'Scene log'], ['notifications', 'Notifications']];
 const USER_VIEWS = TABS.map(t => t[0]);
 function tabKey(v) { return 'tab_' + v; }
 

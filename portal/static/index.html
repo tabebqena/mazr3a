@@ -70,6 +70,13 @@
              (from each object's own Frigate trajectory). -->
         <a data-view="adaptive" href="#/adaptive">Scenes</a>
         <a data-view="scenes" href="#/scenes">Scene log</a>
+        <!-- Notifications: the portal's own feed (new Firewatch fire alerts +
+             admin system messages) with an unread badge (#nav-notify-badge).
+             Grantable like the other tabs (tab_notifications). The app also
+             REQUIRES the browser Notification permission to run - see the
+             #notify-gate overlay, shown by app.js when it is not granted. -->
+        <a data-view="notifications" href="#/notifications">Notifications<span
+             id="nav-notify-badge" class="nav-badge hidden"></span></a>
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
@@ -404,6 +411,37 @@
         </div>
       </section>
 
+      <!-- Notifications tab: the portal's own notification feed
+           (portal/notifstore.py). New Firewatch fire alerts are recorded by a
+           portal background watcher; an admin can also publish a system message
+           (the admin-only publish row below). New items also raise a real
+           browser/OS notification (app.js polls the feed and calls the
+           notification-only service worker /sw.js; there is no Web Push).
+           Opening this tab / clicking a card / "Mark all read" advances the
+           per-user read marker. -->
+      <section id="view-notifications" class="view hidden">
+        <div class="controls">
+          <button id="nt-refresh" type="button"
+                  title="Reload notifications">Refresh</button>
+          <button id="nt-readall" type="button" class="ghost"
+                  title="Mark every notification as read">Mark all read</button>
+        </div>
+        <!-- Admin-only publish row (revealed by app.js for admins). -->
+        <div id="nt-admin" class="controls nt-pub hidden">
+          <label>Title
+            <input id="nt-pub-title" maxlength="120" autocomplete="off"
+                   placeholder="System message">
+          </label>
+          <label>Message
+            <input id="nt-pub-body" maxlength="500" autocomplete="off"
+                   placeholder="optional">
+          </label>
+          <button id="nt-pub" type="button">Publish</button>
+        </div>
+        <div id="nt-msg" class="status"></div>
+        <div id="nt-list" class="nt-list"></div>
+      </section>
+
       <!-- Admin-only Debug: last log messages of containers. Pulled on demand
            from the read-only `logs` sidecar when this tab opens (the sidecar
            stays idle; there is no polling). Visible only to admin.
@@ -672,6 +710,24 @@
     <button id="install-banner-go" class="install-go" type="button">Install</button>
     <button id="install-banner-x" class="install-x" type="button"
             aria-label="Dismiss">&times;</button>
+  </div>
+
+  <!-- Notification access gate. The portal REQUIRES the browser Notification
+       permission to run: app.js shows this full-screen card (and hides #app)
+       when permission is not granted, with an Enable button (a real user
+       gesture - required by Chrome/iOS) or, when permission is BLOCKED, the
+       exact steps to allow it plus a Retry button. Content is filled by
+       app.js (notifyGateInstructions). -->
+  <div id="notify-gate" class="notify-gate hidden" role="dialog"
+       aria-modal="true" aria-label="Notification permission required">
+    <div class="notify-gate-card">
+      <div class="notify-gate-icon" aria-hidden="true">&#128276;</div>
+      <h1 id="nt-gate-title">Notifications required</h1>
+      <p id="nt-gate-msg" class="sub"></p>
+      <div id="nt-gate-steps" class="notify-steps"></div>
+      <button id="nt-gate-btn" type="button">Enable notifications</button>
+      <button id="nt-gate-retry" type="button" class="ghost hidden">Retry</button>
+    </div>
   </div>
 
   <div id="global-err" class="toast hidden"></div>

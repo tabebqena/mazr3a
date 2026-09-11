@@ -193,6 +193,61 @@ def list_frames(db_path, *, camera=None, alerted=None, label=None,
         conn.close()
 
 
+def max_alerted_id(db_path):
+    """Highest `alerted=1` frame id, or 0 (missing DB / no alerts).
+
+    Used by the portal's notification watcher to BASELINE on first run so a
+    fresh install never notifies the whole historical alert backlog.
+    """
+    if not db_path or not os.path.exists(db_path):
+        return 0
+    try:
+        conn = open_db(db_path)
+    except sqlite3.Error:
+        return 0
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM frames WHERE alerted = 1"
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+def alerted_since(db_path, after_id, limit=50):
+    """Alerted evidence frames with id > `after_id`, ASCENDING (oldest first).
+
+    The portal's notification watcher calls this each poll and records one
+    notification per row (dedup_key `fire:<id>`), then advances its high-water
+    mark. Read-only: this module never writes the firewatch DB.
+    """
+    if not db_path or not os.path.exists(db_path):
+        return []
+    try:
+        conn = open_db(db_path)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT id, camera, captured_at, ts_utc, best_score FROM frames "
+            "WHERE alerted = 1 AND id > ? ORDER BY id ASC LIMIT ?",
+            (int(after_id), max(1, min(int(limit), 200))),
+        ).fetchall()
+        return [{
+            "id": row["id"],
+            "camera": row["camera"],
+            "captured_at": _num(row["captured_at"]),
+            "ts_utc": row["ts_utc"],
+            "best_score": _num(row["best_score"]),
+        } for row in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def frame_image_path(cfg, db_path, frame_id):
     """Resolve a stored evidence JPEG to this container's path (or None)."""
     if not db_path or not os.path.exists(db_path):

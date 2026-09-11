@@ -1,5 +1,13 @@
 # portal cache-busting (versioning + fingerprinted static assets)
 
+> **Exception — `/sw.js` (notification-only service worker).** The portal now
+> ships one service worker at the STABLE, unfingerprinted URL `/sw.js` (served
+> `Cache-Control: no-cache` by `portal/app.py`). A service worker registration
+> REQUIRES a stable URL: a hashed URL would register a NEW worker on every
+> release and break the update flow, so fingerprinting it is actively wrong.
+> `/sw.js` has NO `fetch`/cache handler, so it cannot serve or shadow any asset
+> and is otherwise outside this policy. See `plans/portal-notifications.md`.
+
 The portal SPA (`portal/`) shows a STALE cached version when browsers cache the
 JS/CSS under an unchanged URL. Enforced policy below, implemented in
 `portal/app.py` (`_build_asset_manifest` / `static_asset`) and `portal/static/index.html`.

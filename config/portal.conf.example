@@ -71,6 +71,28 @@ DEFAULT_CAMERA=cam01
 PORTAL_USAGE_DB=/media/portal/usage.db
 USAGE_RETENTION_DAYS=180
 
+# ------------------------------------------------------------------
+# Notifications (portal/notifstore.py). The portal keeps its OWN global
+# notification timeline under the same rw ./media mount: a background watcher
+# records one item per NEW Firewatch fire alert (polled every NOTIFY_POLL_S
+# seconds) and an admin can publish a system message from the Notifications
+# tab. Every signed-in user also sees the feed with a per-user unread marker;
+# the SPA raises a real browser/OS notification for each NEW item.
+#
+# The portal REQUIRES the browser Notification permission to run: if it is not
+# granted, the SPA shows a gate page explaining how to allow it. That is a
+# browser-side permission - there is nothing to configure here.
+#
+# PORTAL_NOTIF_DB      - SQLite path (in the portal container); the dir is
+#                        created on demand, like the usage/users DBs.
+# NOTIFY_POLL_S        - watcher cadence (seconds) for new Firewatch alerts.
+# NOTIFY_RETENTION_DAYS- history kept; rows older than this are pruned in-app
+#                        (the host disk heartbeat hard-protects *.db).
+# ------------------------------------------------------------------
+PORTAL_NOTIF_DB=/media/portal/notifications.db
+NOTIFY_POLL_S=30
+NOTIFY_RETENTION_DAYS=90
+
 # Frigate REST API base (compose service name inside the network). Only
 # reached server-side; Frigate is never exposed to browsers directly.
 FRIGATE_API=http://frigate:5000

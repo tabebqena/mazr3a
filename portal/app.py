@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import hashlib
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -21,7 +22,8 @@ from fastapi.responses import (
 )
 
 from portal import (
-    auth, config as pconf, eventstore, firestore, frigate, usage, userstore,
+    auth, config as pconf, eventstore, firestore, frigate, notifstore, usage,
+    userstore,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -39,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.11.0"
 _HTMX = None
 
 
@@ -80,6 +82,19 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: usage store unavailable ({exc}) - "
               "bandwidth will not be persisted")
     usage_task = asyncio.create_task(app.state.usage.run())
+    # Notification feed (portal/notifstore.py): the portal OWNS this DB too. It
+    # holds the notification timeline + per-user read markers; a background
+    # watcher (below) turns NEW Firewatch alerts into feed items. An unusable
+    # path degrades to a warning - login/playback never depend on notifications.
+    app.state.notifications = notifstore.NotificationStore(
+        pconf.get(cfg, "PORTAL_NOTIF_DB", "/media/portal/notifications.db"),
+        retention_days=pconf.geti(cfg, "NOTIFY_RETENTION_DAYS", 90))
+    try:
+        app.state.notifications.configure()
+    except Exception as exc:
+        print(f"WARNING: notification store unavailable ({exc}) - "
+              "the notification feed will be empty")
+    notif_task = asyncio.create_task(_notification_watcher(app))
     if not app.state.secret:
         print("WARNING: portal.conf SECRET_KEY is empty - sessions will not work")
     if not app.state.users_store.count():
@@ -88,6 +103,9 @@ async def lifespan(app: FastAPI):
     usage_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await usage_task
+    notif_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await notif_task
     app.state.usage.flush()
     await app.state.client.aclose()
 
@@ -329,6 +347,25 @@ async def apple_touch_icon():
         STATIC_DIR / "icons/apple-touch-icon.png",
         media_type="image/png",
         headers={"Cache-Control": "no-cache"},
+    )
+
+
+# Notification-only service worker (portal/static/sw.js). Android Chrome cannot
+# construct `new Notification()` (it throws `Illegal constructor`), so browser
+# notifications MUST go through ServiceWorkerRegistration.showNotification().
+# The worker only handles `notificationclick` (focus/open the SPA deep link) and
+# has NO fetch/cache handler, so it cannot influence asset caching or the
+# fingerprint policy. Deliberately NOT fingerprinted: a service worker
+# registration needs a STABLE URL (a hashed URL would register a new worker on
+# every release and break the update flow); served no-cache so a change is seen
+# on the next update check. See plans/portal-notifications.md and
+# .roo/rules/portal-cache-busting.md.
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
     )
 
 
@@ -951,6 +988,131 @@ async def my_usage(request: Request, user: dict = Depends(current_user)):
 async def admin_usage(request: Request, admin: dict = Depends(current_admin)):
     """Every user's bandwidth breakdown, biggest consumer first (admin only)."""
     return request.app.state.usage.all_users()
+
+
+# --------------------------------------------------------------------------
+# Notifications - the portal's own feed (portal/notifstore.py).
+#
+# The feed is a GLOBAL timeline; only the READ position is per-user. New items
+# are raised by the SPA as browser notifications (it polls ?after_id=). The
+# watcher below fills the feed from NEW Firewatch alerts; an admin can also
+# publish a system message. See plans/portal-notifications.md.
+# --------------------------------------------------------------------------
+@app.get("/api/notifications")
+async def notifications_list(request: Request,
+                             user: dict = Depends(current_user),
+                             limit: int = 50, offset: int = 0,
+                             after_id: Optional[int] = None):
+    """The caller's notification feed.
+
+    Without `after_id`: the newest-first PAGE for the Notifications tab.
+    With `after_id`: only the NEWER items, ASCENDING - the client poller uses
+    this to raise one browser notification per new item. Both shapes carry
+    `unread`, `total` and `latest_id`.
+    """
+    return request.app.state.notifications.list_for(
+        user["username"], limit=limit, offset=offset, after_id=after_id)
+
+
+@app.post("/api/notifications/read")
+async def notifications_read(request: Request,
+                             user: dict = Depends(current_user)):
+    """Mark notifications read: `{ids:[...]}` or `{all:true}` -> `{unread}`."""
+    body = await request.json()
+    store = request.app.state.notifications
+    if body.get("all"):
+        return {"unread": store.mark_all_read(user["username"])}
+    return {"unread": store.mark_read(user["username"], body.get("ids") or [])}
+
+
+@app.post("/api/admin/notifications")
+async def admin_publish_notification(request: Request,
+                                     admin: dict = Depends(current_admin)):
+    """Publish a SYSTEM notification (admin only)."""
+    body = await request.json()
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    item = request.app.state.notifications.add(
+        kind=str(body.get("kind") or "system"),
+        title=title,
+        body=str(body.get("body") or ""),
+        url=str(body.get("url") or "") or "#/notifications",
+        camera=str(body.get("camera") or ""))
+    if item is None:
+        raise HTTPException(status_code=503,
+                            detail="could not store notification")
+    return item
+
+
+# --------------------------------------------------------------------------
+# Notification ingestion - Firewatch fire alerts -> the portal feed.
+#
+# The portal already reads the firewatch evidence DB (firestore.py, read-only).
+# This watcher polls it for NEW `alerted=1` frames and records one notification
+# each (dedup_key `fire:<id>`) so the SPA can raise a browser notification and
+# the Notifications tab keeps the history. The high-water frame id lives in the
+# notifstore meta table; the FIRST run BASELINES to the current max so a fresh
+# install never notifies the whole historical alert backlog.
+# --------------------------------------------------------------------------
+def _scan_fire_alerts(store, db):
+    raw = store.get_meta("fire_last_frame_id")
+    if raw is None:
+        store.set_meta("fire_last_frame_id", str(firestore.max_alerted_id(db)))
+        return
+    try:
+        last = int(raw)
+    except (TypeError, ValueError):
+        last = 0
+    rows = firestore.alerted_since(db, last, limit=50)
+    if not rows:
+        return
+    newest = last
+    for row in rows:
+        try:
+            stamp = float(row.get("captured_at") or 0)
+        except (TypeError, ValueError):
+            stamp = 0.0
+        # One alert per CAMERA per 3-minute burst. firewatch stores a dense run
+        # of follow-up samples for a single incident, so keying on the frame id
+        # alone would spam the user with one notification per sample; the
+        # partial unique index on dedup_key turns repeats into no-ops.
+        bucket = int(stamp // 180) if stamp else 0
+        shown = str(row.get("ts_utc") or "")
+        body = "score {:.2f}".format(float(row.get("best_score") or 0))
+        if shown:
+            body += " \u00b7 " + shown
+        store.add("fire",
+                  title="Fire alert - " + (row.get("camera") or "camera"),
+                  body=body,
+                  url="#/fire",
+                  camera=row.get("camera") or "",
+                  dedup_key="fire:%s:%d" % (row.get("camera") or "", bucket),
+                  created_at=stamp or None)
+        try:
+            newest = max(newest, int(row.get("id") or 0))
+        except (TypeError, ValueError):
+            pass
+    store.set_meta("fire_last_frame_id", str(newest))
+
+
+async def _notification_watcher(app: FastAPI):
+    """Poll the firewatch DB for new alerts; prune the feed once a day."""
+    interval = max(5, pconf.geti(app.state.cfg, "NOTIFY_POLL_S", 30))
+    last_prune = 0.0
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            db = pconf.get(app.state.cfg, "FIREWATCH_DB", "/media/firewatch.db")
+            _scan_fire_alerts(app.state.notifications, db)
+            now = time.time()
+            if now - last_prune >= 86400:
+                last_prune = now
+                app.state.notifications.prune()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------

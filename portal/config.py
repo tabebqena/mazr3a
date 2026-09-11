@@ -21,6 +21,15 @@ DEFAULTS = {
     # userstore.py) so add/edit/delete applies with NO container restart. The
     # `user` lines in portal.conf are only a first-run SEED (see parse_file).
     "PORTAL_USERS_DB": "/media/portal/users.db",
+    # Notification feed (portal/notifstore.py) - the portal's OWN DB under the
+    # same rw ./media mount, holding the notification timeline + per-user read
+    # markers. The background watcher records one notification per NEW Firewatch
+    # alert (NOTIFY_POLL_S cadence) and rows are pruned in-app to
+    # NOTIFY_RETENTION_DAYS (the host heartbeat hard-protects *.db, so it can
+    # never prune rows for us).
+    "PORTAL_NOTIF_DB": "/media/portal/notifications.db",
+    "NOTIFY_POLL_S": "30",            # fire-alert -> notification watcher cadence
+    "NOTIFY_RETENTION_DAYS": "90",    # notification history kept (in-app prune)
     "SESSION_DAYS": "7",              # cookie lifetime in days
     "COOKIE_SECURE": "true",          # Secure flag on the session cookie
     "STREAM_IDLE_TIMEOUT_S": "300",   # live-view idle time watch default

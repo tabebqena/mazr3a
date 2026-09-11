@@ -606,7 +606,9 @@ function onRoute() {
   // harmless in every other layout/view.
   document.body.classList.toggle('events-full', view === 'events');
   if (view !== 'live') stopStream();           // only the Live view streams
-  if (view !== 'events') evTeardown();         // release the Events player
+  // Leaving Events: release the player AND drop stage fullscreen. A filter /
+  // camera change INSIDE Events keeps fullscreen (it also calls evTeardown).
+  if (view !== 'events') { evTeardown(); evExitFullscreen(); }
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
   VIEWS.forEach(v => $('#view-' + v).classList.toggle('hidden', v !== view));
   if (view === 'live') ensureLive();
@@ -649,12 +651,13 @@ function refreshCamSelects() {
     return '<option value="' + esc(n) + '">' + esc(n) + tag + '</option>';
   }).join('');
   const all = '<option value="">all cameras</option>' + opts;
-  ['#ev-cam', '#fw-cam', '#sc-cam', '#ep-cam', '#as-cam'].forEach(id => {
+  ['#ev-cam', '#ev-fs-cam', '#fw-cam', '#sc-cam', '#ep-cam', '#as-cam'].forEach(id => {
     const sel = $(id);
     const prev = sel.value;
     sel.innerHTML = all;
     if (prev && $$('option', sel).some(o => o.value === prev)) sel.value = prev;
   });
+  syncEvFsCam();   // the fullscreen select mirrors the filter bar's #ev-cam
 }
 
 /* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
@@ -1851,12 +1854,19 @@ function loadEventsPrefs() {
     const lab = localStorage.getItem(EV_STORE.label);
     if (lab != null) $('#ev-label').value = lab;
   } catch (e) { /* localStorage unavailable - filters just stay at defaults */ }
+  syncEvFsCam();
 }
 function saveEvCam() {
   try { localStorage.setItem(EV_STORE.cam, $('#ev-cam').value); } catch (e) { /* ignore */ }
 }
 function saveEvLabel() {
   try { localStorage.setItem(EV_STORE.label, $('#ev-label').value.trim()); } catch (e) { /* ignore */ }
+}
+/* The fullscreen camera <select> (#ev-fs-cam) mirrors the filter bar's #ev-cam; it
+   is only VISIBLE in fullscreen (CSS). Either one can drive the other. */
+function syncEvFsCam() {
+  const a = $('#ev-cam'), b = $('#ev-fs-cam');
+  if (a && b) b.value = a.value;
 }
 
 /* ---- idle stop: 60 s without USER interaction stops the playlist ----
@@ -1994,7 +2004,9 @@ function markEvActive() {
 // Stop the player and drop the selection (leaving the tab / changing filters).
 function evTeardown() {
   clearEvIdle();
-  evExitFullscreen();          // leaving the player: drop any stage fullscreen
+  // A filter / camera change also lands here and MUST keep fullscreen (onRoute
+  // exits it when LEAVING the tab). Restore the clip sheet only when windowed.
+  if (!evStageFullscreen()) evUnmountFsClips();
   hideEvOverlay();
   hideEvCenter();
   evPlaylist = false;
@@ -2014,7 +2026,15 @@ function evTeardown() {
 }
 
 $('#ev-refresh').addEventListener('click', loadEvents);
-$('#ev-cam').addEventListener('change', () => { saveEvCam(); loadEvents(); });
+$('#ev-cam').addEventListener('change', () => { saveEvCam(); syncEvFsCam(); loadEvents(); });
+// Fullscreen camera switch: drive #ev-cam (the single source for loadEvents) and
+// reload WITHOUT leaving fullscreen.
+$('#ev-fs-cam').addEventListener('change', () => {
+  const a = $('#ev-cam');
+  if (a) a.value = $('#ev-fs-cam').value;
+  saveEvCam();
+  loadEvents();
+});
 $('#ev-label').addEventListener('change', () => { saveEvLabel(); loadEvents(); });
 wireTimeControls('ev', loadEvents, '24h');   // default = Last 24 hours
 $('#ev-playlist').addEventListener('click', toggleEvPlaylist);
@@ -2056,12 +2076,43 @@ function evToggleFullscreen() {
   try { const p = req.call(stage); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
 }
 $('#ev-fs').addEventListener('click', evToggleFullscreen);
-// Keep the button in sync, and bail OUT of any stray <video> fullscreen (a
-// browser without controlslist, or a double-click Chrome maps to video
-// fullscreen) so the Resume overlay can never end up hidden behind it.
+
+/* In fullscreen the clip list is MOVED inside #ev-stage so it overlays the video
+   (CSS renders it as a bottom sheet). evClipsHome remembers where to put it back.
+   The sheet follows the SAME collapse state as the phone "Clips" toggle: hidden
+   while a clip PLAYS ("hide on running"), shown again when it stops ("show on
+   stop"). A tap on the video toggles it too (see the #ev-stage click handler). */
+var evClipsHome = null;   // { parent, next } while #ev-clips is overlaid in fullscreen
+function evMountFsClips() {
+  const clips = $('#ev-clips'), stage = $('#ev-stage');
+  if (!clips || !stage || clips.parentElement === stage) return;
+  evClipsHome = { parent: clips.parentElement, next: clips.nextSibling };
+  stage.appendChild(clips);
+  hideEvCenter();        // taps now toggle the sheet, not the center glyph
+  syncEvFsCam();         // make sure the sheet's camera select is current
+  const playing = evPlayingNow();
+  evClipsAuto = playing;   // WE collapsed it -> the theater logic re-opens on stop
+  setEvClipsCollapsed(playing);   // open when stopped, closed while playing
+}
+function evUnmountFsClips() {
+  const clips = $('#ev-clips');
+  if (!clips || !evClipsHome) return;
+  const home = evClipsHome;
+  evClipsHome = null;
+  if (home.next && home.next.parentElement === home.parent) {
+    home.parent.insertBefore(clips, home.next);
+  } else {
+    home.parent.appendChild(clips);
+  }
+}
+// Keep the button in sync; bail OUT of any stray <video> fullscreen (a browser
+// without controlslist, or a double-click Chrome maps to video fullscreen) so the
+// Resume overlay can never end up hidden behind it; and move the clip sheet
+// in/out of the stage with the fullscreen state.
 ['fullscreenchange', 'webkitfullscreenchange'].forEach(evt =>
   document.addEventListener(evt, () => {
     if (evFsElement() === $('#ev-video')) evExitFullscreen();
+    if (evStageFullscreen()) evMountFsClips(); else evUnmountFsClips();
     syncEvFs();
   }));
 syncEvFs();
@@ -2148,12 +2199,19 @@ $('#ev-center').addEventListener('click', (e) => {
   hideEvCenter();
 });
 $('#ev-stage').addEventListener('click', (e) => {
-  if (e.target.closest('button, .ev-now-bar, .ev-overlay')) return;
+  // Ignore taps on the controls, the idle overlay and the fullscreen clip sheet.
+  if (e.target.closest('button, .ev-now-bar, .ev-overlay, .ev-clips')) return;
   const v = $('#ev-video');
   if (!v || !v.currentSrc) return;                 // nothing loaded to control
   const stage = $('#ev-stage');
   const r = stage.getBoundingClientRect();
   if (e.clientY > r.bottom - 48) return;           // native controls strip
+  if (evStageFullscreen()) {
+    // Fullscreen: a tap shows/hides the clip sheet (mirrors the "Clips" button).
+    evClipsAuto = false;
+    setEvClipsCollapsed(!document.body.classList.contains('ev-clips-collapsed'));
+    return;
+  }
   toggleEvCenter();
 });
 ['play', 'pause', 'ended'].forEach(evt => $('#ev-video').addEventListener(evt, () => {

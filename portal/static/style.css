@@ -540,6 +540,17 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
   width: 100%; height: 100%; object-fit: contain;
 }
 
+/* Fullscreen-only camera switch in the caption bar (mirrors the filter bar's
+   #ev-cam; hidden while windowed, where that filter select is on screen). */
+.ev-now-bar #ev-fs-cam {
+  display: none;
+  pointer-events: auto; flex: 0 0 auto;
+  width: auto; min-width: 0; max-width: 42vw;
+  min-height: 32px; padding: 0 8px; font-size: 12px;
+}
+.ev-stage:fullscreen .ev-now-bar #ev-fs-cam,
+.ev-stage:-webkit-full-screen .ev-now-bar #ev-fs-cam { display: block; }
+
 /* Idle-stop overlay (mirrors the Live #live-overlay). */
 .ev-overlay {
   position: absolute; inset: 0; z-index: 4;
@@ -1391,3 +1402,60 @@ table.user-table tr.active { background: rgba(53,194,111,.10); }
 @media (min-width: 640px) and (min-height: 560px) {
   .user-grid { grid-template-columns: 190px minmax(0, 1fr); }
 }
+
+/* ================= Events fullscreen clip sheet =================
+   While #ev-stage is fullscreen, app.js MOVES #ev-clips inside it so the clip
+   list overlays the video as a bottom sheet: the "Clips" header stays reachable,
+   the strip hides WHILE PLAYING ("hide on running") and returns when the clip
+   stops ("show on stop"); a tap on the video toggles it too. These rules sit at
+   the END of the sheet and use #ev-stage (an id) so they beat the phone-landscape
+   grid + the large-screen rules above regardless of the viewport. Keep
+   :fullscreen and :-webkit-full-screen in sync.
+   See plans/portal-events-stage-fullscreen.md. */
+#ev-stage:fullscreen .ev-clips,
+#ev-stage:-webkit-full-screen .ev-clips {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  display: flex; flex-direction: column;
+  height: auto; min-height: 0; max-height: 46%;
+  margin: 0; padding: 6px 10px 10px;
+  background: linear-gradient(transparent, rgba(0,0,0,.88) 34%);
+  overflow: hidden;
+}
+#ev-stage:fullscreen .ev-clips-head,
+#ev-stage:-webkit-full-screen .ev-clips-head {
+  flex-direction: row; flex-wrap: wrap; align-items: center;
+  gap: 8px; margin: 0; flex: 0 0 auto;
+}
+#ev-stage:fullscreen .ev-clips-count,
+#ev-stage:-webkit-full-screen .ev-clips-count { text-align: left; white-space: nowrap; }
+#ev-stage:fullscreen .ev-clips-toggle,
+#ev-stage:-webkit-full-screen .ev-clips-toggle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: auto; width: auto; min-height: 32px; padding: 4px 12px; font-size: 12px;
+}
+#ev-stage:fullscreen .ev-clips-toggle .ev-clips-name,
+#ev-stage:-webkit-full-screen .ev-clips-toggle .ev-clips-name { display: inline; }
+/* The strip stays HORIZONTAL in the sheet (the landscape column layout above is
+   for the windowed 3-column view, not the fullscreen overlay). */
+#ev-stage:fullscreen .ev-strip,
+#ev-stage:-webkit-full-screen .ev-strip {
+  display: flex; flex-direction: row; flex-wrap: nowrap;
+  margin-top: 6px; padding: 2px 2px 6px; min-height: 0;
+  overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+#ev-stage:fullscreen .ev-strip .ev-clip,
+#ev-stage:-webkit-full-screen .ev-strip .ev-clip { width: 150px; }
+#ev-stage:fullscreen .ev-loadmore,
+#ev-stage:-webkit-full-screen .ev-loadmore {
+  width: auto; min-width: 132px; align-self: center; margin: 4px 6px;
+}
+#ev-stage:fullscreen .ev-end,
+#ev-stage:-webkit-full-screen .ev-end {
+  width: auto; align-self: center; margin: 4px 6px;
+}
+/* Collapsed = the strip hides; the header (Clips toggle + count) stays so the
+   sheet can always be reopened by tapping "Clips" or the video. */
+body.ev-clips-collapsed #ev-stage:fullscreen .ev-strip,
+body.ev-clips-collapsed #ev-stage:-webkit-full-screen .ev-strip { display: none; }

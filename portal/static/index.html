@@ -251,6 +251,11 @@
           <button id="ev-center" class="vid-center hidden" type="button"
                   aria-label="Play or pause the clip"></button>
           <div class="ev-now-bar">
+            <!-- Fullscreen-only camera switch: mirrors the filter bar's #ev-cam so
+                 the camera can be changed WITHOUT leaving fullscreen (hidden in the
+                 windowed layout, where the filter bar's own select is on screen). -->
+            <select id="ev-fs-cam" class="ev-fs-cam" aria-label="Camera"
+                    title="Camera"></select>
             <span id="ev-now" class="ev-now"></span>
             <!-- Playlist switch: when ON, the next clip starts automatically as
                  soon as the current one ends. Disabled with no playable clip. -->

@@ -1575,6 +1575,7 @@ function evTeardown() {
   evPlaylist = false;
   evPlaylistResume = false;
   evSelIdx = -1;
+  if (evClipsAuto) { evClipsAuto = false; setEvClipsCollapsed(false); }
   const v = $('#ev-video');
   if (v) {
     try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* ignore */ }
@@ -1592,13 +1593,39 @@ $('#ev-label').addEventListener('change', () => { saveEvLabel(); loadEvents(); }
 wireTimeControls('ev', loadEvents, '24h');   // default = Last 24 hours
 $('#ev-playlist').addEventListener('click', toggleEvPlaylist);
 $('#ev-overlay-resume').addEventListener('click', resumeEvPlayback);
-// Collapse / expand the clip THUMBNAILS (the named hamburger). Only meaningful
-// in the phone-landscape 3-column layout; the CSS shows the button only there
-// and body.ev-clips-collapsed shrinks the clips column to a slim handle.
+// Collapse / expand the clip THUMBNAILS (the named "Clips" hamburger). Shown on
+// phones in BOTH orientations: collapsing hides the strip so the frame gets the
+// vertical space; in landscape it also shrinks the column to a slim handle.
+// Hidden on tablet/desktop (CSS), where the strip is always visible.
+let evClipsAuto = false;   // true while WE collapsed it for playback (theater)
+function setEvClipsCollapsed(collapsed) {
+  document.body.classList.toggle('ev-clips-collapsed', !!collapsed);
+  const t = $('#ev-clips-toggle');
+  if (t) t.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+// The toggle only exists in the phone layouts; offsetParent is null when the
+// button is display:none (tablet/desktop), so auto-collapse stays scoped there.
+function evClipsToggleVisible() {
+  const t = $('#ev-clips-toggle');
+  return !!t && t.offsetParent !== null;
+}
 $('#ev-clips-toggle').addEventListener('click', () => {
-  const collapsed = document.body.classList.toggle('ev-clips-collapsed');
-  $('#ev-clips-toggle').setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  evClipsAuto = false;   // a manual toggle wins until the next play
+  setEvClipsCollapsed(!document.body.classList.contains('ev-clips-collapsed'));
 });
+// Theater behaviour (all layouts with the toggle): when a clip PLAYS, collapse
+// the thumbnails; restore them when it STOPS (pause / ended). Only if WE
+// collapsed it - a manual choice is respected.
+$('#ev-video').addEventListener('play', () => {
+  if (!evClipsToggleVisible()) return;
+  if (!document.body.classList.contains('ev-clips-collapsed')) {
+    evClipsAuto = true;
+    setEvClipsCollapsed(true);
+  }
+});
+['pause', 'ended'].forEach(evt => $('#ev-video').addEventListener(evt, () => {
+  if (evClipsAuto) { evClipsAuto = false; setEvClipsCollapsed(false); }
+}));
 // Playlist auto-advance: the current clip ended -> play the next one.
 $('#ev-video').addEventListener('ended', () => { if (evPlaylist) evAdvance(); });
 // Any interaction inside the tab is a user present: (re)arm the idle stop.

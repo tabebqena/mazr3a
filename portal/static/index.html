@@ -392,17 +392,15 @@
     </main>
   </div>
 
-  <!-- Bottom-most version label: a tiny, fixed, non-interactive tag pinned to
-       the lowest corner of the screen on EVERY screen - the login view and the
-       loading state (when the app content is not loaded yet) as well as every
-       app view. It is a direct <body> child (NOT inside #app), so showing the
-       login view or a not-yet-loaded app never hides it.
+  <!-- Version label: a tiny, fixed, non-interactive tag that is the LOWEST row
+       on tablet/desktop. On phones it is HIDDEN (CSS) - there the version lives
+       inside the collapsed menu (#ver-no-nav), so it never appears twice.
+       It is a direct <body> child (NOT inside #app).
        SINGLE SOURCE OF TRUTH: portal.app.APP_VERSION. The {{ APP_VERSION }} token
        is substituted server-side with APP_VERSION when the "/" route serves this
        page (see _render_index in portal/app.py) - this fallback text is what
-       shows on the login/booting screens before the app boots. app.js re-fills
-       #ver-no from /api/settings (the same constant) once the app boots. Never
-       hard-code a version number in this file. -->
+       shows before the app boots. app.js re-fills #ver-no from /api/settings
+       (the same constant) once the app boots. Never hard-code a version here. -->
   <footer class="app-ver" title="Portal version">
     v<span id="ver-no">{{ APP_VERSION }}</span>
   </footer>

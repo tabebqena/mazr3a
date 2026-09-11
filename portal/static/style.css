@@ -88,7 +88,9 @@ button { min-height: var(--tap-h); }
 }
 .brand { font-weight: 800; letter-spacing: .4px; margin-right: auto; }
 .userbox { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-#logout-btn { min-height: 34px; padding: 5px 12px; width: auto; }
+/* Sign out lives in the collapsed menu on phones (#nav-logout); the topbar
+   button is hidden there and restored on tablet/desktop (see that query). */
+#logout-btn { display: none; min-height: 34px; padding: 5px 12px; width: auto; }
 /* Hamburger that collapses the nav into a menu button. Phones (BOTH
    orientations) show it; the tablet/desktop media queries below hide it again
    and restore the inline nav row. */
@@ -501,7 +503,20 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
    query); elsewhere it is hidden and .ev-clips is a plain block wrapping the
    strip so the layout is unchanged. */
 .ev-clips { display: block; }
-.ev-clips-toggle { display: none; }
+/* The "Clips" toggle (a named hamburger): SHOWN on phones in BOTH orientations
+   so the thumbnails collapse to give the frame more room; hidden on
+   tablet/desktop, where the strip is always visible (see that media query). */
+.ev-clips-toggle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  width: auto; min-width: 0; min-height: 34px; padding: 5px 12px;
+  font-size: 13px; font-weight: 600;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--accent);
+}
+.ev-clips-toggle:active { transform: scale(.97); }
+.ev-clips-icon { font-size: 15px; line-height: 1; }
+/* Collapsed: the strip is hidden (the toggle + count stay at the top). */
+body.ev-clips-collapsed .ev-strip { display: none; }
 /* Header above the thumbnails: the collapse toggle (shown only in the landscape
    3-column layout) + the event COUNT. On phones only the count shows, pinned to
    the TOP of the scrollable thumbnail area. */
@@ -666,6 +681,10 @@ body.lb-open { overflow: hidden; }
    Tiny fixed tag pinned to the lowest corner of the screen on every view;
    non-interactive (pointer-events: none) and under the toast layer. */
 .app-ver {
+  /* Phones show the version INSIDE the collapsed menu (#ver-no-nav); the fixed
+     corner tag is hidden there and restored as the lowermost row on
+     tablet/desktop (see that media query). */
+  display: none;
   position: fixed; right: 10px; bottom: 6px; z-index: 40;
   color: var(--muted); font-size: 11px; letter-spacing: .4px;
   line-height: 1; opacity: .85;
@@ -754,6 +773,14 @@ body.lb-open { overflow: hidden; }
     max-width: 40vw; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
+  /* Large screens: the topbar shows the sign-out button (phones keep it in the
+     menu only) and the version tag is the lowermost fixed row. */
+  #logout-btn { display: inline-flex; align-items: center; }
+  .app-ver { display: block; }
+  /* Large screens always show the clip strip: hide its phone-only toggle and
+     ignore any collapsed state left over from a phone layout. */
+  .ev-clips-toggle { display: none; }
+  body.ev-clips-collapsed .ev-strip { display: flex; }
 
   .controls { gap: 10px 14px; }
   .controls label { font-size: 12px; }
@@ -910,10 +937,8 @@ body.lb-open { overflow: hidden; }
   /* The camera name is already overlaid on the frame; drop the text status line. */
   body.live-full #view-live .status { display: none; }
 
-  /* The fixed version tag (bottom-right) would sit under the Events clip column
-     in this short layout - hide it here (the version lives in the nav menu). */
-  body.live-full .app-ver,
-  body.events-full .app-ver { display: none; }
+  /* (The fixed version tag is already hidden on phones by its base rule - the
+     version lives in the collapsed menu here.) */
 
   /* ============================================================
      EVENTS TAB in phone LANDSCAPE: three columns side by side -

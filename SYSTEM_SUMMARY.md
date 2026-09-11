@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v33` |
+| Summary version | `v34` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.10.0` (see [`portal/app.py`](portal/app.py:42)) — bump on every portal change |
@@ -309,6 +309,7 @@ sudo apt install -y git python3
 | root cron capability | disk heartbeat must delete root-owned media |
 | Read access to `/var/run/docker.sock` | `logs` sidecar (runs as root in-container) |
 | Cloudflare Tunnel (`cloudflared`) | Maps `live.mazr3a.garden` → `host:8080` (portal) under an Access policy |
+| Cloudflare Access **Bypass** on `live.mazr3a.garden` for `/manifest.webmanifest`, `/static/icons/*`, `/apple-touch-icon.png` and `/favicon.ico` (**only** these) | **Required for PWA install.** Google's WebAPK minting servers fetch the manifest + icons unauthenticated; without the bypass Access 302s them, minting fails, and the home-screen icon silently degrades to a browser shortcut (opens in a Chrome tab). `/` and `/api/*` must stay Access-protected — verified still 302 on 2026-09-11. See [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 | SSH `ssh.mazr3a.garden` | Deploy + remote diagnosis. **Never use `sshpass`** — use the SSH_ASKPASS pattern ([`.roo/rules/ssh-password.md`](.roo/rules/ssh-password.md)) |
 | `git` remote `origin` = `https://github.com/tabebqena/mazr3a` (branch `master`) | Git-based deploy source |
 

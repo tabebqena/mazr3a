@@ -88,8 +88,6 @@ button { min-height: var(--tap-h); }
 }
 .brand { font-weight: 800; letter-spacing: .4px; margin-right: auto; }
 .userbox { display: flex; align-items: center; gap: 10px; margin-left: auto; }
-#user-chip { color: var(--muted); font-size: 13px; max-width: 40vw; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
 #logout-btn { min-height: 34px; padding: 5px 12px; width: auto; }
 /* Hamburger that collapses the nav into a menu button. Phones (BOTH
    orientations) show it; the tablet/desktop media queries below hide it again
@@ -139,6 +137,15 @@ nav .nav-ver {
   border-top: 1px solid var(--line);
   color: var(--muted); font-size: 12px;
 }
+/* Signed-in username, shown at the top of the collapsed menu (the topbar no
+   longer carries it). Hidden when the nav is an inline row (tablet/desktop). */
+nav .nav-user {
+  padding: 4px 12px 8px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text); font-weight: 600; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+nav .nav-user::before { content: '\1F464  '; }
 
 /* ================= LAYOUT (mobile-first) ================= */
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
@@ -698,9 +705,9 @@ body.lb-open { overflow: hidden; }
 
   .topbar { flex-wrap: nowrap; padding: 10px 16px; }
   /* Restore the inline nav row and hide the collapsed-menu hamburger + its
-     phone-only extras (sign out / version). */
+     phone-only extras (username / sign out / version). */
   .nav-toggle { display: none; }
-  nav .nav-logout, nav .nav-ver { display: none; }
+  nav .nav-user, nav .nav-logout, nav .nav-ver { display: none; }
   nav {
     position: static; top: auto; right: auto; left: auto;
     display: flex; flex-direction: row; flex: 1; order: 0;
@@ -829,7 +836,6 @@ body.lb-open { overflow: hidden; }
   /* --- topbar: slim single row (nav dropdown comes from the base rules) --- */
   .topbar { flex-wrap: nowrap; padding: 4px 10px; gap: 6px 10px; }
   .brand { font-size: 15px; }
-  #user-chip { max-width: 22vw; font-size: 12px; }
   #logout-btn { min-height: 32px; padding: 3px 10px; }
 
   /* --- Live view: frame full height + a THIN control column beside it --- */

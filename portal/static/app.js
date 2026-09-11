@@ -182,7 +182,10 @@ async function boot() {
     state.me = await api('/api/me');
   } catch (e) { return; }
   hideLogin();
-  $('#user-chip').textContent = state.me.username;
+  // The signed-in username lives in the collapsed nav menu (phones); the topbar
+  // no longer shows it. Guarded so a missing node can never break boot.
+  const navUser = $('#nav-user');
+  if (navUser) navUser.textContent = state.me.username;
   // Admin-only Debug tab: show the nav link only for the admin user. Toggled
   // on every boot (not just revealed) so a logout->login as a non-admin hides
   // it again. The server is the real gate (/api/admin/logs 403s everyone

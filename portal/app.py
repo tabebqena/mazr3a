@@ -20,7 +20,7 @@ from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
 )
 
-from portal import auth, config as pconf, eventstore, firestore, frigate
+from portal import auth, config as pconf, eventstore, firestore, frigate, usage
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
@@ -37,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.6.0"
 _HTMX = None
 
 
@@ -51,11 +51,29 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(10.0),
         follow_redirects=True,
     )
+    # Per-user bandwidth accounting (portal/usage.py). The portal is the only
+    # writer of this DB; a unusable path degrades to a warning (playback must
+    # never depend on stats). The background task flushes the in-memory
+    # accumulator periodically and prunes rows past the retention window.
+    app.state.usage = usage.UsageStore(
+        pconf.get(cfg, "PORTAL_USAGE_DB", "/media/portal/usage.db"),
+        retention_days=pconf.geti(cfg, "USAGE_RETENTION_DAYS", 180),
+    )
+    try:
+        app.state.usage.configure()
+    except Exception as exc:
+        print(f"WARNING: usage store unavailable ({exc}) - "
+              "bandwidth will not be persisted")
+    usage_task = asyncio.create_task(app.state.usage.run())
     if not app.state.secret:
         print("WARNING: portal.conf SECRET_KEY is empty - sessions will not work")
     if not users:
         print("WARNING: no users configured in portal.conf - login is impossible")
     yield
+    usage_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await usage_task
+    app.state.usage.flush()
     await app.state.client.aclose()
 
 
@@ -298,13 +316,40 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
     return {"default_camera": default_cam, "cameras": items}
 
 
-async def _frigate_stream(request: Request, path: str, params=None):
+# Egress byte kinds recorded by the usage store (portal/usage.py).
+#   live   = live video transports (MSE WebSocket + HLS playlist/segments)
+#   events = event video clips (/api/events/<id>/clip.mp4)
+#   other  = snapshots (live/event) and the events JSON listing
+USAGE_LIVE = "live"
+USAGE_EVENTS = "events"
+USAGE_OTHER = "other"
+
+
+def _count_egress(request: Request, username: str, kind: str, nbytes: int):
+    """Best-effort: record `nbytes` sent to `username`. Never raises.
+
+    Bandwidth accounting must never affect playback, so any failure here is
+    swallowed - the streaming path is the critical path.
+    """
+    if not nbytes or not username or not kind:
+        return
+    try:
+        request.app.state.usage.add(username, kind, nbytes)
+    except Exception:
+        pass
+
+
+async def _frigate_stream(request: Request, path: str, params=None,
+                          username: str = "", kind: str = ""):
     """Stream an upstream Frigate route verbatim (content-type preserved).
 
     go2rtc is embedded in Frigate and its HTTP API is reverse-proxied by
     Frigate under /api/go2rtc/* on port 5000. Requests here carry the session
     cookie (same-origin) and are relayed server-side, so the go2rtc HLS tree
     never leaves the portal origin / Cloudflare Access boundary.
+
+    Egress: the bytes streamed to the browser are counted (kind) for the
+    per-user bandwidth usage store - live HLS goes to USAGE_LIVE.
     """
     client = request.app.state.client
     req = client.build_request("GET", _frigate_base(request) + path,
@@ -318,11 +363,14 @@ async def _frigate_stream(request: Request, path: str, params=None):
         raise HTTPException(status_code=resp.status_code, detail="frigate error")
 
     async def gen():
+        sent = 0
         try:
             async for chunk in resp.aiter_bytes(64 * 1024):
+                sent += len(chunk)
                 yield chunk
         finally:
             await resp.aclose()
+            _count_egress(request, username, kind, sent)
 
     ctype = resp.headers.get("content-type") or "application/octet-stream"
     return StreamingResponse(gen(), media_type=ctype,
@@ -370,7 +418,8 @@ async def live_hls_master(camera: str, request: Request,
         raise HTTPException(status_code=400, detail="invalid camera name")
     return await _frigate_stream(
         request, "/api/go2rtc/api/stream.m3u8",
-        params={"src": camera + LIVE_SOURCE_SUFFIX})
+        params={"src": camera + LIVE_SOURCE_SUFFIX},
+        username=user["username"], kind=USAGE_LIVE)
 
 
 @app.get("/api/live/{camera}/hls/{rest:path}")
@@ -387,7 +436,8 @@ async def live_hls_media(camera: str, rest: str, request: Request,
     if not rest.startswith("hls/"):
         raise HTTPException(status_code=404, detail="not found")
     return await _frigate_stream(request, "/api/go2rtc/api/" + rest,
-                                 params=request.query_params)
+                                 params=request.query_params,
+                                 username=user["username"], kind=USAGE_LIVE)
 
 
 @app.websocket("/api/live/{camera}/mse")
@@ -414,6 +464,7 @@ async def live_mse(camera: str, websocket: WebSocket):
     if not authed or not frigate.valid_camera_name(camera):
         await websocket.close(code=4401)
         return
+    usage_store = websocket.app.state.usage
 
     base = pconf.get(websocket.app.state.cfg, "FRIGATE_API", "http://frigate:5000")
     if base.startswith("https://"):
@@ -446,14 +497,25 @@ async def live_mse(camera: str, websocket: WebSocket):
             pass
 
     async def upstream_to_client():
+        sent = 0
         try:
             async for message in upstream:
                 if isinstance(message, (bytes, bytearray)):
                     await websocket.send_bytes(bytes(message))
                 else:
                     await websocket.send_text(message)
+                sent += len(message)
         except Exception:
             pass
+        finally:
+            # Best-effort egress accounting; `name` is the authenticated
+            # username (validated above). A stats failure must never affect
+            # the relay.
+            if sent and name:
+                try:
+                    usage_store.add(name, USAGE_LIVE, sent)
+                except Exception:
+                    pass
 
     tasks = [asyncio.create_task(client_to_upstream()),
              asyncio.create_task(upstream_to_client())]
@@ -480,7 +542,8 @@ async def live_snapshot(camera: str, request: Request,
     if not frigate.valid_camera_name(camera):
         raise HTTPException(status_code=400, detail="invalid camera name")
     return await _frigate_media(request, "/api/{}/latest.jpg".format(camera),
-                                "image/jpeg")
+                                "image/jpeg", username=user["username"],
+                                kind=USAGE_OTHER)
 
 
 # --------------------------------------------------------------------------
@@ -499,6 +562,8 @@ async def events(request: Request, user: dict = Depends(current_user)):
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code,
                             detail="frigate error")
+    # The events JSON listing is small but real egress - count it as `other`.
+    _count_egress(request, user["username"], USAGE_OTHER, len(resp.content))
     return JSONResponse(content=resp.json())
 
 
@@ -506,13 +571,17 @@ async def events(request: Request, user: dict = Depends(current_user)):
 # Frigate media proxy (event snapshot / clip) - streamed, gated by the portal
 # cookie (the SPA is same-origin so the cookie flows on <img>/fetch too).
 # --------------------------------------------------------------------------
-async def _frigate_media(request: Request, path: str, media_type: str):
+async def _frigate_media(request: Request, path: str, media_type: str,
+                         username: str = "", kind: str = ""):
     """Stream a Frigate snapshot/clip through the portal cookie.
 
     Range is FORWARDED so a <video> can seek (the large Events player relies on
     this): the browser's Range/If-Range go upstream and a 206 is relayed with
     Content-Range/Accept-Ranges. Without this the proxy always returned a full
     200 and the player could not scrub.
+
+    Egress: the bytes relayed to the browser are counted (kind) per username;
+    bytes re-sent for a Range seek are counted too (they are real egress).
     """
     client = request.app.state.client
     fwd = {}
@@ -531,11 +600,14 @@ async def _frigate_media(request: Request, path: str, media_type: str):
         raise HTTPException(status_code=resp.status_code, detail="frigate error")
 
     async def gen():
+        sent = 0
         try:
             async for chunk in resp.aiter_bytes(64 * 1024):
+                sent += len(chunk)
                 yield chunk
         finally:
             await resp.aclose()
+            _count_egress(request, username, kind, sent)
 
     headers = {"Cache-Control": "no-store", "Accept-Ranges": "bytes"}
     for h in ("content-range", "content-length"):
@@ -549,14 +621,36 @@ async def _frigate_media(request: Request, path: str, media_type: str):
 async def event_snapshot(event_id: str, request: Request,
                           user: dict = Depends(current_user)):
     return await _frigate_media(
-        request, f"/api/events/{event_id}/snapshot.jpg", "image/jpeg")
+        request, f"/api/events/{event_id}/snapshot.jpg", "image/jpeg",
+        username=user["username"], kind=USAGE_OTHER)
 
 
 @app.get("/api/events/{event_id}/clip.mp4")
 async def event_clip(event_id: str, request: Request,
                      user: dict = Depends(current_user)):
     return await _frigate_media(
-        request, f"/api/events/{event_id}/clip.mp4", "video/mp4")
+        request, f"/api/events/{event_id}/clip.mp4", "video/mp4",
+        username=user["username"], kind=USAGE_EVENTS)
+
+
+# --------------------------------------------------------------------------
+# Bandwidth usage - the real egress the portal sent to each logged-in user.
+#
+# Counted at the proxy/relay chokepoints above (live MSE/HLS, event clips,
+# snapshots, events JSON) and persisted by portal/usage.py as DAILY counters
+# keyed by user + day + kind. `/api/usage` is the CALLER's own breakdown;
+# `/api/admin/usage` is every user (admin only, same gate as the Debug tab).
+# --------------------------------------------------------------------------
+@app.get("/api/usage")
+async def my_usage(request: Request, user: dict = Depends(current_user)):
+    """The caller's own bandwidth breakdown (today / 7d / 30d / total)."""
+    return request.app.state.usage.totals(user["username"])
+
+
+@app.get("/api/admin/usage")
+async def admin_usage(request: Request, admin: dict = Depends(current_admin)):
+    """Every user's bandwidth breakdown, biggest consumer first (admin only)."""
+    return request.app.state.usage.all_users()
 
 
 # --------------------------------------------------------------------------

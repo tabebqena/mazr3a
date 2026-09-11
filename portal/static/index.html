@@ -51,11 +51,20 @@
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
+        <!-- Admin-only Usage tab: per-user bandwidth (the portal counts the real
+             bytes it sends each user; see portal/usage.py). Gated exactly like
+             Debug (nav hidden for non-admins; the server 403s /api/admin/usage). -->
+        <a data-view="usage" href="#/usage" id="nav-usage" class="hidden">Usage</a>
         <!-- Collapsed-menu extras (phones only - hidden when the nav is an
              inline row on tablet/desktop): sign out and the version. Sign out
              mirrors #logout-btn; the version mirrors the footer label (same
              APP_VERSION source) so the menu is self-contained. -->
         <button id="nav-logout" class="nav-logout" type="button">Sign out</button>
+        <!-- Self-view bandwidth summary (phones: the fixed footer tag is hidden,
+             so the caller's own usage shows here instead). Filled from
+             /api/usage by app.js; clicking opens the Usage panel. -->
+        <span id="usage-nav" class="nav-usage hidden" role="button" tabindex="0"
+              title="Your bandwidth usage - tap for details"></span>
         <span class="nav-ver">v<span id="ver-no-nav">{{ APP_VERSION }}</span></span>
       </nav>
       <div class="userbox">
@@ -397,6 +406,21 @@
         <div id="dbg-status" class="status"></div>
         <div id="dbg-list" class="dbg-list"></div>
       </section>
+
+      <!-- Admin-only Usage: per-user bandwidth measured at the portal. The
+           portal counts the real bytes it sends each logged-in user (Live
+           video, event clips, snapshots/JSON) as daily counters (see
+           portal/usage.py). Loaded on tab open from /api/admin/usage (403s
+           every non-admin); every user still has their own footer/nav summary
+           and the Usage panel. -->
+      <section id="view-usage" class="view hidden">
+        <div class="controls">
+          <button id="usage-refresh" type="button"
+                  title="Reload usage totals">Refresh</button>
+        </div>
+        <div id="usage-status" class="status"></div>
+        <div id="usage-list" class="usage-list"></div>
+      </section>
     </main>
   </div>
 
@@ -410,6 +434,11 @@
        shows before the app boots. app.js re-fills #ver-no from /api/settings
        (the same constant) once the app boots. Never hard-code a version here. -->
   <footer class="app-ver" title="Portal version">
+    <!-- Self-view bandwidth summary (every user). The portal counts the real
+         bytes it sends this account (see portal/usage.py); filled from
+         /api/usage by app.js, clicking opens the Usage panel. -->
+    <button id="usage-chip" class="usage-chip hidden" type="button"
+            title="Your bandwidth usage - click for details"></button>
     v<span id="ver-no">{{ APP_VERSION }}</span>
   </footer>
 
@@ -451,6 +480,20 @@
         </div>
         <div id="sc-lb-meta" class="fw-lb-meta"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- Self-view bandwidth panel: the caller's own totals by kind (today /
+       7d / 30d / all time), opened from the footer chip or the nav summary. -->
+  <div id="usage-modal" class="usage-modal hidden" role="dialog"
+       aria-modal="true" aria-label="My bandwidth usage">
+    <div class="usage-backdrop" data-usage-close></div>
+    <div class="usage-card">
+      <div class="usage-head">
+        <span id="usage-title">My bandwidth usage</span>
+        <button id="usage-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <div id="usage-body" class="usage-body"></div>
     </div>
   </div>
 

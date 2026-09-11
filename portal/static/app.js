@@ -13,6 +13,7 @@ const state = {
   me: null,
   settings: null,
   cameras: [],
+  usage: null,       // caller's own bandwidth breakdown (from /api/usage)
   live: { cam: null, playing: false, mode: '', sound: false, imgLive: false,
           revealed: false },   // true once this live attempt dropped the poster
   // imgLive: the <img> is the poster shown while a live attempt is starting
@@ -194,6 +195,9 @@ async function boot() {
   // it again. The server is the real gate (/api/admin/logs 403s everyone
   // else) - the nav link visibility is purely cosmetic.
   $('#nav-debug').classList.toggle('hidden', !state.me.is_admin);
+  // Same admin gate for the Usage tab (the server 403s /api/admin/usage anyway).
+  const navUsage = $('#nav-usage');
+  if (navUsage) navUsage.classList.toggle('hidden', !state.me.is_admin);
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
@@ -207,18 +211,23 @@ async function boot() {
   // Same version inside the collapsed nav menu (phones) - one source of truth.
   const vnn = $('#ver-no-nav');
   if (vnn && state.settings.app_version) vnn.textContent = state.settings.app_version;
+  loadUsageSelf();     // footer/nav self-view (non-blocking)
   await loadCameras();
   window.addEventListener('hashchange', onRoute);
   onRoute();
+  // Keep the self-view roughly current while the tab is visible (a tiny JSON).
+  setInterval(() => { if (!document.hidden) loadUsageSelf(); }, 60000);
 }
 
 function onRoute() {
   setNavOpen(false);   // a route change always dismisses the collapsed menu
   const raw = (location.hash || '#/live').replace(/^#\//, '');
-  const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes', 'debug'];
+  const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes',
+                 'debug', 'usage'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
-  // Debug is admin-only: a non-admin who lands on #/debug falls back to Live.
-  if (view === 'debug' && !(state.me && state.me.is_admin)) view = 'live';
+  // Debug/Usage are admin-only: a non-admin who lands on them falls back to Live.
+  if ((view === 'debug' || view === 'usage')
+      && !(state.me && state.me.is_admin)) view = 'live';
   // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
   document.body.classList.toggle('live-full', view === 'live');
   // Events gets its OWN full-bleed layout on a phone held in LANDSCAPE (a
@@ -236,6 +245,7 @@ function onRoute() {
   else if (view === 'adaptive') reloadAdaptiveScenes();  // page-based: reset to page 1
   else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
+  else if (view === 'usage') loadUsageAdmin();  // admin per-user bandwidth
 }
 
 async function loadCameras() {
@@ -2403,6 +2413,137 @@ $('#sc-lightbox').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeSceneLightbox();
 });
+
+/* ---------------- bandwidth usage (self view + admin tab) ----------------
+   The portal counts the REAL bytes it sends each logged-in user (Live video,
+   event clips, snapshots/JSON) as daily counters - see portal/usage.py. Every
+   user sees their OWN totals (footer chip on desktop, nav summary on phones,
+   plus the Usage panel) from /api/usage; the admin additionally sees everyone
+   from /api/admin/usage (the Usage tab, gated exactly like Debug). */
+const USAGE_KINDS = [['live', 'Live'], ['events', 'Events video'],
+                     ['other', 'Other']];
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+  return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + ' ' + units[i];
+}
+
+/* Self-view table: today / 7d / 30d / all time, by kind plus a total column. */
+function usageSelfTable(b) {
+  let head = '<tr><th></th>';
+  USAGE_KINDS.forEach(([, name]) => { head += '<th>' + esc(name) + '</th>'; });
+  head += '<th>Total</th></tr>';
+  const row = (label, x) => {
+    let cells = '';
+    USAGE_KINDS.forEach(([k]) => { cells += '<td>' + fmtBytes(x[k]) + '</td>'; });
+    return '<tr><th>' + esc(label) + '</th>' + cells +
+      '<td>' + fmtBytes(x.bytes) + '</td></tr>';
+  };
+  return '<div class="usage-scroll"><table class="usage-table">' +
+    '<thead>' + head + '</thead><tbody>' +
+    row('Today', b.today || {}) +
+    row('Last 7 days', b.d7 || {}) +
+    row('Last 30 days', b.d30 || {}) +
+    row('All time', b.total || {}) +
+    '</tbody></table></div>';
+}
+
+function renderUsageSelf() {
+  const u = state.usage;
+  if (!u) return;
+  const t = u.today || {};
+  const txt = 'Live ' + fmtBytes(t.live) + ' \u00b7 Events ' +
+    fmtBytes(t.events) + ' \u00b7 Other ' + fmtBytes(t.other);
+  const chip = $('#usage-chip');
+  if (chip) { chip.textContent = 'Today: ' + txt; chip.classList.remove('hidden'); }
+  const nav = $('#usage-nav');
+  if (nav) { nav.textContent = txt; nav.classList.remove('hidden'); }
+}
+
+async function loadUsageSelf() {
+  try { state.usage = await api('/api/usage'); } catch (e) { return; }
+  renderUsageSelf();
+}
+
+function openUsageModal() {
+  if (!state.usage) return;
+  setNavOpen(false);
+  $('#usage-title').textContent = 'Bandwidth usage - ' + state.usage.username;
+  const r = state.usage.retention_days || 180;
+  $('#usage-body').innerHTML = usageSelfTable(state.usage) +
+    '<p class="usage-note">Bytes the portal sent to you - Live video, event ' +
+    'clips, snapshots/JSON - counted daily. History kept ' + esc(r) +
+    ' days.</p>';
+  $('#usage-modal').classList.remove('hidden');
+}
+function closeUsageModal() { $('#usage-modal').classList.add('hidden'); }
+
+/* Admin Usage tab: one row per user (today's kinds plus 30d/all-time totals). */
+async function loadUsageAdmin() {
+  const st = $('#usage-status');
+  const box = $('#usage-list');
+  if (!st || !box) return;
+  if (!isAdmin()) {
+    box.innerHTML = '<div class="empty">Admins only.</div>';
+    return;
+  }
+  st.textContent = 'Loading\u2026';
+  let data;
+  try { data = await api('/api/admin/usage'); }
+  catch (e) { st.textContent = 'Could not load usage: ' + e.message; return; }
+  const users = (data && data.users) || [];
+  const r = (data && data.retention_days) || 180;
+  if (!users.length) {
+    st.textContent = 'No usage recorded yet (history kept ' + r + ' days).';
+    box.innerHTML = '<div class="empty">No usage recorded yet.</div>';
+    return;
+  }
+  st.textContent = 'Per-user egress counted at the portal - history kept ' +
+    r + ' days.';
+  let head = '<tr><th>User</th><th>Live (today)</th><th>Events (today)</th>' +
+    '<th>Other (today)</th><th>Today</th><th>30 days</th><th>All time</th></tr>';
+  const rows = users.map(u => {
+    const t = u.today || {}, d30 = u.d30 || {}, tot = u.total || {};
+    return '<tr><td>' + esc(u.username) + '</td>' +
+      '<td>' + fmtBytes(t.live) + '</td>' +
+      '<td>' + fmtBytes(t.events) + '</td>' +
+      '<td>' + fmtBytes(t.other) + '</td>' +
+      '<td>' + fmtBytes(t.bytes) + '</td>' +
+      '<td>' + fmtBytes(d30.bytes) + '</td>' +
+      '<td>' + fmtBytes(tot.bytes) + '</td></tr>';
+  }).join('');
+  box.innerHTML = '<div class="usage-scroll"><table class="usage-table">' +
+    '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+(function wireUsage() {
+  const chip = $('#usage-chip');
+  if (chip) chip.addEventListener('click', openUsageModal);
+  const nav = $('#usage-nav');
+  if (nav) {
+    nav.addEventListener('click', openUsageModal);
+    nav.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault(); openUsageModal();
+      }
+    });
+  }
+  const close = $('#usage-close');
+  if (close) close.addEventListener('click', closeUsageModal);
+  $$('[data-usage-close]').forEach(
+    el => el.addEventListener('click', closeUsageModal));
+  const refresh = $('#usage-refresh');
+  if (refresh) refresh.addEventListener('click', () => {
+    loadUsageAdmin(); loadUsageSelf();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeUsageModal();
+  });
+})();
 
 /* ---------------- admin Debug: logs of containers (selectable) ---------------- */
 /* The read-only `logs` sidecar stays idle; the portal pulls its container

@@ -282,9 +282,11 @@ services:
   #
   # Dependency-only image (./portal carries deps; python:3.11-slim +
   # fastapi/uvicorn/httpx). Code + config are mounted read-only so edits
-  # need only `docker compose restart portal`. ./media is mounted rw
-  # because SQLite WAL readers need -shm/-wal write access to read the
-  # firewatch evidence DB (the portal never writes - PRAGMA query_only).
+  # need only `docker compose restart portal`. ./media is mounted rw for TWO
+  # reasons: (1) SQLite WAL readers need -shm/-wal write access to read the
+  # firewatch evidence DB, and (2) the portal's OWN per-user bandwidth DB
+  # (media/portal/usage.db, see portal/usage.py) lives there. The portal still
+  # never writes the other services' stores - those are PRAGMA query_only.
   # First build needs network for pip.
   # ------------------------------------------------------------------
   portal:
@@ -298,7 +300,8 @@ services:
     volumes:
       - ./portal:/srv/app/portal:ro    # portal package + static SPA
       - ./config:/config:ro            # portal.conf (users + secret; git-ignored)
-      - ./media:/media                 # firewatch evidence (rw for WAL read access)
+      - ./media:/media                 # firewatch evidence (rw for WAL read) +
+                                       # the portal's own media/portal/usage.db
     environment:
       - PORTAL_CONF=/config/portal.conf
       - PORTAL_LOGS_API=http://logs:8090   # read-only logs sidecar (Debug tab)

@@ -40,6 +40,21 @@ STREAM_IDLE_TIMEOUT_S=30
 # first camera returned by Frigate.
 DEFAULT_CAMERA=cam01
 
+# ------------------------------------------------------------------
+# Per-user bandwidth accounting (Live + Events video). The portal is the
+# egress chokepoint for Live (MSE/HLS), event clips and snapshots, so it
+# counts the real bytes it sends each logged-in user. Totals are DAILY
+# counters keyed by user + day + kind (live | events | other); each user
+# sees their own totals and the admin sees everyone (Usage tab).
+#
+# PORTAL_USAGE_DB - SQLite path (in the portal container). Default is under
+#   the rw ./media mount; the dir is created on demand.
+# USAGE_RETENTION_DAYS - history kept; rows older than this are pruned
+#   in-app (the host disk heartbeat hard-protects *.db and cannot prune rows).
+# ------------------------------------------------------------------
+PORTAL_USAGE_DB=/media/portal/usage.db
+USAGE_RETENTION_DAYS=180
+
 # Frigate REST API base (compose service name inside the network). Only
 # reached server-side; Frigate is never exposed to browsers directly.
 FRIGATE_API=http://frigate:5000

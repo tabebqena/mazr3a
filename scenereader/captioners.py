@@ -141,8 +141,19 @@ class LlamaCppCaptioner(Captioner):
         # model; without its template it answers an unframed prompt with an
         # immediate EOS, which surfaces as an empty caption after a full
         # generation run.
+        #
+        # --parallel 1 (-np 1): the caption drain is STRICTLY SEQUENTIAL - one
+        # image per request, MAX_EVENTS_PER_RUN back to back - so llama.cpp's
+        # auto slot count (4 here) only multiplies the KV cache and the per-slot
+        # compute/graph buffers for no throughput gain. Measured on the host
+        # (build 10900, 2026-09-11): with the default -c 4096 and 4 slots the
+        # server logged n_ctx_slot = 4096 (a 16384-token KV) and held
+        # VmRSS ~2.98 GiB (RssAnon 2.56 GiB) for a 0.6 GiB model. One slot sizes
+        # the KV for this workload's actual context. See
+        # plans/host-memory-75-investigation.md.
         cmd = [self._server_bin, "-m", self.model_file, "--mmproj", self.mmproj_file,
                "-c", str(self.ctx), "-t", str(self.n_threads), "--jinja",
+               "-np", "1",
                "--host", "127.0.0.1", "--port", str(self._port), "-ngl", "0"]
         try:
             # Keep the server's own output: when it exits immediately (most often

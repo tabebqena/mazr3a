@@ -101,6 +101,13 @@ fire-model-training/*
 firewatch_clips/
 firewatch-fire-clips/
 
+# Camera clip exports (Frigate recording segments scoped by camera, for
+# firewatch model testing + scene-reader fine-tuning) - large media artifacts,
+# not source. Host staging dir (/home/dr/frigate/cam-clips) and the local
+# download mirror (./camera-clips). See plans/camera-clip-export.md.
+cam-clips/
+camera-clips/
+
 # ------------------------------------------------------------------
 # Local working docs (not versioned): all plan files (plans/), the master
 # prompt (prompt.txt) and Colab notebooks (notebooks/, regenerable from

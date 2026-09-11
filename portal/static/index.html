@@ -47,15 +47,20 @@
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
+        <!-- Collapsed-menu extras (phones only - hidden when the nav is an
+             inline row on tablet/desktop): sign out and the version. Sign out
+             mirrors #logout-btn; the version mirrors the footer label (same
+             APP_VERSION source) so the menu is self-contained. -->
+        <button id="nav-logout" class="nav-logout" type="button">Sign out</button>
+        <span class="nav-ver">v<span id="ver-no-nav">{{ APP_VERSION }}</span></span>
       </nav>
       <div class="userbox">
         <span id="user-chip"></span>
         <button id="logout-btn" title="Sign out">&#9211;</button>
-        <!-- Phone LANDSCAPE only: collapses the horizontal nav into a dropdown
-             menu (a phone held sideways is wide but short, so the nav row costs
-             precious height). Hidden in every other layout via .nav-toggle;
-             shown by the (orientation: landscape) media query in style.css and
-             toggled by app.js (body.nav-open). -->
+        <!-- Phones (both orientations, every tab): collapses the tab bar into a
+             dropdown menu so it never costs a row/height. Hidden on
+             tablet/desktop by the .nav-toggle rules in style.css; toggled by
+             app.js (body.nav-open). -->
         <button id="nav-toggle" class="nav-toggle" type="button"
                 title="Menu" aria-label="Menu"
                 aria-expanded="false" aria-controls="nav">&#9776;</button>
@@ -105,6 +110,13 @@
               <button id="zoom-reset" type="button" disabled title="Reset zoom"
                       aria-label="Reset zoom">reset</button>
             </span>
+
+            <!-- Stop the live stream on demand: tears the stream down and shows
+                 the Resume overlay (the same one the idle-stop uses). Enabled
+                 only while a stream is actually playing. -->
+            <button id="live-stop" type="button" disabled
+                    title="Stop the live stream"
+                    aria-label="Stop live stream">&#9209;</button>
 
             <!-- Restart the current live stream (retry HLS) without a page
                  reload - useful after a temporary snapshot fallback. Kept as

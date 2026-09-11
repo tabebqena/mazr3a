@@ -132,11 +132,16 @@ $('#login-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('#logout-btn').addEventListener('click', async () => {
+/* Sign out. The topbar #logout-btn and the collapsed-menu #nav-logout entry
+   share this; both close the menu first. */
+async function doLogout() {
+  setNavOpen(false);
   stopStream();
   try { await api('/api/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
   showLogin();
-});
+}
+$('#logout-btn').addEventListener('click', doLogout);
+$('#nav-logout').addEventListener('click', doLogout);
 
 /* ---------------- collapsed nav (phones) ----------------
    On phones the tab bar is collapsed into a dropdown toggled by #nav-toggle
@@ -193,6 +198,9 @@ async function boot() {
   // Bottom-most version label: server APP_VERSION (the HTML text is the fallback).
   const vn = $('#ver-no');
   if (vn && state.settings.app_version) vn.textContent = state.settings.app_version;
+  // Same version inside the collapsed nav menu (phones) - one source of truth.
+  const vnn = $('#ver-no-nav');
+  if (vnn && state.settings.app_version) vnn.textContent = state.settings.app_version;
   await loadCameras();
   window.addEventListener('hashchange', onRoute);
   onRoute();
@@ -543,6 +551,8 @@ function syncSoundUI() {
 function syncLiveTools() {
   const shot = $('#live-shot');
   if (shot) shot.disabled = !(state.live.cam && zoomable());
+  const stop = $('#live-stop');
+  if (stop) stop.disabled = !state.live.playing;   // only useful while playing
   applyZoom();          // zoom group gated on zoomable() (see below)
   syncSoundUI();
 }
@@ -1036,6 +1046,14 @@ function resume() {
   startStream(state.live.cam);
 }
 
+/* Stop the live stream on demand (the #live-stop button): tear it down and
+   offer Resume via the shared overlay - the same UX as the idle stop. */
+function stopLive() {
+  if (!state.live.cam) return;
+  stopStream();
+  showOverlay('Live stopped.');
+}
+
 /* -------- live control row extras: save image + zoom & pan ----------------
    The row above the frame holds (in DOM order): the camera name/picker (first),
    the sound toggle, save-image, the zoom group (- / + / reset), and the refresh
@@ -1295,6 +1313,8 @@ $('#cam-grid').addEventListener('click', (e) => {
 });
 
 $('#overlay-resume').addEventListener('click', resume);
+// Stop the live stream on demand (offers Resume through the overlay).
+$('#live-stop').addEventListener('click', stopLive);
 // Restart the current live stream (retry HLS) WITHOUT reloading the page;
 // also re-arms a stream after an idle pause or a snapshot fallback.
 $('#live-refresh').addEventListener('click', () => {

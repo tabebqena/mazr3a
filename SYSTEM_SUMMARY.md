@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v18` |
+| Summary version | `v19` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.4.3` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.4.4` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -148,7 +148,7 @@ with `docker compose up -d` / `docker compose down`.
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw for SQLite WAL read) |
 | Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090` |
-| Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Phone layout:** on phones (both orientations) the tab bar collapses into the `#nav-toggle` hamburger dropdown; a phone in **landscape** hands the Live frame maximum height and shrinks prev/next to round overlay buttons (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
+| Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Phone layout:** on phones (both orientations) the tab bar collapses into the `#nav-toggle` hamburger dropdown (which also carries **Sign out** + the version); a phone in **landscape** turns the Live controls into a **thin vertical column** beside the frame (max frame height) and shrinks prev/next to round overlay buttons. A **Stop** button (`#live-stop`) halts the live stream on demand (offers Resume). (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
 
 ### 3.7 `scenereader` — cross-camera episode narrator
 

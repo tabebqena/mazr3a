@@ -118,6 +118,19 @@ nav a {
   border-radius: 8px;
 }
 nav a.active { color: var(--text); background: var(--panel2); }
+/* Collapsed-menu extras (phones): sign out + version. Hidden when the nav is an
+   inline row (tablet/desktop) - see that media query below. */
+nav .nav-logout {
+  width: 100%; text-align: left; padding: 9px 12px;
+  background: transparent; border: 0; color: var(--red); font-weight: 600;
+  border-radius: 8px;
+}
+nav .nav-logout:hover { background: rgba(255,92,92,.12); }
+nav .nav-ver {
+  padding: 7px 12px 2px; margin-top: 2px;
+  border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px;
+}
 
 /* ================= LAYOUT (mobile-first) ================= */
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
@@ -227,7 +240,8 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
    but a narrow small glyph, so the take-photo button no longer dominates the
    toolbar. (The zoom +/- segments are sized separately below.) */
 .live-ctl #live-sound,
-.live-ctl #live-shot {
+.live-ctl #live-shot,
+.live-ctl #live-stop {
   flex: 0 0 auto; width: 40px; padding: 0;
   text-align: center; font-size: 16px; line-height: 1;
 }
@@ -675,8 +689,10 @@ body.lb-open { overflow: hidden; }
   main { padding: 18px; }
 
   .topbar { flex-wrap: nowrap; padding: 10px 16px; }
-  /* Restore the inline nav row and hide the collapsed-menu hamburger. */
+  /* Restore the inline nav row and hide the collapsed-menu hamburger + its
+     phone-only extras (sign out / version). */
   .nav-toggle { display: none; }
+  nav .nav-logout, nav .nav-ver { display: none; }
   nav {
     position: static; top: auto; right: auto; left: auto;
     display: flex; flex-direction: row; flex: 1; order: 0;
@@ -808,22 +824,50 @@ body.lb-open { overflow: hidden; }
   #user-chip { max-width: 22vw; font-size: 12px; }
   #logout-btn { min-height: 32px; padding: 3px 10px; }
 
-  /* --- Live view: give the frame as much height as possible --- */
+  /* --- Live view: frame full height + a THIN control column beside it --- */
   body.live-full main { padding: 4px; gap: 4px; }
-  body.live-full #view-live { position: relative; gap: 4px; }
-  body.live-full #view-live .live-ctl { margin-bottom: 4px; }
-  /* The camera name is already overlaid on the frame (#live-cam-tag); drop the
-     text status line so it does not steal a row from the video. */
+  body.live-full #view-live {
+    position: relative; flex-direction: row; align-items: stretch; gap: 6px;
+  }
+  /* The frame fills the height and sits at the left (order 1). */
+  body.live-full #view-live .stage { order: 1; }
+  /* Controls become a narrow vertical column on the right (order 2): each chip
+     is stacked full-column-width under the camera-picker icon. */
+  body.live-full #view-live .live-ctl {
+    order: 2; flex: 0 0 auto;
+    flex-direction: column; flex-wrap: nowrap;
+    width: 52px; margin: 0; gap: 6px;
+    align-items: stretch; justify-content: flex-start;
+    overflow-x: hidden; overflow-y: auto;
+  }
+  body.live-full #view-live .live-ctl .live-tools {
+    flex-direction: column; flex-wrap: nowrap; gap: 6px; width: 100%;
+  }
+  body.live-full #view-live .live-ctl button { width: 100%; min-width: 0; }
+  body.live-full #view-live .live-ctl .zoom-ctl {
+    flex-direction: column; width: 100%; gap: 2px;
+  }
+  body.live-full #view-live .live-ctl .zoom-ctl button { width: 100%; min-width: 0; }
+  /* The camera name is shown on the frame (#live-cam-tag); the picker becomes a
+     compact icon button in the column (its text is set to font-size 0). */
+  body.live-full #view-live .live-ctl #cam-picker {
+    flex: 0 0 auto; width: 100%; text-align: center;
+    font-size: 0; padding: 0; min-height: 40px;
+  }
+  body.live-full #view-live .live-ctl #cam-picker::before {
+    content: '\1F3A5'; font-size: 18px; line-height: 1;
+  }
+  /* The camera name is already overlaid on the frame; drop the text status line. */
   body.live-full #view-live .status { display: none; }
 
   /* The fixed version tag (bottom-right) would sit under the next-cam overlay
-     in this short layout - hide it here (it is still shown on every other
-     screen/orientation). */
+     in this short layout - hide it here (the version lives in the nav menu). */
   body.live-full .app-ver { display: none; }
 
-  /* prev/next: tiny round overlays pinned to the frame's bottom corners. */
+  /* prev/next: tiny round overlays pinned to the frame's bottom corners. The
+     right offset clears the 52px control column + its 6px gap + 8px edge. */
   body.live-full #view-live .live-foot {
-    position: absolute; left: 8px; right: 8px; bottom: 8px;
+    position: absolute; left: 8px; right: 66px; bottom: 8px;
     margin: 0; justify-content: space-between;
     pointer-events: none;
   }

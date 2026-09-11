@@ -215,6 +215,10 @@ function onRoute() {
   if (view === 'debug' && !(state.me && state.me.is_admin)) view = 'live';
   // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
   document.body.classList.toggle('live-full', view === 'live');
+  // Events gets its OWN full-bleed layout on a phone held in LANDSCAPE (a
+  // "filters | video | clips" 3-column grid - see style.css). The class is
+  // harmless in every other layout/view.
+  document.body.classList.toggle('events-full', view === 'events');
   if (view !== 'live') stopStream();           // only the Live view streams
   if (view !== 'events') evTeardown();         // release the Events player
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));

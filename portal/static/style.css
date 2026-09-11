@@ -1,3 +1,4 @@
+
 /* ============================================================
    mazr3a CCTV portal - MOBILE-FIRST responsive theme.
    Base rules = phones (single column, full width, tap targets).
@@ -104,6 +105,13 @@ button { min-height: var(--tap-h); }
 nav {
   position: absolute; top: 100%; right: 8px; left: auto;
   min-width: 180px; max-width: 60vw;
+  /* Never taller than the space under the topbar: the menu itself scrolls
+     (short landscape screens), touch momentum preserved. */
+  max-height: calc(100vh - 56px);
+  max-height: calc(100dvh - 56px);
+  overflow-x: hidden; overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   display: none; flex-direction: column; gap: 4px;
   padding: 6px;
   background: var(--panel); border: 1px solid var(--line);
@@ -860,9 +868,11 @@ body.lb-open { overflow: hidden; }
   /* The camera name is already overlaid on the frame; drop the text status line. */
   body.live-full #view-live .status { display: none; }
 
-  /* The fixed version tag (bottom-right) would sit under the next-cam overlay
-     in this short layout - hide it here (the version lives in the nav menu). */
-  body.live-full .app-ver { display: none; }
+  /* The fixed version tag (bottom-right) would sit under the next-cam overlay /
+     the Events clip column in this short layout - hide it here (the version
+     lives in the nav menu). */
+  body.live-full .app-ver,
+  body.events-full .app-ver { display: none; }
 
   /* prev/next: tiny round overlays pinned to the frame's bottom corners. The
      right offset clears the 52px control column + its 6px gap + 8px edge. */
@@ -877,4 +887,66 @@ body.lb-open { overflow: hidden; }
     background: rgba(0,0,0,.5); border-color: rgba(255,255,255,.28);
     pointer-events: auto;
   }
+
+  /* ============================================================
+     EVENTS TAB in phone LANDSCAPE: three columns side by side -
+       [1] filters (narrow, scrolls)  [2] the video (large)  [3] the clip
+       thumbnails (narrow, scrolls VERTICALLY). The view fills the window
+       height so nothing is pushed off-screen; the router adds body.events-full
+       only for the Events view.
+     ============================================================ */
+  body.events-full { overflow: hidden; }
+  body.events-full #app {
+    height: 100vh; height: 100dvh;
+    display: flex; flex-direction: column;
+  }
+  body.events-full main {
+    flex: 1 1 auto; min-height: 0;
+    max-width: none; margin: 0; padding: 6px;
+    display: flex; flex-direction: column;
+  }
+  body.events-full #view-events {
+    flex: 1 1 auto; min-height: 0; padding-bottom: 0;
+    display: grid;
+    grid-template-columns: minmax(128px, 1fr) minmax(0, 3fr) minmax(140px, 1.15fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "filters stage strip"
+      "status  pager strip";
+    gap: 6px 8px;
+  }
+  /* [1] Filters: a single narrow scrollable column. */
+  body.events-full #view-events .controls {
+    grid-area: filters;
+    display: flex; flex-direction: column; flex-wrap: nowrap;
+    gap: 5px; margin: 0; align-items: stretch;
+    overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  body.events-full #view-events .controls label {
+    font-size: 11px; white-space: normal;
+  }
+  body.events-full #view-events .controls label.check {
+    flex-direction: row; align-items: center; align-self: stretch;
+  }
+  body.events-full #view-events .controls button { width: 100%; }
+  /* [2] Video: fills the middle column at full height. */
+  body.events-full #view-events .ev-stage {
+    grid-area: stage;
+    aspect-ratio: auto; max-height: none;
+    height: 100%; min-height: 0;
+  }
+  body.events-full #view-events #ev-status { grid-area: status; margin: 0; }
+  body.events-full #view-events #ev-pager { grid-area: pager; margin: 0; }
+  /* [3] Clips: the strip becomes a VERTICAL, scrollable column. */
+  body.events-full #view-events .ev-strip {
+    grid-area: strip;
+    flex-direction: column; flex-wrap: nowrap;
+    margin: 0; padding: 2px;
+    height: 100%; min-height: 0;
+    overflow-x: hidden; overflow-y: auto;
+    scroll-snap-type: y proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  body.events-full #view-events .ev-clip { width: 100%; }
 }

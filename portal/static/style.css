@@ -225,6 +225,29 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
   background: var(--accent); color: #06210f; font-weight: 700; border: 0;
 }
 
+/* ============ YouTube-style CENTER PLAY/STOP button (Live + Events) ============
+   Hidden until the user taps the frame; app.js shows it and sets the glyph
+   (play / stop). Sits above the media but BELOW the paused/offline overlays and
+   the idle Resume. */
+.vid-center {
+  position: absolute; left: 50%; top: 50%; z-index: 6;
+  transform: translate(-50%, -50%);
+  width: 68px; height: 68px; min-width: 0; min-height: 0; padding: 0;
+  display: grid; place-items: center; border: 0; border-radius: 50%;
+  font-size: 30px; line-height: 1; color: #fff;
+  background: rgba(0,0,0,.55);
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  cursor: pointer;
+}
+.vid-center:hover { background: rgba(0,0,0,.7); }
+.vid-center:active { transform: translate(-50%, -50%) scale(.94); }
+/* Events has its own overlay (z-index 4) + now-bar (z-index 3): keep the center
+   button above the video but under the idle/paused overlay. */
+.ev-stage .vid-center { z-index: 3; }
+@media (min-width: 640px) {
+  .vid-center { width: 78px; height: 78px; font-size: 34px; }
+}
+
 /* ================= LIVE CONTROL ROW (above the frame) =================
    Order (DOM): camera name/picker (FIRST, flexes to fill) + a .live-tools
    group holding sound toggle, save-image, the zoom segmented control

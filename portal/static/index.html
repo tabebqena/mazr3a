@@ -145,6 +145,10 @@
               <button id="overlay-resume" type="button">&#9654; Resume</button>
             </div>
           </div>
+          <!-- YouTube-style center button: tapping the frame shows it; its glyph
+               (play / stop) is set by app.js from the live state. -->
+          <button id="live-center" class="vid-center hidden" type="button"
+                  aria-label="Play or stop the live stream"></button>
         </div>
         <!-- Inline camera row (thumbnail per camera). Phones keep this hidden
              and pick cameras from the modal below instead. -->
@@ -195,6 +199,10 @@
         <div id="ev-stage" class="ev-stage">
           <div id="ev-stage-empty" class="ev-stage-empty">Select a clip below</div>
           <video id="ev-video" controls playsinline preload="metadata"></video>
+          <!-- YouTube-style center button: tapping the frame shows it; tapping
+               it plays/pauses the clip (glyph set by app.js). -->
+          <button id="ev-center" class="vid-center hidden" type="button"
+                  aria-label="Play or pause the clip"></button>
           <div class="ev-now-bar">
             <span id="ev-now" class="ev-now"></span>
             <!-- Playlist switch: when ON, the next clip starts automatically as

@@ -563,6 +563,7 @@ function syncLiveTools() {
   if (shot) shot.disabled = !(state.live.cam && zoomable());
   const stop = $('#live-stop');
   if (stop) stop.disabled = !state.live.playing;   // only useful while playing
+  syncLiveCenter();     // keep the tap-to-toggle glyph in step with the state
   applyZoom();          // zoom group gated on zoomable() (see below)
   syncSoundUI();
 }
@@ -1223,6 +1224,44 @@ if (stageEl) {
     setZoom(zoom.s * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
   }, { passive: false });
 }
+
+/* Tap the live frame -> a YouTube-style center play/stop button appears; tapping
+   it stops the stream (or resumes it) and hides. A pan DRAG is not a tap (we use
+   a small movement threshold so zoom-panning never toggles it). */
+let liveTapMoved = false, liveTapX = 0, liveTapY = 0;
+function syncLiveCenter() {
+  const b = $('#live-center');
+  if (!b) return;
+  const playing = !!state.live.playing;
+  b.textContent = playing ? '\u23F9' : '\u25B6';   // \u23F9 stop / \u25B6 play
+  b.title = playing ? 'Stop' : 'Play';
+  b.setAttribute('aria-label', b.title);
+}
+function toggleLiveCenter() {
+  const b = $('#live-center');
+  if (!b) return;
+  if (b.classList.contains('hidden')) { syncLiveCenter(); b.classList.remove('hidden'); }
+  else b.classList.add('hidden');
+}
+if (stageEl) {
+  stageEl.addEventListener('pointerdown', (e) => {
+    liveTapX = e.clientX; liveTapY = e.clientY; liveTapMoved = false;
+  });
+  stageEl.addEventListener('pointermove', (e) => {
+    if (Math.abs(e.clientX - liveTapX) > 8 ||
+        Math.abs(e.clientY - liveTapY) > 8) liveTapMoved = true;
+  });
+  stageEl.addEventListener('click', (e) => {
+    if (liveTapMoved) return;                    // it was a pan drag
+    if (e.target.closest('button, .overlay, .spinner')) return;
+    toggleLiveCenter();
+  });
+}
+$('#live-center').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (state.live.playing) stopLive(); else resume();
+  $('#live-center').classList.add('hidden');
+});
 syncLiveTools();   // initial state: no frame/no audio yet -> row tools disabled
 
 /* -------- camera switching: thumbnail row / modal ------------------------- */
@@ -1523,6 +1562,7 @@ function evSelect(idx, autoplay) {
   const v = $('#ev-video');
   const stage = $('#ev-stage');
   hideEvOverlay();
+  hideEvCenter();
   if (stage) stage.classList.add('has-clip');
   if (v) {
     try { v.pause(); } catch (e) { /* ignore */ }
@@ -1572,6 +1612,7 @@ function markEvActive() {
 function evTeardown() {
   clearEvIdle();
   hideEvOverlay();
+  hideEvCenter();
   evPlaylist = false;
   evPlaylistResume = false;
   evSelIdx = -1;
@@ -1641,6 +1682,53 @@ $('#ev-strip').addEventListener('click', (e) => {
   evPlaylistResume = false;
   evSelect(Number(btn.dataset.idx), true);
 });
+
+/* Tap the events frame -> a YouTube-style center play/pause button; tapping the
+   button toggles playback. Ignored when nothing is loaded and on taps in the
+   native controls strip (bottom ~48px). */
+function evPlayingNow() {
+  const v = $('#ev-video');
+  return !!(v && v.currentSrc && !v.paused && !v.ended);
+}
+function syncEvCenter() {
+  const b = $('#ev-center');
+  if (!b) return;
+  const playing = evPlayingNow();
+  b.textContent = playing ? '\u23F8' : '\u25B6';   // \u23F8 pause / \u25B6 play
+  b.title = playing ? 'Pause' : 'Play';
+  b.setAttribute('aria-label', b.title);
+}
+function hideEvCenter() {
+  const b = $('#ev-center');
+  if (b) b.classList.add('hidden');
+}
+function toggleEvCenter() {
+  const b = $('#ev-center');
+  if (!b) return;
+  if (b.classList.contains('hidden')) { syncEvCenter(); b.classList.remove('hidden'); }
+  else b.classList.add('hidden');
+}
+$('#ev-center').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const v = $('#ev-video');
+  if (!v || !v.currentSrc) return;
+  if (v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+  else v.pause();
+  hideEvCenter();
+});
+$('#ev-stage').addEventListener('click', (e) => {
+  if (e.target.closest('button, .ev-now-bar, .ev-overlay')) return;
+  const v = $('#ev-video');
+  if (!v || !v.currentSrc) return;                 // nothing loaded to control
+  const stage = $('#ev-stage');
+  const r = stage.getBoundingClientRect();
+  if (e.clientY > r.bottom - 48) return;           // native controls strip
+  toggleEvCenter();
+});
+['play', 'pause', 'ended'].forEach(evt => $('#ev-video').addEventListener(evt, () => {
+  const b = $('#ev-center');
+  if (b && !b.classList.contains('hidden')) syncEvCenter();
+}));
 
 async function loadEvents() {
   const st = $('#ev-status');

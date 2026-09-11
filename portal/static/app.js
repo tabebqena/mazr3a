@@ -231,8 +231,8 @@ function onRoute() {
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
   if (raw === 'usage') view = 'user';   // the Usage tab was removed
   // Debug is admin-only, and a non-admin who lands on a tab they were not
-  // granted falls back to Live.
-  if (!viewAllowed(view)) view = 'live';
+  // granted falls back to their FIRST allowed tab (or the Account tab).
+  if (!viewAllowed(view)) view = USER_VIEWS.find(viewAllowed) || 'user';
   // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
   document.body.classList.toggle('live-full', view === 'live');
   // Events gets its OWN full-bleed layout on a phone held in LANDSCAPE (a

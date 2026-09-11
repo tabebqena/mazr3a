@@ -28,9 +28,9 @@ admin-only tabs (debug / user management) are implied by `is_admin` and are
 never stored here.
 
 `quota_bytes` is the per-user egress quota (bytes), shown in the SPA as a
-progress bar (used / quota). Every NEW account defaults to DEFAULT_QUOTA_BYTES
-(5 GiB); an explicit 0 means UNLIMITED. It is display-only for now (not enforced
-at the egress chokepoints).
+progress bar (used / quota). The `users` table DEFAULT is the initial 5 GiB;
+a stored 0 (or missing value) means UNLIMITED, so an admin may run without a
+cap. It is display-only for now (not enforced at the egress chokepoints).
 """
 import json
 import os
@@ -46,13 +46,6 @@ import time
 AVAILABLE_TABS = ("live", "events", "fire", "episodes", "adaptive", "scenes")
 ALLOWED_PERMISSIONS = tuple("tab_" + t for t in AVAILABLE_TABS)
 
-# Default per-user egress quota (bytes) = 5 GiB. The SPA edits this as a decimal
-# GB value and converts with 1024**3, so "5" in the Manage tab == this constant.
-# 0 = unlimited (an admin can set that deliberately).
-DEFAULT_QUOTA_BYTES = 5 * 1024 ** 3
-# Schema/data version stamped in PRAGMA user_version (see configure()).
-_SCHEMA_VERSION = 1
-
 # Usernames are path-safe (used in /api/users/<name>) and modest in length.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -61,7 +54,10 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 MAX_PHOTO_BYTES = 512 * 1024
 _DATA_URL_RE = re.compile(r"^data:image/(png|jpe?g|webp|gif|svg\+xml);base64,", re.I)
 
-_SCHEMA = f"""
+# The quota column DEFAULT is the initial per-user quota in bytes (5 GiB). The
+# SPA edits it in decimal GB (1 GB = 1024**3 bytes = 5368709120); a stored 0 (or
+# a missing value) means UNLIMITED, so an admin may run without a cap.
+_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     username       TEXT PRIMARY KEY COLLATE NOCASE,
     display_name   TEXT NOT NULL DEFAULT '',
@@ -69,7 +65,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin       INTEGER NOT NULL DEFAULT 0,
     is_active      INTEGER NOT NULL DEFAULT 1,
     permissions    TEXT NOT NULL DEFAULT '[]',
-    quota_bytes    INTEGER NOT NULL DEFAULT {DEFAULT_QUOTA_BYTES},
+    quota_bytes    INTEGER NOT NULL DEFAULT 5368709120,
     password_hash  TEXT NOT NULL,
     default_camera TEXT NOT NULL DEFAULT '',
     created_at     REAL NOT NULL,
@@ -188,16 +184,6 @@ class UserStore:
             if "is_active" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN is_active "
                              "INTEGER NOT NULL DEFAULT 1")
-            # Migration (user_version 0 -> 1): rows created before the default
-            # quota existed carry 0 ("unset"); give them the 5 GiB default ONCE
-            # so an explicit 0 an admin sets LATER (unlimited) is never
-            # overridden on the next restart.
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if int(version or 0) < _SCHEMA_VERSION:
-                conn.execute(
-                    "UPDATE users SET quota_bytes = ? WHERE quota_bytes = 0",
-                    (DEFAULT_QUOTA_BYTES,))
-                conn.execute("PRAGMA user_version = %d" % _SCHEMA_VERSION)
             conn.commit()
         finally:
             conn.close()
@@ -339,26 +325,28 @@ class UserStore:
                default_camera=""):
         """Insert a new user. Raises ValueError on bad input/SQLite on conflict.
 
-        `quota_bytes` omitted (None) -> DEFAULT_QUOTA_BYTES (5 GiB); an explicit
-        value is clamped to >= 0 (0 = unlimited).
+        `quota_bytes` omitted (None) leaves the column at its table DEFAULT
+        (5 GiB); an explicit value is clamped to >= 0 (0 = unlimited).
         """
         name = normalize_username(username)
         if not password_hash:
             raise ValueError("password hash required")
         perms = json.dumps(normalize_permissions(permissions))
-        quota = (DEFAULT_QUOTA_BYTES if quota_bytes is None
-                 else max(0, int(quota_bytes or 0)))
         now = _now()
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT INTO users (username, display_name, photo, is_admin, "
-                "is_active, permissions, quota_bytes, password_hash, "
-                "default_camera, created_at, updated_at) "
-                "VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
+                "is_active, permissions, password_hash, default_camera, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?)",
                 (name, str(display_name or "")[:64], 1 if is_admin else 0,
-                 1 if is_active else 0, perms, quota,
-                 password_hash, str(default_camera or "")[:64], now, now))
+                 1 if is_active else 0, perms, password_hash,
+                 str(default_camera or "")[:64], now, now))
+            if quota_bytes is not None:
+                conn.execute(
+                    "UPDATE users SET quota_bytes = ? WHERE username = ?",
+                    (max(0, int(quota_bytes or 0)), name))
             conn.commit()
         finally:
             try:

@@ -396,7 +396,8 @@ async def create_user(request: Request, admin: dict = Depends(current_admin)):
             is_admin=bool(body.get("is_admin")),
             is_active=bool(body.get("is_active", True)),
             permissions=body.get("permissions"),
-            # Omitted (None) -> the store applies DEFAULT_QUOTA_BYTES (5 GiB).
+            # Omitted (None) -> the users table column DEFAULT (5 GiB); an
+            # explicit 0 = unlimited.
             quota_bytes=body.get("quota_bytes"),
             default_camera=body.get("default_camera") or "",
         )

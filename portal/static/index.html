@@ -169,11 +169,21 @@
                     aria-label="Stop live stream">&#9209;</button>
 
             <!-- Restart the current live stream (retry HLS) without a page
-                 reload - useful after a temporary snapshot fallback. Kept as
-                 the LAST control, at the far right of the tools group. -->
+                 reload - useful after a temporary snapshot fallback. Kept just
+                 before the fullscreen control, at the far right of the group. -->
             <button id="live-refresh" type="button"
                     title="Restart the live stream (retry HLS)"
                     aria-label="Restart live stream">&#8635;</button>
+
+            <!-- Fullscreen on the WHOLE Live view (NOT the <video>), mirroring
+                 the Events #ev-fs: #live-fs fullscreens #view-live so the camera
+                 toolbar, the frame's overlays (spinner / cam-tag / center button
+                 / idle Resume) and the camera strip all STAY VISIBLE. A native
+                 <video> fullscreen would hide them (the idle Resume overlay is a
+                 sibling inside #live-stage). App.js keeps the glyph in step via
+                 fullscreenchange. -->
+            <button id="live-fs" type="button" aria-pressed="false"
+                    title="Fullscreen" aria-label="Fullscreen">&#9974;</button>
           </span>
         </div>
         <div id="live-stage" class="stage">

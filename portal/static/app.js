@@ -605,7 +605,10 @@ function onRoute() {
   // "filters | video | clips" 3-column grid - see style.css). The class is
   // harmless in every other layout/view.
   document.body.classList.toggle('events-full', view === 'events');
-  if (view !== 'live') stopStream();           // only the Live view streams
+  // Only the Live view streams; LEAVING it also drops the Live fullscreen. A
+  // camera / stream change INSIDE Live keeps fullscreen (startStream does not
+  // exit it) - the same rule the Events tab uses for its stage fullscreen.
+  if (view !== 'live') { stopStream(); liveExitFullscreen(); }
   // Leaving Events: release the player AND drop stage fullscreen. A filter /
   // camera change INSIDE Events keeps fullscreen (it also calls evTeardown).
   if (view !== 'events') { evTeardown(); evExitFullscreen(); }
@@ -1753,6 +1756,54 @@ $('#live-sound').addEventListener('click', (e) => {
   e.preventDefault();
   toggleLiveSound();
 });
+
+/* ---- custom FULLSCREEN on the WHOLE Live view (never the <video>) ----
+   A native <video> fullscreen (a trap the Events tab hit) would hide the camera
+   toolbar AND the on-frame overlays - including the idle/paused Resume overlay,
+   which is a SIBLING inside #live-stage. #live-fs fullscreens the whole
+   #view-live SECTION instead, so the toolbar (camera picker, sound, save, zoom,
+   stop, refresh, exit) and every overlay (spinner, cam-tag, center button,
+   Resume) stay visible and usable. Mirrors the Events #ev-fs; see
+   plans/portal-live-stage-fullscreen.md. */
+function liveFsElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function liveFullscreen() { return liveFsElement() === $('#view-live'); }
+function syncLiveFs() {
+  const b = $('#live-fs');
+  if (!b) return;
+  const on = liveFullscreen();
+  b.textContent = on ? '\u2715' : '\u26F6';   // \u2715 exit / \u26F6 enter
+  b.title = on ? 'Exit fullscreen' : 'Fullscreen';
+  b.setAttribute('aria-label', b.title);
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+function liveExitFullscreen() {
+  if (!liveFsElement()) return;
+  const ex = document.exitFullscreen || document.webkitExitFullscreen;
+  if (!ex) return;
+  try { const p = ex.call(document); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+}
+function liveToggleFullscreen() {
+  const view = $('#view-live');
+  if (!view) return;
+  if (liveFsElement()) { liveExitFullscreen(); return; }
+  const req = view.requestFullscreen || view.webkitRequestFullscreen;
+  if (!req) return;   // no Fullscreen API: nothing to toggle
+  try { const p = req.call(view); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+}
+$('#live-fs').addEventListener('click', liveToggleFullscreen);
+// Keep the chip in sync; bail OUT of any stray <video> fullscreen (a browser
+// double-click maps to video fullscreen) so the overlays can never be hidden;
+// and re-clamp the zoom pan limits, which depend on the (now larger) stage size.
+['fullscreenchange', 'webkitfullscreenchange'].forEach(evt =>
+  document.addEventListener(evt, () => {
+    if (liveFsElement() === $('#live-video')) liveExitFullscreen();
+    if (liveFullscreen() && zoom.s > ZOOM_MIN) { constrainZoomPan(); applyZoom(); }
+    syncLiveFs();
+  }));
+syncLiveFs();
+
 /* ---------------- shared time-range + pagination helpers ---------------- */
 const TIME_PRESETS = [
   ['', 'All time'], ['1h', 'Last 1 hour'], ['6h', 'Last 6 hours'],

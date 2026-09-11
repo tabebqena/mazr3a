@@ -373,6 +373,39 @@ body.live-full #view-live .controls { flex: 0 0 auto; margin-bottom: 0; }
 body.live-full #view-live .stage { flex: 1 1 auto; aspect-ratio: auto; min-height: 0; }
 body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
 
+/* ============ LIVE FULLSCREEN (whole Live view fills the screen) ============
+   #live-fs fullscreens the #view-live SECTION (never the <video>): the camera
+   toolbar, the frame's overlays (spinner / cam-tag / center button / idle/paused
+   Resume) AND the camera strip all stay visible - the Live analogue of the Events
+   stage fullscreen (plans/portal-events-stage-fullscreen.md). In fullscreen the
+   element is the rendering root and the ancestor `body.live-full` layout (which
+   normally sizes it) no longer applies, so it must carry its OWN size + padding.
+   The desktop `body.live-full #view-live` ROW layout still matches (higher
+   specificity) and is intentionally reused. */
+#view-live:fullscreen,
+#view-live:-webkit-full-screen {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  gap: 8px; padding: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+#view-live:fullscreen .live-ctl,
+#view-live:-webkit-full-screen .live-ctl { flex: 0 0 auto; margin-bottom: 0; }
+#view-live:fullscreen .stage,
+#view-live:-webkit-full-screen .stage {
+  flex: 1 1 auto; aspect-ratio: auto; min-height: 0;
+  border: 0; border-radius: 0;
+}
+#view-live:fullscreen .status,
+#view-live:-webkit-full-screen .status { flex: 0 0 auto; margin: 0; }
+/* Fullscreen toggle chip in the live control row (last control). */
+.live-ctl #live-fs { flex: 0 0 auto; font-size: 16px; }
+.live-ctl #live-fs[aria-pressed="true"] {
+  border-color: var(--accent); background: rgba(255,255,255,.08);
+  color: var(--accent);
+}
+
 /* ============ LIVE CAMERA PICKER (row of thumbnails + modal) ============ */
 /* The control row + zoom/pan styles now live in the LIVE CONTROL ROW section
    above; this section only styles the frame overlay label and the picker. */

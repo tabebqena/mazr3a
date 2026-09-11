@@ -138,6 +138,39 @@ $('#logout-btn').addEventListener('click', async () => {
   showLogin();
 });
 
+/* ---------------- collapsed nav (phones) ----------------
+   On phones the tab bar is collapsed into a dropdown toggled by #nav-toggle
+   (CSS shows that button only in the phone layout; on tablet/desktop the nav
+   is an inline row and the button is hidden). This applies to EVERY tab/view
+   and both orientations. The menu closes on tab pick, route change, outside
+   click/tap, Escape, and an orientation change. */
+const navToggle = $('#nav-toggle');
+function setNavOpen(open) {
+  if (!navToggle) return;
+  document.body.classList.toggle('nav-open', !!open);
+  navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+if (navToggle) {
+  navToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setNavOpen(!document.body.classList.contains('nav-open'));
+  });
+  // Picking a tab closes the menu (onRoute also closes it on the hash change).
+  $('#nav').addEventListener('click', (e) => {
+    if (e.target.closest('a')) setNavOpen(false);
+  });
+  document.addEventListener('click', (e) => {
+    if (!document.body.classList.contains('nav-open')) return;
+    if (!e.target.closest('#nav') && !e.target.closest('#nav-toggle')) {
+      setNavOpen(false);
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setNavOpen(false);
+  });
+  window.addEventListener('orientationchange', () => setNavOpen(false));
+}
+
 /* ---------------- boot / router ---------------- */
 async function boot() {
   try {
@@ -166,6 +199,7 @@ async function boot() {
 }
 
 function onRoute() {
+  setNavOpen(false);   // a route change always dismisses the collapsed menu
   const raw = (location.hash || '#/live').replace(/^#\//, '');
   const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes', 'debug'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';

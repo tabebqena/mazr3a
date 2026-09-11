@@ -51,6 +51,14 @@
       <div class="userbox">
         <span id="user-chip"></span>
         <button id="logout-btn" title="Sign out">&#9211;</button>
+        <!-- Phone LANDSCAPE only: collapses the horizontal nav into a dropdown
+             menu (a phone held sideways is wide but short, so the nav row costs
+             precious height). Hidden in every other layout via .nav-toggle;
+             shown by the (orientation: landscape) media query in style.css and
+             toggled by app.js (body.nav-open). -->
+        <button id="nav-toggle" class="nav-toggle" type="button"
+                title="Menu" aria-label="Menu"
+                aria-expanded="false" aria-controls="nav">&#9776;</button>
       </div>
     </header>
 

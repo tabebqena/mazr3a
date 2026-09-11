@@ -72,7 +72,10 @@ button { min-height: var(--tap-h); }
 .err { color: var(--red); font-size: 13px; margin-top: 8px; }
 
 /* ================= TOP BAR (mobile-first) =================
-   Row 1: brand + user/logout. Row 2: horizontally scrollable nav tabs. */
+   Phones (both orientations): ONE row of brand + user/logout + the #nav-toggle
+   hamburger; the tabs live in a floating dropdown (body.nav-open) so a phone
+   never spends a row (portrait) or height (landscape) on the nav. The
+   tablet/desktop media queries below restore the inline nav row. */
 .topbar {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: 8px 14px; padding: 8px 12px;
@@ -87,17 +90,31 @@ button { min-height: var(--tap-h); }
 #user-chip { color: var(--muted); font-size: 13px; max-width: 40vw; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 #logout-btn { min-height: 34px; padding: 5px 12px; width: auto; }
-
-nav {
-  order: 3; width: 100%;
-  display: flex; gap: 6px; overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+/* Hamburger that collapses the nav into a menu button. Phones (BOTH
+   orientations) show it; the tablet/desktop media queries below hide it again
+   and restore the inline nav row. */
+.nav-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: auto; min-width: 40px; min-height: 34px;
+  padding: 4px 10px; font-size: 18px; line-height: 1;
 }
-nav::-webkit-scrollbar { display: none; }
+
+/* Collapsed nav (phones): a floating dropdown anchored under the topbar,
+   shown only while body.nav-open is set (toggled by #nav-toggle in app.js). */
+nav {
+  position: absolute; top: 100%; right: 8px; left: auto;
+  min-width: 180px; max-width: 60vw;
+  display: none; flex-direction: column; gap: 4px;
+  padding: 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 14px 32px rgba(0,0,0,.55);
+  z-index: 30;
+}
+body.nav-open nav { display: flex; }
 nav a {
-  flex: 1 0 auto; text-align: center; white-space: nowrap;
-  color: var(--muted); text-decoration: none; padding: 9px 14px;
+  display: block; text-align: left; white-space: nowrap;
+  color: var(--muted); text-decoration: none; padding: 9px 12px;
   border-radius: 8px;
 }
 nav a.active { color: var(--text); background: var(--panel2); }
@@ -303,8 +320,8 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
   display: flex; justify-content: center; gap: 10px; margin-top: 8px;
 }
 .live-foot button {
-  width: auto; min-width: 0; min-height: 34px; padding: 4px 16px;
-  font-size: 18px; line-height: 1; border-radius: 20px;
+  width: auto; min-width: 0; min-height: 30px; padding: 2px 12px;
+  font-size: 16px; line-height: 1; border-radius: 20px;
   background: var(--panel2);
 }
 .live-foot button:hover { border-color: var(--accent); }
@@ -647,7 +664,8 @@ body.lb-open { overflow: hidden; }
 
 /* ============================================================
    TABLETS / SMALL DESKTOP (>=640px wide AND >=560px tall)
-   Controls flow into a row; grids get 2 columns.
+   Controls flow into a row; grids get 2 columns; the nav is
+   restored to an INLINE row and the hamburger is hidden.
    min-height guard: a phone held in landscape is wide but short,
    so it must NOT reach this block (else the inline camera strip
    shows and the full-bleed live stage collapses to a tiny band).
@@ -657,8 +675,17 @@ body.lb-open { overflow: hidden; }
   main { padding: 18px; }
 
   .topbar { flex-wrap: nowrap; padding: 10px 16px; }
-  nav { order: 0; width: auto; flex: 1; overflow: visible; justify-content: flex-start; }
-  nav a { flex: 0 0 auto; padding: 7px 13px; }
+  /* Restore the inline nav row and hide the collapsed-menu hamburger. */
+  .nav-toggle { display: none; }
+  nav {
+    position: static; top: auto; right: auto; left: auto;
+    display: flex; flex-direction: row; flex: 1; order: 0;
+    width: auto; min-width: 0; max-width: none;
+    gap: 6px; padding: 0; overflow: visible;
+    background: none; border: 0; border-radius: 0; box-shadow: none;
+    z-index: auto;
+  }
+  nav a { flex: 0 0 auto; display: inline-block; padding: 7px 13px; }
 
   .controls { gap: 10px 14px; }
   .controls label { font-size: 12px; }
@@ -759,4 +786,51 @@ body.lb-open { overflow: hidden; }
   font-size: 14px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+/* ============================================================
+   PHONE IN LANDSCAPE (wide but SHORT: orientation landscape AND
+   max-height < 560px). Mutually exclusive with the tablet/desktop
+   blocks above (which require min-height: 560px), so this is the
+   ONLY place a sideways phone is styled.
+   The nav is ALREADY collapsed for every phone (see the base nav /
+   .nav-toggle rules above) - that applies to all tabs in both
+   orientations. This block only:
+   - compacts the topbar to a slim single row, and
+   - hands the Live view as much height as possible to the frame,
+   - shrinking prev/next to tiny round OVERLAY buttons (no layout cost).
+   Everything else keeps the mobile layout.
+   ============================================================ */
+@media (orientation: landscape) and (max-height: 560px) {
+  /* --- topbar: slim single row (nav dropdown comes from the base rules) --- */
+  .topbar { flex-wrap: nowrap; padding: 4px 10px; gap: 6px 10px; }
+  .brand { font-size: 15px; }
+  #user-chip { max-width: 22vw; font-size: 12px; }
+  #logout-btn { min-height: 32px; padding: 3px 10px; }
+
+  /* --- Live view: give the frame as much height as possible --- */
+  body.live-full main { padding: 4px; gap: 4px; }
+  body.live-full #view-live { position: relative; gap: 4px; }
+  body.live-full #view-live .live-ctl { margin-bottom: 4px; }
+  /* The camera name is already overlaid on the frame (#live-cam-tag); drop the
+     text status line so it does not steal a row from the video. */
+  body.live-full #view-live .status { display: none; }
+
+  /* The fixed version tag (bottom-right) would sit under the next-cam overlay
+     in this short layout - hide it here (it is still shown on every other
+     screen/orientation). */
+  body.live-full .app-ver { display: none; }
+
+  /* prev/next: tiny round overlays pinned to the frame's bottom corners. */
+  body.live-full #view-live .live-foot {
+    position: absolute; left: 8px; right: 8px; bottom: 8px;
+    margin: 0; justify-content: space-between;
+    pointer-events: none;
+  }
+  .live-foot button {
+    width: 34px; min-width: 34px; min-height: 34px; padding: 0;
+    border-radius: 50%; font-size: 18px;
+    background: rgba(0,0,0,.5); border-color: rgba(255,255,255,.28);
+    pointer-events: auto;
+  }
 }

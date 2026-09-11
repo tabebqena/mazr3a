@@ -27,8 +27,10 @@ in the users list, so it can be inspected/migrated.
 admin-only tabs (debug / user management) are implied by `is_admin` and are
 never stored here.
 
-`quota_bytes` is RESERVED for a future per-user egress quota; it is stored and
-displayed but not enforced yet (0 = unset).
+`quota_bytes` is the per-user egress quota (bytes), shown in the SPA as a
+progress bar (used / quota). Every NEW account defaults to DEFAULT_QUOTA_BYTES
+(5 GiB); an explicit 0 means UNLIMITED. It is display-only for now (not enforced
+at the egress chokepoints).
 """
 import json
 import os
@@ -44,6 +46,13 @@ import time
 AVAILABLE_TABS = ("live", "events", "fire", "episodes", "adaptive", "scenes")
 ALLOWED_PERMISSIONS = tuple("tab_" + t for t in AVAILABLE_TABS)
 
+# Default per-user egress quota (bytes) = 5 GiB. The SPA edits this as a decimal
+# GB value and converts with 1024**3, so "5" in the Manage tab == this constant.
+# 0 = unlimited (an admin can set that deliberately).
+DEFAULT_QUOTA_BYTES = 5 * 1024 ** 3
+# Schema/data version stamped in PRAGMA user_version (see configure()).
+_SCHEMA_VERSION = 1
+
 # Usernames are path-safe (used in /api/users/<name>) and modest in length.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -52,7 +61,7 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 MAX_PHOTO_BYTES = 512 * 1024
 _DATA_URL_RE = re.compile(r"^data:image/(png|jpe?g|webp|gif|svg\+xml);base64,", re.I)
 
-_SCHEMA = """
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS users (
     username       TEXT PRIMARY KEY COLLATE NOCASE,
     display_name   TEXT NOT NULL DEFAULT '',
@@ -60,7 +69,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin       INTEGER NOT NULL DEFAULT 0,
     is_active      INTEGER NOT NULL DEFAULT 1,
     permissions    TEXT NOT NULL DEFAULT '[]',
-    quota_bytes    INTEGER NOT NULL DEFAULT 0,
+    quota_bytes    INTEGER NOT NULL DEFAULT {DEFAULT_QUOTA_BYTES},
     password_hash  TEXT NOT NULL,
     default_camera TEXT NOT NULL DEFAULT '',
     created_at     REAL NOT NULL,
@@ -179,6 +188,16 @@ class UserStore:
             if "is_active" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN is_active "
                              "INTEGER NOT NULL DEFAULT 1")
+            # Migration (user_version 0 -> 1): rows created before the default
+            # quota existed carry 0 ("unset"); give them the 5 GiB default ONCE
+            # so an explicit 0 an admin sets LATER (unlimited) is never
+            # overridden on the next restart.
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if int(version or 0) < _SCHEMA_VERSION:
+                conn.execute(
+                    "UPDATE users SET quota_bytes = ? WHERE quota_bytes = 0",
+                    (DEFAULT_QUOTA_BYTES,))
+                conn.execute("PRAGMA user_version = %d" % _SCHEMA_VERSION)
             conn.commit()
         finally:
             conn.close()
@@ -316,13 +335,19 @@ class UserStore:
 
     # ---- write -----------------------------------------------------------
     def create(self, username, password_hash, display_name="", is_admin=False,
-               is_active=True, permissions=None, quota_bytes=0,
+               is_active=True, permissions=None, quota_bytes=None,
                default_camera=""):
-        """Insert a new user. Raises ValueError on bad input/SQLite on conflict."""
+        """Insert a new user. Raises ValueError on bad input/SQLite on conflict.
+
+        `quota_bytes` omitted (None) -> DEFAULT_QUOTA_BYTES (5 GiB); an explicit
+        value is clamped to >= 0 (0 = unlimited).
+        """
         name = normalize_username(username)
         if not password_hash:
             raise ValueError("password hash required")
         perms = json.dumps(normalize_permissions(permissions))
+        quota = (DEFAULT_QUOTA_BYTES if quota_bytes is None
+                 else max(0, int(quota_bytes or 0)))
         now = _now()
         conn = self._connect()
         try:
@@ -332,7 +357,7 @@ class UserStore:
                 "default_camera, created_at, updated_at) "
                 "VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (name, str(display_name or "")[:64], 1 if is_admin else 0,
-                 1 if is_active else 0, perms, max(0, int(quota_bytes or 0)),
+                 1 if is_active else 0, perms, quota,
                  password_hash, str(default_camera or "")[:64], now, now))
             conn.commit()
         finally:

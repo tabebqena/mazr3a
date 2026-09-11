@@ -1,4 +1,4 @@
-
+ 
 /* ============================================================
    mazr3a CCTV portal - MOBILE-FIRST responsive theme.
    Base rules = phones (single column, full width, tap targets).
@@ -787,6 +787,8 @@ body.lb-open { overflow: hidden; }
      #user-chip in the userbox instead. */
   .nav-toggle { display: none; }
   nav .nav-user, nav .nav-logout, nav .nav-ver { display: none; }
+  /* The quota bar lives in the footer on large screens; hide the phone copy. */
+  nav .quota-widget { display: none; }
   nav {
     position: static; top: auto; right: auto; left: auto;
     display: flex; flex-direction: row; flex: 1; order: 0;
@@ -1093,6 +1095,44 @@ body.lb-open { overflow: hidden; }
   cursor: pointer; white-space: nowrap;
 }
 .usage-chip:hover { color: var(--text); border-color: var(--muted); }
+/* Line holding the usage chip + version label under the quota bar. */
+.app-ver-line { display: block; margin-top: 3px; }
+
+/* ---- Per-user quota progress bar ----
+   Shown on LARGE screens in the fixed footer (#quota-footer) and on PHONES in
+   the collapsed menu (#quota-nav); CSS shows only one at a time. The fill turns
+   amber near the limit and red once over. A 0 quota (unlimited) hides it
+   (app.js). */
+.quota-widget {
+  display: block; width: 100%; margin: 0; padding: 0;
+  min-height: 0; background: none; border: 0;
+  text-align: left; cursor: pointer; color: var(--muted);
+  pointer-events: auto;
+}
+.quota-label {
+  display: block; font-size: 11px; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.quota-track {
+  display: block; height: 6px; margin-top: 3px;
+  background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 999px; overflow: hidden;
+}
+.quota-fill {
+  display: block; height: 100%; width: 0;
+  background: var(--accent); border-radius: 999px;
+  transition: width .3s ease;
+}
+.quota-fill.warn { background: var(--amber); }
+.quota-fill.over { background: var(--red); }
+/* Footer variant (large screens): a compact block above the version line. */
+#quota-footer { width: min(210px, 46vw); margin: 0 0 4px; }
+/* Collapsed-menu variant (phones): a full-width row under the username. */
+nav .quota-widget {
+  width: auto; padding: 7px 12px; margin: 0 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+.quota-summary { margin: 0 0 10px; font-size: 13px; }
 
 .usage-body { padding: 12px 14px; overflow: auto; }
 .usage-note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }

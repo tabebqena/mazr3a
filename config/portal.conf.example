@@ -23,6 +23,11 @@
 #     python portal/genpass.py --username admin        # prompts (hidden)
 # Format: user <name> <pbkdf2$iters$salt$hash> [default_camera=<cam>]
 # The user literally named `admin` is seeded as the first administrator.
+#
+# Each account also has a per-user egress QUOTA (bytes), shown to the user as a
+# progress bar in the status bar (large screens) / the collapsed menu (phones).
+# NEW accounts default to 5 GiB and the quota is edited per user in the Manage
+# tab (GB, 0 = unlimited) - there is no portal.conf key for it.
 # ------------------------------------------------------------------
 # user admin pbkdf2$600000$<salt_hex>$<hash_hex> default_camera=cam01
 

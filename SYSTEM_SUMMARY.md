@@ -1,4 +1,4 @@
-# System Summary — mazr3a Edge Security System
+ # System Summary — mazr3a Edge Security System
 
 > **Purpose.** A single, maintained inventory of the whole system: every service
 > in the stack, where its development files live, the host crontab, the required
@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v30` |
+| Summary version | `v31` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.8.1` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.9.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -149,6 +149,13 @@ with `docker compose up -d` / `docker compose down`.
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/usage.db` + `media/portal/users.db`) |
 | Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB` (default `/media/portal/users.db`) |
 | Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Nav layout:** on phones (both orientations) the bar collapses into a scrollable `#nav-toggle` hamburger dropdown carrying the **username** (`#nav-user`), the tabs, **Sign out** (`#nav-logout`), and the version (`#ver-no-nav`). The **username** and **sign-out** appear ONLY there on phones (the topbar `#logout-btn` and the fixed `.app-ver` tag are hidden on phones); the horizontal (tablet/desktop) bar is a scrollable inline link row with the **username** (`#user-chip`) + sign-out in the userbox and the version tag as the lowermost fixed row. A phone in **landscape** turns the Live controls into a **thin vertical column** beside the frame (max frame height) and lays the **Events** tab out as a **3-column grid** (narrow scrollable filters | large video | a narrow scrollable clip strip `#ev-clips`; filters grid is narrower via `#view-events .controls`, all via `body.events-full`). **Center play/stop (YouTube-style):** tapping the Live or Events frame shows a big round `#live-center` / `#ev-center` button (glyph set from the real state) that stops/resumes the live stream or plays/pauses the clip; pan-drag and the native controls strip are ignored. A **Stop** button (`#live-stop`) also halts the live stream. **Events clip list:** the Prev/Next pager is **gone** - the strip shows the first `EV_PAGE` events and grows with a trailing **Load more** (`#ev-loadmore`), ending in **No more videos** (`.ev-end`); the **count** (`#ev-count`, e.g. `564 event(s)`) sits at the TOP of the thumbnail area. The named hamburger `#ev-clips-toggle` collapses the thumbnails in BOTH portrait and landscape, and the strip **auto-collapses while a clip plays** and re-appears when it stops (`body.ev-clips-collapsed`, theater mode). The old prev/next camera buttons were **removed** (cameras are picked from the thumbnails / modal). (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
+
+> **Per-user quota.** Every account carries a per-user egress **quota**
+> (`quota_bytes`, default **5 GiB**; `0` = unlimited), editable in the admin
+> **Manage** tab. The SPA renders a **used / quota progress bar** (with the
+> percentage) — in the fixed footer tag on large screens (`#quota-footer`) and in
+> the phone collapsed menu (`#quota-nav`). An admin can no longer change their
+> **own** administrator flag from the portal (UI disabled + server guard).
 
 ### 3.7 `scenereader` — cross-camera episode narrator
 
@@ -339,7 +346,7 @@ sudo apt install -y git python3
 ### 7.3 Credentials — how they work
 - **Camera creds:** `.env` → `env_file` on the `frigate` container → `{FRIGATE_*}` placeholders in `config/config.yaml`. Frigate 0.17 has **no `!env_var` tag** — only `FRIGATE_`-prefixed substitution. `cam08` (Hikvision) uses separate `FRIGATE_HIK_RTSP_USER/PASS`.
 - **Telegram:** shared git-ignored `config/telegram.conf`, read by all senders + the bot. `CHAT_ID` accepts a comma-separated recipient list.
-- **Portal:** git-ignored `config/portal.conf` holds `SECRET_KEY` + tunables. Accounts are **runtime** records in `media/portal/users.db` — managed from the portal **Account** tab (no container restart) and seeded ONCE from any `user` line; `python portal/genpass.py --username NAME` still generates such a seed line.
+- **Portal:** git-ignored `config/portal.conf` holds `SECRET_KEY` + tunables. Accounts are **runtime** records in `media/portal/users.db` — managed from the portal **Account** tab (no container restart) and seeded ONCE from any `user` line; `python portal/genpass.py --username NAME` still generates such a seed line. Each account also carries a per-user egress **quota** (default **5 GiB**, `0` = unlimited), edited in the admin **Manage** tab and shown as a **used / quota progress bar** in the status bar (large screens) / collapsed menu (phones).
 
 ---
 

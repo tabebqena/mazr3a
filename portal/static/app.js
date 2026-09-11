@@ -2435,6 +2435,44 @@ function fmtBytes(n) {
   return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + ' ' + units[i];
 }
 
+/* ---- per-user quota (used / quota) progress bar ----
+   state.me.quota_bytes (from /api/me) is the account's data budget; the USED
+   total is state.usage.total.bytes (from /api/usage). The bar lives in the
+   large-screen footer (#quota-footer) AND in the phone collapsed menu
+   (#quota-nav) - CSS shows only one at a time. 0 = unlimited (bar hidden). */
+const GB_BYTES = 1024 * 1024 * 1024;
+
+function quotaInfo() {
+  const quota = Number((state.me && state.me.quota_bytes) || 0);
+  const used = Number((state.usage && state.usage.total &&
+                       state.usage.total.bytes) || 0);
+  const pct = quota > 0 ? (used / quota) * 100 : 0;
+  return { used: used, quota: quota, pct: pct };
+}
+
+function quotaText(info) {
+  const p = info.pct >= 10 ? info.pct.toFixed(0) : info.pct.toFixed(1);
+  return fmtBytes(info.used) + ' / ' + fmtBytes(info.quota) + ' (' + p + '%)';
+}
+
+function renderQuotaBars() {
+  const info = quotaInfo();
+  ['quota-footer', 'quota-nav'].forEach((id) => {
+    const box = $('#' + id);
+    if (!box) return;
+    if (!info.quota) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    const txt = $('#' + id + '-text');
+    if (txt) txt.textContent = quotaText(info);
+    const fill = $('#' + id + '-fill');
+    if (fill) {
+      fill.style.width = Math.min(100, info.pct).toFixed(1) + '%';
+      fill.classList.toggle('warn', info.pct >= 80 && info.pct < 100);
+      fill.classList.toggle('over', info.pct >= 100);
+    }
+  });
+}
+
 /* Self-view table: today / 7d / 30d / all time, by kind plus a total column. */
 function usageSelfTable(b) {
   let head = '<tr><th></th>';
@@ -2469,6 +2507,7 @@ function renderUsageSelf() {
     fmtBytes(t.events) + ' \u00b7 Other ' + fmtBytes(t.other);
   const chip = $('#usage-chip');
   if (chip) { chip.textContent = 'Today: ' + txt; chip.classList.remove('hidden'); }
+  renderQuotaBars();
 }
 
 async function loadUsageSelf() {
@@ -2688,7 +2727,12 @@ async function loadUserUsage() {
     const data = await api('/api/usage');
     state.usage = data;
     renderUsageSelf();
-    box.innerHTML = usageSelfTable(data) + usageNote(data.retention_days);
+    const info = quotaInfo();
+    const qline = info.quota
+      ? '<p class="quota-summary">Quota: <b>' + esc(quotaText(info)) +
+        '</b></p>' : '';
+    box.innerHTML = qline + usageSelfTable(data) +
+      usageNote(data.retention_days);
   } catch (e) {
     box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
   }
@@ -2764,6 +2808,11 @@ function renderManageEdit() {
   // You cannot deactivate or delete your OWN account (the server blocks it too).
   $('#mu-active').disabled = isSelf || !!u.is_admin;
   $('#mu-delete').disabled = isSelf;
+  // Your OWN administrator flag is NOT editable from the portal (too easy to
+  // lock yourself out); the server also rejects a self-demotion.
+  $('#mu-admin').disabled = isSelf;
+  const gb = Number(u.quota_bytes || 0) / GB_BYTES;
+  $('#mu-quota').value = String(Math.round(gb * 100) / 100);
   renderTabBoxes('mu-perms', u.permissions, true, !!u.is_admin);
   $('#mu-edit-msg').textContent = '';
 }
@@ -2848,10 +2897,13 @@ $('#mu-save').addEventListener('click', async () => {
   const msg = $('#mu-edit-msg');
   msg.textContent = '';
   const body = {
-    is_admin: $('#mu-admin').checked,
     permissions: $$('#mu-perms input:checked').map(i => i.value),
   };
+  // Skipped when the control is disabled (your OWN admin flag / active state).
+  if (!$('#mu-admin').disabled) body.is_admin = $('#mu-admin').checked;
   if (!$('#mu-active').disabled) body.is_active = $('#mu-active').checked;
+  const qgb = parseFloat($('#mu-quota').value);
+  if (!isNaN(qgb) && qgb >= 0) body.quota_bytes = Math.round(qgb * GB_BYTES);
   const btn = $('#mu-save');
   btn.disabled = true;
   try {
@@ -2927,6 +2979,8 @@ function gotoSelfTab() {
 $('#user-chip').addEventListener('click', gotoSelfTab);
 $('#nav-user').addEventListener('click', gotoSelfTab);
 $('#usage-chip').addEventListener('click', gotoSelfTab);
+$('#quota-footer').addEventListener('click', gotoSelfTab);
+$('#quota-nav').addEventListener('click', gotoSelfTab);
 
 /* ---------------- admin Debug: logs of containers (selectable) ---------------- */
 /* The read-only `logs` sidecar stays idle; the portal pulls its container

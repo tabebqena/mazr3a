@@ -39,7 +39,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.0"
 _HTMX = None
 
 
@@ -396,7 +396,8 @@ async def create_user(request: Request, admin: dict = Depends(current_admin)):
             is_admin=bool(body.get("is_admin")),
             is_active=bool(body.get("is_active", True)),
             permissions=body.get("permissions"),
-            quota_bytes=body.get("quota_bytes") or 0,
+            # Omitted (None) -> the store applies DEFAULT_QUOTA_BYTES (5 GiB).
+            quota_bytes=body.get("quota_bytes"),
             default_camera=body.get("default_camera") or "",
         )
         if body.get("photo"):
@@ -448,6 +449,13 @@ async def update_user(username: str, request: Request,
                 raise HTTPException(status_code=400, detail="invalid quota")
         if "is_admin" in body:
             new_admin = 1 if body.get("is_admin") else 0
+            # An admin must never change their OWN administrator flag from the
+            # portal (the Manage tab disables the checkbox too) - it is far too
+            # easy to lock yourself out by mistake.
+            if not new_admin and _same_user(user, target["username"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="cannot change your own administrator access")
             # Never remove the last USABLE administrator (would lock everyone
             # out). An already-inactive admin does not count.
             if (not new_admin and target["is_admin"] and target["is_active"]

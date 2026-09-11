@@ -39,6 +39,15 @@
              the Account (User) tab. -->
         <a id="nav-user" class="nav-user" data-view="user" href="#/user"
            title="Account settings"></a>
+        <!-- Quota progress bar for PHONES (the fixed footer tag is hidden there).
+             Filled by app.js from /api/me (quota) + /api/usage (used); hidden
+             when no quota is set. Clicking opens the Account tab. -->
+        <button id="quota-nav" class="quota-widget hidden" type="button"
+                title="Bandwidth used / quota - open the account tab">
+          <span id="quota-nav-text" class="quota-label"></span>
+          <span class="quota-track"><span id="quota-nav-fill"
+                class="quota-fill"></span></span>
+        </button>
         <a data-view="live" href="#/live">Live</a>
         <a data-view="events" href="#/events">Events</a>
         <a data-view="fire" href="#/fire">Fire alerts</a>
@@ -532,6 +541,14 @@
                 <input id="mu-active" type="checkbox"> Active
                 <span class="muted">(disable to block sign-in)</span>
               </label>
+              <!-- Per-user egress quota, edited in GB (0 = unlimited). The
+                   progress bar in the status bar/menu shows used / quota. -->
+              <label>Quota (GB)
+                <input id="mu-quota" type="number" min="0" step="0.1"
+                       inputmode="decimal">
+                <span class="muted">Data budget shown as a progress bar.
+                  0 = unlimited.</span>
+              </label>
               <div class="user-perms">
                 <span class="user-perms-label">Tab access</span>
                 <div id="mu-perms" class="user-perms-box"></div>
@@ -571,13 +588,25 @@
        shows before the app boots. app.js re-fills #ver-no from /api/settings
        (the same constant) once the app boots. Never hard-code a version here. -->
   <footer class="app-ver" title="Portal version">
+    <!-- Quota progress bar (LARGE screens - the footer tag is hidden on phones,
+         which show #quota-nav in the collapsed menu instead). Filled by app.js
+         from /api/me (quota) + /api/usage (used); hidden when no quota is set.
+         Clicking opens the Account (User) tab. -->
+    <button id="quota-footer" class="quota-widget hidden" type="button"
+            title="Bandwidth used / quota - open the account tab">
+      <span id="quota-footer-text" class="quota-label"></span>
+      <span class="quota-track"><span id="quota-footer-fill"
+            class="quota-fill"></span></span>
+    </button>
     <!-- Self-view bandwidth summary (every user). The portal counts the real
          bytes it sends this account (see portal/usage.py); filled from
          /api/usage by app.js. Clicking opens the Account (User) tab, which now
          carries the EMBEDDED usage card (the Usage tab was removed). -->
-    <button id="usage-chip" class="usage-chip hidden" type="button"
-            title="Your bandwidth usage - open the account tab"></button>
-    v<span id="ver-no">{{ APP_VERSION }}</span>
+    <span class="app-ver-line">
+      <button id="usage-chip" class="usage-chip hidden" type="button"
+              title="Your bandwidth usage - open the account tab"></button>
+      v<span id="ver-no">{{ APP_VERSION }}</span>
+    </span>
   </footer>
 
   <!-- Fire evidence lightbox: clicking a fire card image opens this full-screen

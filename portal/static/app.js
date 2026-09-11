@@ -183,6 +183,76 @@ if (navToggle) {
   window.addEventListener('orientationchange', () => setNavOpen(false));
 }
 
+/* ---------------- PWA install prompt (Android home-screen app) ----------------
+   Chrome fires `beforeinstallprompt` when the portal is installable (manifest +
+   icons over HTTPS) and is NOT already installed. We stash that event, reveal
+   the in-app Install UI, and call prompt() only from a user gesture. Nothing
+   here is needed for the portal to work - the browser URL stays fully usable. */
+const INSTALL_DISMISS_KEY = 'portal.installDismissed';  // localStorage: user said no
+let deferredInstallPrompt = null;   // the stashed beforeinstallprompt event
+
+function isStandalone() {
+  // Android WebAPK/PWA runs without browser chrome -> nothing to install.
+  try {
+    return window.matchMedia('(display-mode: standalone)').matches
+      || window.matchMedia('(display-mode: fullscreen)').matches
+      || window.navigator.standalone === true
+      || (document.referrer || '').startsWith('android-app://');
+  } catch (e) { return false; }
+}
+
+function installDismissed() {
+  try { return localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; }
+  catch (e) { return false; }
+}
+
+// Show/hide BOTH install affordances (banner + collapsed-menu entry) together.
+function setInstallUi(visible) {
+  const banner = $('#install-banner');
+  if (banner) banner.classList.toggle('hidden', !visible);
+  const navBtn = $('#nav-install');
+  if (navBtn) navBtn.classList.toggle('hidden', !visible);
+}
+
+async function promptInstall() {
+  if (!deferredInstallPrompt) return;
+  const ev = deferredInstallPrompt;
+  deferredInstallPrompt = null;   // a prompt event can only be used ONCE
+  setInstallUi(false);
+  try {
+    ev.prompt();
+    await ev.userChoice;          // { outcome: 'accepted' | 'dismissed' }
+  } catch (e) { /* ignore - the browser menu still offers installation */ }
+}
+
+function initInstallPrompt() {
+  setInstallUi(false);
+  if (isStandalone()) return;     // already an app: never offer installation
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();           // suppress Chrome's own mini-infobar
+    deferredInstallPrompt = e;
+    if (installDismissed()) return;
+    setInstallUi(true);
+  });
+  const navBtn = $('#nav-install');
+  if (navBtn) navBtn.addEventListener('click', () => {
+    setNavOpen(false);
+    promptInstall();
+  });
+  const go = $('#install-banner-go');
+  if (go) go.addEventListener('click', promptInstall);
+  const x = $('#install-banner-x');
+  if (x) x.addEventListener('click', () => {
+    try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch (e) {}
+    setInstallUi(false);
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    setInstallUi(false);
+    try { localStorage.removeItem(INSTALL_DISMISS_KEY); } catch (e) {}
+  });
+}
+
 /* ---------------- boot / router ---------------- */
 async function boot() {
   try {
@@ -215,6 +285,7 @@ async function boot() {
   if (vnn && state.settings.app_version) vnn.textContent = state.settings.app_version;
   loadUsageSelf();     // footer/nav self-view (non-blocking)
   await loadCameras();
+  initInstallPrompt(); // PWA install UI (no-op unless Chrome offers it)
   window.addEventListener('hashchange', onRoute);
   onRoute();
   // Keep the self-view roughly current while the tab is visible (a tiny JSON).

@@ -39,7 +39,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.10.0"
 _HTMX = None
 
 
@@ -186,11 +186,19 @@ def _frigate_base(request: Request):
 # the current fingerprint. See .roo/rules/portal-cache-busting.md.
 
 # Cacheable assets to fingerprint: (relpath under STATIC_DIR, {{ TOKEN }}).
+# The icons/*.png are the installable-PWA icon set (Android home-screen icon),
+# generated from favicon.svg by dev_scripts/make_portal_pwa_icons.sh and
+# referenced by /manifest.webmanifest (see _icon_url below) - fingerprinting
+# them means bumping APP_VERSION or editing an icon rotates its URL.
 CACHEABLE_ASSETS = [
     ("style.css", "ASSET_STYLE"),
     ("app.js", "ASSET_APP"),
     ("vendor/hls.min.js", "ASSET_HLS"),
     ("favicon.svg", "ASSET_FAVICON"),
+    ("icons/icon-192.png", "ASSET_ICON_192"),
+    ("icons/icon-512.png", "ASSET_ICON_512"),
+    ("icons/icon-maskable-512.png", "ASSET_ICON_MASKABLE"),
+    ("icons/apple-touch-icon.png", "ASSET_ICON_APPLE"),
 ]
 # Fingerprinted public name -> real relpath, e.g. "app-154kuhn7.js" -> "app.js".
 ASSET_ALIAS: dict = {}
@@ -271,6 +279,57 @@ async def static_asset(path: str):
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon_ico():
     return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
+def _icon_url(token: str) -> str:
+    """Fingerprinted public URL of a PWA icon, e.g. /static/icons/icon-512-<h>.png."""
+    return f"/static/{_ASSET_FINGERPRINTS[token]}"
+
+
+# Installable-PWA manifest (Android: Chrome -> "Install app" -> WebAPK). Built
+# PER REQUEST rather than served as a static file because its icon URLs must
+# carry the CURRENT fingerprints - _render_index() only rewrites index.html, so
+# a static manifest could not. no-cache so a bumped APP_VERSION (or an edited
+# icon) is reflected immediately.
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest():
+    doc = {
+        "id": "/",
+        "name": "mazr3a CCTV",
+        "short_name": "mazr3a",
+        "description": "Farm CCTV portal - live view, events and fire alerts",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": "#0b0e12",
+        "theme_color": "#0b0e12",
+        "icons": [
+            {"src": _icon_url("ASSET_ICON_192"), "sizes": "192x192",
+             "type": "image/png", "purpose": "any"},
+            {"src": _icon_url("ASSET_ICON_512"), "sizes": "512x512",
+             "type": "image/png", "purpose": "any"},
+            {"src": _icon_url("ASSET_ICON_MASKABLE"), "sizes": "512x512",
+             "type": "image/png", "purpose": "maskable"},
+        ],
+    }
+    return JSONResponse(
+        doc,
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# iOS probes /apple-touch-icon.png by default; the fingerprinted icon is linked
+# from index.html, this is the convenience default (current-but-no-cache, since
+# the bare name is not fingerprinted).
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+async def apple_touch_icon():
+    return FileResponse(
+        STATIC_DIR / "icons/apple-touch-icon.png",
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 # --------------------------------------------------------------------------

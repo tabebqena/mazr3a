@@ -10,6 +10,17 @@
      forced to fetch fresh versions after an update. NEVER hard-code these. -->
 <link rel="icon" type="image/svg+xml" href="{{ ASSET_FAVICON }}">
 <link rel="stylesheet" href="{{ ASSET_STYLE }}">
+<!-- Installable PWA: Android Chrome -> "Install app" -> home-screen WebAPK.
+     The manifest is built PER REQUEST by portal/app.py so its icon URLs carry
+     the current fingerprints - do NOT replace it with a static file. There is
+     deliberately NO service worker (see plans/portal-android-pwa.md). -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0e12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="mazr3a">
+<link rel="apple-touch-icon" href="{{ ASSET_ICON_APPLE }}">
 </head>
 <body>
   <!-- Login -->
@@ -74,6 +85,10 @@
              mirrors #logout-btn; the version mirrors the footer label (same
              APP_VERSION source) so the menu is self-contained. -->
         <button id="nav-logout" class="nav-logout" type="button">Sign out</button>
+        <!-- PWA install entry, shown only when app.js has a deferred install
+             prompt available (Chrome beforeinstallprompt) and the app is not
+             already running standalone. Mirrors #install-banner-go. -->
+        <button id="nav-install" class="nav-install hidden" type="button">Install app</button>
         <span class="nav-ver">v<span id="ver-no-nav">{{ APP_VERSION }}</span></span>
       </nav>
       <div class="userbox">
@@ -640,6 +655,23 @@
         <div id="sc-lb-meta" class="fw-lb-meta"></div>
       </div>
     </div>
+  </div>
+
+  <!-- PWA install prompt. Revealed by app.js ONLY when Chrome fires
+       beforeinstallprompt and the app is not already installed (standalone).
+       Tapping Install calls the deferred prompt; the x remembers the refusal.
+       Hidden by default so it can never flash for desktop/iOS/installed users. -->
+  <div id="install-banner" class="install-banner hidden" role="dialog"
+       aria-modal="false" aria-label="Install the mazr3a CCTV app">
+    <img id="install-banner-icon" class="install-banner-icon"
+         src="{{ ASSET_ICON_192 }}" alt="" width="36" height="36">
+    <div class="install-banner-text">
+      <strong>Install the app</strong>
+      <span>Add mazr3a CCTV to your home screen for a full-screen app.</span>
+    </div>
+    <button id="install-banner-go" class="install-go" type="button">Install</button>
+    <button id="install-banner-x" class="install-x" type="button"
+            aria-label="Dismiss">&times;</button>
   </div>
 
   <div id="global-err" class="toast hidden"></div>

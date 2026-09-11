@@ -13,10 +13,11 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v32` |
+| Summary version | `v33` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.9.1` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.10.0` (see [`portal/app.py`](portal/app.py:42)) — bump on every portal change |
+| Portal PWA | Installable on Android (per-request manifest + fingerprinted icons, **no service worker by design**) — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 
 ---
 
@@ -148,6 +149,7 @@ with `docker compose up -d` / `docker compose down`.
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/usage.db` + `media/portal/users.db`) |
 | Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB` (default `/media/portal/users.db`) |
+| PWA (Android) | **Installable web app** — Chrome → *Install app* → home-screen WebAPK. `/manifest.webmanifest` is built per-request by [`portal/app.py`](portal/app.py) so its icon URLs carry the CURRENT fingerprints (**no service worker, by design** — a CCTV portal is useless offline and a SW would fight the cache-busting policy). Icon set [`portal/static/icons/`](portal/static/icons/) is generated from the single brand source [`portal/static/favicon.svg`](portal/static/favicon.svg) by [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh). Install UI = `#install-banner` + `#nav-install` (`app.js`, `beforeinstallprompt`). No new port/compose change. See [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md). |
 | Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Nav layout:** on phones (both orientations) the bar collapses into a scrollable `#nav-toggle` hamburger dropdown carrying the **username** (`#nav-user`), the tabs, **Sign out** (`#nav-logout`), and the version (`#ver-no-nav`). The **username** and **sign-out** appear ONLY there on phones (the topbar `#logout-btn` and the fixed `.app-ver` tag are hidden on phones); the horizontal (tablet/desktop) bar is a scrollable inline link row with the **username** (`#user-chip`) + sign-out in the userbox and the version tag as the lowermost fixed row. A phone in **landscape** turns the Live controls into a **thin vertical column** beside the frame (max frame height) and lays the **Events** tab out as a **3-column grid** (narrow scrollable filters | large video | a narrow scrollable clip strip `#ev-clips`; filters grid is narrower via `#view-events .controls`, all via `body.events-full`). **Center play/stop (YouTube-style):** tapping the Live or Events frame shows a big round `#live-center` / `#ev-center` button (glyph set from the real state) that stops/resumes the live stream or plays/pauses the clip; pan-drag and the native controls strip are ignored. A **Stop** button (`#live-stop`) also halts the live stream. **Events clip list:** the Prev/Next pager is **gone** - the strip shows the first `EV_PAGE` events and grows with a trailing **Load more** (`#ev-loadmore`), ending in **No more videos** (`.ev-end`); the **count** (`#ev-count`, e.g. `564 event(s)`) sits at the TOP of the thumbnail area. The named hamburger `#ev-clips-toggle` collapses the thumbnails in BOTH portrait and landscape, and the strip **auto-collapses while a clip plays** and re-appears when it stops (`body.ev-clips-collapsed`, theater mode). The old prev/next camera buttons were **removed** (cameras are picked from the thumbnails / modal). (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
 
 > **Per-user quota.** Every account carries a per-user egress **quota**
@@ -192,7 +194,7 @@ resident. The **adaptive scene layer** (movement ownership) is specified in
 | `scenereader` | [`scenereader/`](scenereader/) (service + modules), [`config/scenereader.conf`](config/scenereader.conf), [`config/places.conf`](config/places.conf), [`models/scene/`](models/scene/) (git-ignored), [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) |
 | `telegram-bot` | [`scripts/telegram_bot.py`](scripts/telegram_bot.py), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
 | `logs` | [`scripts/container_logs.py`](scripts/container_logs.py) |
-| `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf) |
+| `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
 
 ### 3.9 Resource limits (CPU / memory / OOM priority)
 

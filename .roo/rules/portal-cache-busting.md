@@ -13,12 +13,24 @@ JS/CSS under an unchanged URL. Enforced policy below, implemented in
 
 2. **Never hard-code cacheable asset URLs.** In `portal/static/index.html`
    reference static files ONLY through the `{{ ASSET_* }}` tokens:
-   - `{{ ASSET_STYLE }}`   -> `/static/style-<hash>.css`
-   - `{{ ASSET_APP }}`     -> `/static/app-<hash>.js`
-   - `{{ ASSET_HLS }}`     -> `/static/vendor/hls.min-<hash>.js`
-   - `{{ ASSET_FAVICON }}` -> `/static/favicon-<hash>.svg`
+   - `{{ ASSET_STYLE }}`    -> `/static/style-<hash>.css`
+   - `{{ ASSET_APP }}`      -> `/static/app-<hash>.js`
+   - `{{ ASSET_HLS }}`      -> `/static/vendor/hls.min-<hash>.js`
+   - `{{ ASSET_FAVICON }}`  -> `/static/favicon-<hash>.svg`
+   - `{{ ASSET_ICON_192 }}` -> `/static/icons/icon-192-<hash>.png`  (PWA)
+   - `{{ ASSET_ICON_512 }}` -> `/static/icons/icon-512-<hash>.png`  (PWA)
+   - `{{ ASSET_ICON_MASKABLE }}` -> `/static/icons/icon-maskable-512-<hash>.png`
+   - `{{ ASSET_ICON_APPLE }}` -> `/static/icons/apple-touch-icon-<hash>.png`
    The server substitutes them (see `_render_index()` in `portal/app.py`) with
    the CURRENT fingerprinted names, e.g. `/static/app-154kuhn7.js`.
+
+   The icons are the installable-PWA set (`plans/portal-android-pwa.md`),
+   generated from `portal/static/favicon.svg` by
+   `dev_scripts/make_portal_pwa_icons.sh`. The PWA manifest is **not** a static
+   file: `/manifest.webmanifest` is built PER REQUEST in `portal/app.py` from
+   `_ASSET_FINGERPRINTS` (via `_icon_url()`) because only `index.html` gets
+   token substitution - so always take icon URLs from that route, never hard-code
+   them in the manifest either. There is deliberately **no service worker**.
 
 3. **The fingerprint is automatic - do not hand-roll "random" names.** Each
    cacheable file gets an 8-char base36 suffix (like `154kuhn7`) = SHA-256 of

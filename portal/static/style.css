@@ -711,6 +711,49 @@ body.lb-open { overflow: hidden; }
   padding: 12px 16px; border-radius: 10px; z-index: 60;
 }
 
+/* ================= PWA INSTALL BANNER =================
+   Revealed by app.js ONLY when Chrome offers installation (see the install
+   module in app.js) and the app is not already standalone. Fixed just above the
+   bottom edge; the error toast (z-index 60) still wins if both are on screen. */
+.install-banner {
+  position: fixed; left: 12px; right: 12px; bottom: 16px;
+  margin: 0 auto; width: auto; max-width: 520px;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; box-shadow: 0 14px 32px rgba(0,0,0,.55);
+  z-index: 55;
+}
+.install-banner-icon {
+  flex: 0 0 auto; width: 36px; height: 36px; border-radius: 8px;
+}
+.install-banner-text {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px; font-size: 13px;
+}
+.install-banner-text span { color: var(--muted); font-size: 12px; }
+.install-go {
+  flex: 0 0 auto; width: auto; min-width: 0; min-height: var(--tap-h);
+  padding: 8px 16px; background: var(--accent); color: #06210f;
+  font-weight: 700; border: 0; border-radius: 8px;
+}
+.install-x {
+  flex: 0 0 auto; width: auto; min-width: 0; min-height: 0;
+  padding: 4px 8px; background: transparent; border: 0;
+  color: var(--muted); font-size: 20px; line-height: 1;
+}
+.install-x:hover { color: var(--text); }
+
+/* Collapsed-menu install entry (phones) - mirrors nav .nav-logout but in the
+   accent colour; hidden with the other phone-only extras on tablet/desktop
+   (see the min-width:640px media query below). */
+nav .nav-install {
+  width: 100%; text-align: left; padding: 9px 12px;
+  background: transparent; border: 0; color: var(--accent); font-weight: 600;
+  border-radius: 8px;
+}
+nav .nav-install:hover { background: rgba(53,194,111,.12); }
+
 /* ================= FOOTER BAR (large screens) =================
    A REAL, full-width footer at the bottom of the page holding the quota
    progress bar + the version label. It is part of the normal document flow -
@@ -781,7 +824,7 @@ body.lb-open { overflow: hidden; }
      phone-only extras (sign out / version). The username shows here as
      #user-chip in the userbox instead. */
   .nav-toggle { display: none; }
-  nav .nav-user, nav .nav-logout, nav .nav-ver { display: none; }
+  nav .nav-user, nav .nav-logout, nav .nav-install, nav .nav-ver { display: none; }
   /* The quota bar lives in the footer on large screens; hide the phone copy. */
   nav .quota-widget { display: none; }
   nav {

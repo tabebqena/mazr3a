@@ -217,6 +217,139 @@ def days(db_path):
 
 
 # ---------------------------------------------------------------------------
+# scenes (L1 adaptive grouping / L2 camera story)
+# ---------------------------------------------------------------------------
+def _scene_dict(row):
+    try:
+        objects = json.loads(_col(row, "objects_json") or "[]")
+    except (TypeError, ValueError):
+        objects = []
+    if not isinstance(objects, list):
+        objects = []
+    movers = [m.strip() for m in str(_col(row, "movers", "") or "").split(",") if m.strip()]
+    return {
+        "id": row["id"],
+        "camera": _col(row, "camera", ""),
+        "day": _col(row, "day", ""),
+        "place": _col(row, "place"),
+        "start_time": _num(_col(row, "start_time")),
+        "end_time": _num(_col(row, "end_time")),
+        "duration_s": _num(_col(row, "duration_s")),
+        "n_events": int(_num(_col(row, "n_events"))),
+        "objects": objects,
+        "movers": movers,
+        # both languages from the SAME facts, built deterministically by scenereader
+        "narrative": _col(row, "narrative", "") or "",
+        "narrative_ar": _col(row, "narrative_ar", "") or "",
+    }
+
+
+def _scene_events(conn, scene_id):
+    """The member captures of a scene, oldest first, each with a frame URL."""
+    try:
+        rows = conn.execute(
+            "SELECT e.camera, e.label, e.place, e.start_time, e.end_time,"
+            " e.motion_disp, e.frigate_event_id, e.description_meta, e.tier"
+            " FROM scene_events se JOIN events e ON e.id = se.event_id"
+            " WHERE se.scene_id = ? ORDER BY e.start_time ASC", (scene_id,)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [{
+        "camera": r["camera"],
+        "label": r["label"],
+        "place": _col(r, "place"),
+        "start_time": _num(r["start_time"]),
+        "end_time": _num(r["end_time"]),
+        "motion_disp": _num(_col(r, "motion_disp")),
+        "description_meta": _col(r, "description_meta"),
+        "tier": _col(r, "tier", "normal") or "normal",
+        "image_url": _image_url(r),
+    } for r in rows]
+
+
+def list_scenes(db_path, *, day=None, camera=None, after=None, before=None,
+                limit=100, offset=0, with_events=False):
+    """Scenes, newest first. `{items, total}` or `{items: [], note: ...}`."""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    if not db_path or not os.path.exists(db_path):
+        return {"items": [], "total": 0, "note": "scenereader store not found"}
+    conn = open_db(db_path)
+    try:
+        if "scenes" not in _tables(conn):
+            return {"items": [], "total": 0, "note": "no scenes table yet"}
+        clauses, params = [], []
+        if day:
+            clauses.append("day = ?")
+            params.append(str(day))
+        if camera:
+            clauses.append("camera = ?")
+            params.append(camera)
+        if after is not None:
+            clauses.append("start_time >= ?")
+            params.append(float(after))
+        if before is not None:
+            clauses.append("start_time < ?")
+            params.append(float(before))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        total = conn.execute("SELECT COUNT(*) FROM scenes " + where,
+                             params).fetchone()[0]
+        rows = conn.execute(
+            "SELECT * FROM scenes " + where +
+            " ORDER BY start_time DESC, id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset]).fetchall()
+        items = []
+        for row in rows:
+            item = _scene_dict(row)
+            if with_events:
+                item["events"] = _scene_events(conn, row["id"])
+            items.append(item)
+        return {"items": items, "total": total}
+    except sqlite3.OperationalError as exc:
+        return {"items": [], "total": 0, "note": str(exc)}
+    finally:
+        conn.close()
+
+
+def get_scene(db_path, scene_id):
+    """One scene WITH its member captures, or None."""
+    if not db_path or not os.path.exists(db_path):
+        return None
+    conn = open_db(db_path)
+    try:
+        if "scenes" not in _tables(conn):
+            return None
+        try:
+            row = conn.execute("SELECT * FROM scenes WHERE id = ?",
+                               (int(scene_id),)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        item = _scene_dict(row)
+        item["events"] = _scene_events(conn, row["id"])
+        return item
+    finally:
+        conn.close()
+
+
+def scene_days(db_path):
+    """Distinct days that have scenes (newest first), for a date filter."""
+    if not db_path or not os.path.exists(db_path):
+        return []
+    conn = open_db(db_path)
+    try:
+        if "scenes" not in _tables(conn):
+            return []
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT day FROM scenes ORDER BY day DESC LIMIT 60")]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # events (the per-capture scene log)
 # ---------------------------------------------------------------------------
 def _event_dict(row):

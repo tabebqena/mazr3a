@@ -77,6 +77,7 @@ import captioners
 import describe
 import episodes
 import frigate
+import scenes
 import store
 
 CONF_PATH = os.environ.get("SCENEREADER_CONF", "/config/scenereader.conf")
@@ -222,6 +223,15 @@ class S:
         # events; narrating each one produced "returned to X" five times).
         self.visit_merge_gap_s = 120.0
         self.narrative_tz_offset_h = 0.0
+        # L1 adaptive scenes (plans/adaptive-scene-narrative.md): a burst of
+        # activity in ONE camera, bounded by SCENE_GAP_S of inactivity and capped
+        # at SCENE_MAX_S. MOVE_MIN_DISP is the own-trajectory displacement above
+        # which an object counts as having MOVED (movement ownership).
+        self.scene_enabled = True
+        self.scene_gap_s = 120.0
+        self.scene_max_s = 600.0
+        self.move_min_disp = 0.05
+        self.scene_keyframes = 4
 
 
 def resolve_settings(raw):
@@ -280,6 +290,11 @@ def resolve_settings(raw):
     s.visit_min_s = max(0.0, _getf(raw, "VISIT_MIN_S", 0))
     s.visit_merge_gap_s = max(0.0, _getf(raw, "VISIT_MERGE_GAP_S", 120))
     s.narrative_tz_offset_h = _getf(raw, "NARRATIVE_TZ_OFFSET_H", 0)
+    s.scene_enabled = _getb(raw, "SCENE_ENABLED", True)
+    s.scene_gap_s = max(0.0, _getf(raw, "SCENE_GAP_S", 120))
+    s.scene_max_s = max(0.0, _getf(raw, "SCENE_MAX_S", 600))
+    s.move_min_disp = max(0.0, _getf(raw, "MOVE_MIN_DISP", 0.05))
+    s.scene_keyframes = max(0, _geti(raw, "SCENE_KEYFRAMES", 4))
     return s
 
 
@@ -384,7 +399,9 @@ def write_status(s, conn, cap=None, extra=None):
         _max_ts, total = _bounds(conn)
         payload.update({"events_total": total, "pending": _pending_count(conn),
                         "episodes_total": conn.execute(
-                            "SELECT COUNT(*) FROM episodes").fetchone()[0]})
+                            "SELECT COUNT(*) FROM episodes").fetchone()[0],
+                        "scenes_total": conn.execute(
+                            "SELECT COUNT(*) FROM scenes").fetchone()[0]})
     except Exception:  # noqa: BLE001 - status is informational
         pass
     if cap is not None:
@@ -613,12 +630,35 @@ def rebuild_episodes(s, conn, places, dry=False, log=LOG):
             conn.commit()
         except Exception as exc:  # noqa: BLE001
             log("names import failed: {}".format(exc))
+    # Movement-ownership index: the FOREIGN objects (not chained into episodes)
+    # whose own trajectory moved. A stationary person visit overlapping one of
+    # these is incidental, not a journey (plans/adaptive-scene-narrative.md).
+    foreign_movers = store.moving_events(conn, exclude_labels=s.episode_labels,
+                                         min_disp=s.move_min_disp)
     count = episodes.rebuild(conn, places, store, labels=s.episode_labels,
                              reid_max_gap_s=s.reid_max_gap_s,
                              episode_gap_s=s.episode_gap_s, visit_min_s=s.visit_min_s,
                              tz_offset_h=s.narrative_tz_offset_h,
-                             visit_merge_gap_s=s.visit_merge_gap_s)
+                             visit_merge_gap_s=s.visit_merge_gap_s,
+                             move_min_disp=s.move_min_disp,
+                             foreign_movers=foreign_movers)
     log("episodes rebuilt: {}".format(count))
+    return count
+
+
+def rebuild_scenes(s, conn, places, dry=False, log=LOG):
+    """Re-derive the adaptive scenes (L1) + the camera story (L2) from `events`.
+
+    No model, no re-capture: it is a regrouping of what is already stored, so a
+    changed SCENE_GAP_S costs nothing but CPU.
+    """
+    if not s.store_enabled or dry or not s.scene_enabled:
+        return 0
+    count = scenes.rebuild(conn, places, store, gap_s=s.scene_gap_s,
+                           max_s=s.scene_max_s, move_min_disp=s.move_min_disp,
+                           keyframes=s.scene_keyframes,
+                           tz_offset_h=s.narrative_tz_offset_h)
+    log("scenes rebuilt: {}".format(count))
     return count
 
 
@@ -743,6 +783,7 @@ def run_forever(s, conn, places, cap):
                 next_scan = now + s.scan_every
             if now >= next_episodes:
                 rebuild_episodes(s, conn, places)
+                rebuild_scenes(s, conn, places)
                 next_episodes = time.monotonic() + s.episodes_every
             triggered = _consume_trigger(s)
             # The captioner may be missing (the model files are a deploy
@@ -904,8 +945,9 @@ MODES (mutually exclusive; with NO flag the scheduler loop runs):
   --check             READ-ONLY preflight: idle gate, store/clips/places paths,
                       model load + ONE real caption - safe beside a live service
   --status            print the reader_status.json heartbeat the portal reads
-  --scan-only         one harvest + one episode rebuild, then exit
+  --scan-only         one harvest + one episode + one scene rebuild, then exit
   --rebuild-episodes  re-derive episodes + narratives from `events`, then exit
+  --rebuild-scenes    re-derive the adaptive scenes from `events`, then exit
   --drain             one caption batch NOW (the idle governor still decides)
   --once              scan + rebuild + drain, then exit
   --dry-run           like --once but NOTHING is written to the store
@@ -937,6 +979,8 @@ def _build_parser():
                       help="one harvest + one episode rebuild, then exit")
     mode.add_argument("--rebuild-episodes", action="store_true",
                       help="re-derive episodes/narratives from `events`, then exit")
+    mode.add_argument("--rebuild-scenes", action="store_true",
+                      help="re-derive the adaptive scenes from `events`, then exit")
     mode.add_argument("--drain", action="store_true",
                       help="one caption batch now (the idle gate still applies)")
     mode.add_argument("--once", action="store_true",
@@ -969,7 +1013,8 @@ def main(argv=None):
 
     dry = bool(args.dry_run)
     one_shot = bool(args.check or args.drain or args.once or args.dry_run
-                    or args.scan_only or args.rebuild_episodes)
+                    or args.scan_only or args.rebuild_episodes
+                    or args.rebuild_scenes)
 
     # ---- ONE scheduler per store, ONE manual command at a time --------------
     # A second scheduler is never useful (same clips, same store, twice the work)
@@ -1110,12 +1155,20 @@ def main(argv=None):
 
         if args.rebuild_episodes:
             rebuild_episodes(s, conn, places, dry=dry)
+            rebuild_scenes(s, conn, places, dry=dry)
+            write_status(s, conn, cap if s.model_keep_loaded else None)
+            return 0
+
+        if args.rebuild_scenes:
+            rebuild_episodes(s, conn, places, dry=dry)
+            rebuild_scenes(s, conn, places, dry=dry)
             write_status(s, conn, cap if s.model_keep_loaded else None)
             return 0
 
         if args.scan_only:
             LOG("scan: {}".format(harvest(s, conn, places, dry=dry)))
             rebuild_episodes(s, conn, places, dry=dry)
+            rebuild_scenes(s, conn, places, dry=dry)
             write_status(s, conn, cap if cap else None)
             return 0
 
@@ -1123,15 +1176,18 @@ def main(argv=None):
             LOG("drain: {}".format(drain(s, conn, cap, dry=dry, force=True)))
             if not dry:
                 rebuild_episodes(s, conn, places)
+                rebuild_scenes(s, conn, places)
             write_status(s, conn, cap)
             return 0
 
         if args.once or dry:
             LOG("scan: {}".format(harvest(s, conn, places, dry=dry)))
             rebuild_episodes(s, conn, places, dry=dry)
+            rebuild_scenes(s, conn, places, dry=dry)
             LOG("drain: {}".format(drain(s, conn, cap, dry=dry, force=True)))
             if not dry:
                 rebuild_episodes(s, conn, places)
+                rebuild_scenes(s, conn, places)
             write_status(s, conn, cap)
             return 0
 

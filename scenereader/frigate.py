@@ -149,6 +149,33 @@ def _data_fields(raw):
     return out
 
 
+def path_motion(path_data):
+    """(displacement, n_points) of an event's OWN trajectory.
+
+    Frigate stores the tracker's path for the event's object in `data.path_data`
+    as `[[x, y], timestamp]` in normalised coords (verified on the host
+    2026-09-11). The max span - hypot of the x and y ranges - is the object's OWN
+    movement, and it is what decides WHO moved in a multi-object scene: when a
+    dog moves, the co-present person's captures report ~0.000 while the dog's
+    report a real displacement (plans/adaptive-scene-narrative.md section 4).
+
+    A missing or single-point path means "no own movement" -> (0.0, n_points).
+    """
+    points = []
+    for entry in path_data or ():
+        try:
+            xy = entry[0]
+            points.append((float(xy[0]), float(xy[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    if not points:
+        return 0.0, 0
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    disp = ((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2) ** 0.5
+    return disp, len(points)
+
+
 def _normalize(row):
     """A raw `event` row -> the flat dict the rest of the code expects."""
     zones = row["zones"] if "zones" in row.keys() else None
@@ -159,6 +186,7 @@ def _normalize(row):
     if not isinstance(zones_list, list):
         zones_list = []
     data = _data_fields(row["data"] if "data" in row.keys() else None)
+    motion_disp, motion_pts = path_motion(data.get("path_data"))
     meta = {
         "frigate_event_id": row["id"],
         "camera": row["camera"],
@@ -172,6 +200,9 @@ def _normalize(row):
         "score": data.get("score"),
         "top_score": data.get("top_score"),
         "box": json.dumps(data["box"]) if data.get("box") else None,
+        # The object's OWN movement, from its trajectory. See path_motion().
+        "motion_disp": motion_disp,
+        "motion_pts": motion_pts,
         "meta_json": row["data"] if "data" in row.keys() else None,
     }
     start = meta["start_time"]
@@ -216,6 +247,15 @@ def event_from_api(api_base, event_id, timeout=8.0):
         end = float(end) if end else None
     except (TypeError, ValueError):
         end = None
+    data = obj.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (TypeError, ValueError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    motion_disp, motion_pts = path_motion(data.get("path_data"))
     meta = {
         "frigate_event_id": obj["id"],
         "camera": obj.get("camera") or "",
@@ -230,6 +270,8 @@ def event_from_api(api_base, event_id, timeout=8.0):
         "score": obj.get("score"),
         "top_score": obj.get("top_score"),
         "box": json.dumps(obj["box"]) if obj.get("box") else None,
+        "motion_disp": motion_disp,
+        "motion_pts": motion_pts,
         "meta_json": json.dumps(obj),
     }
     return meta

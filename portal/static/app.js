@@ -167,7 +167,7 @@ async function boot() {
 
 function onRoute() {
   const raw = (location.hash || '#/live').replace(/^#\//, '');
-  const VIEWS = ['live', 'events', 'fire', 'episodes', 'scenes', 'debug'];
+  const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes', 'debug'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
   // Debug is admin-only: a non-admin who lands on #/debug falls back to Live.
   if (view === 'debug' && !(state.me && state.me.is_admin)) view = 'live';
@@ -180,6 +180,7 @@ function onRoute() {
   else if (view === 'events') loadEvents();
   else if (view === 'fire') reloadFire();   // page-based: reset to page 1 on entry
   else if (view === 'episodes') reloadEpisodes();  // page-based: reset to page 1
+  else if (view === 'adaptive') reloadAdaptiveScenes();  // page-based: reset to page 1
   else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
 }
@@ -212,6 +213,7 @@ function refreshCamSelects() {
   $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + opts;
   $('#sc-cam').innerHTML = '<option value="">all cameras</option>' + opts;
   $('#ep-cam').innerHTML = '<option value="">all cameras</option>' + opts;
+  $('#as-cam').innerHTML = '<option value="">all cameras</option>' + opts;
 }
 
 /* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
@@ -1767,6 +1769,109 @@ async function loadEpisodes() {
     pager.classList.add('hidden');
   }
 }
+
+/* ------------- scenereader ADAPTIVE SCENES (L1) ------------------------------
+   One card per SCENE: a camera's burst of activity, the objects that coexisted
+   in it, and which of them MOVED (from each object's own Frigate trajectory).
+   The narrative is composed DETERMINISTICALLY from those facts, in English and
+   Arabic - no model. This is the level that keeps a moving dog/cow/truck in a
+   crowded frame from being narrated as a person's journey.
+   See plans/adaptive-scene-narrative.md. */
+const AS_LIMIT = 20;
+let asPage = 1;
+let asPages = 1;
+
+function reloadAdaptiveScenes() {
+  asPage = 1;
+  loadAdaptiveScenes();
+}
+
+function fillSceneDays(days) {
+  const sel = $('#as-day');
+  const cur = sel.value;
+  const html = '<option value="">all days</option>' +
+    days.map(d => '<option value="' + esc(d) + '">' + esc(d) + '</option>').join('');
+  if (sel.dataset.filled !== html) {
+    sel.innerHTML = html;
+    sel.dataset.filled = html;
+    sel.value = cur;
+  }
+}
+
+function adaptiveSceneCard(s) {
+  const objects = (s.objects || []).map(o =>
+    '<span class="tag" title="own displacement ' + (Number(o.disp) || 0).toFixed(3) + '">'
+    + esc(o.label || '') + (o.moved ? ' ● moved' : '') + '</span>').join('');
+  const frames = (s.events || []).map(v =>
+    '<a class="ep-visit" href="' + esc(v.image_url || '#') + '" target="_blank" rel="noopener">'
+    + (v.image_url ? '<img src="' + esc(v.image_url) + '" alt="" loading="lazy">' : '')
+    + '<span class="ep-visit-meta">' + esc(v.label || '') + ' &middot; '
+    + esc(v.camera || '') + ' &middot; ' + esc(epClock(v.start_time)) + '</span></a>').join('');
+  const movers = (s.movers || []).length
+    ? '<span class="tag">moving: ' + esc(s.movers.join(', ')) + '</span>'
+    : '<span class="tag">no movement</span>';
+  return '<div class="card ep-card">'
+    + '<div class="ep-head">'
+    + '<span class="tag">' + esc(s.camera || '') + '</span>'
+    + (s.place && s.place !== s.camera ? '<span class="tag">' + esc(s.place) + '</span>' : '')
+    + '<span class="tag">' + esc(s.day || '') + '</span>'
+    + movers
+    + '</div>'
+    + '<div class="ep-narrative">' + esc(s.narrative || '') + '</div>'
+    + (s.narrative_ar
+      ? '<div class="ep-narrative ep-ar" dir="rtl" lang="ar">' + esc(s.narrative_ar) + '</div>'
+      : '')
+    + '<div class="ep-head">' + objects + '</div>'
+    + '<div class="ep-visits">' + frames + '</div>'
+    + '</div>';
+}
+
+async function loadAdaptiveScenes() {
+  const box = $('#as-list');
+  const st = $('#as-status');
+  const pager = $('#as-pager');
+  st.textContent = 'Loading…';
+  const p = new URLSearchParams({
+    limit: String(AS_LIMIT),
+    offset: String((asPage - 1) * AS_LIMIT),
+    with_events: '1',
+  });
+  const cam = $('#as-cam').value; if (cam) p.set('camera', cam);
+  const day = $('#as-day').value; if (day) p.set('day', day);
+  try {
+    const data = await api('/api/scenereader/scenes?' + p.toString());
+    const total = data.total || 0;
+    asPages = Math.max(1, Math.ceil(total / AS_LIMIT));
+    if (asPage > asPages) asPage = asPages;
+    fillSceneDays(data.days || []);
+    st.textContent = (total ? total + ' scene(s)' : '')
+      + (data.note ? ' — ' + data.note : '');
+    if (!data.items || !data.items.length) {
+      box.innerHTML = '<div class="empty">No scenes yet. They are rebuilt from '
+        + 'Frigate captures automatically; run <code>--rebuild-scenes</code> to '
+        + 'derive them now.</div>';
+      pager.classList.add('hidden');
+      return;
+    }
+    pager.classList.remove('hidden');
+    $('#as-pageno').textContent = 'Page ' + asPage + ' of ' + asPages;
+    box.innerHTML = data.items.map(adaptiveSceneCard).join('');
+  } catch (err) {
+    st.textContent = 'Failed: ' + err;
+    box.innerHTML = '';
+    pager.classList.add('hidden');
+  }
+}
+
+$('#as-refresh').addEventListener('click', reloadAdaptiveScenes);
+$('#as-cam').addEventListener('change', reloadAdaptiveScenes);
+$('#as-day').addEventListener('change', reloadAdaptiveScenes);
+$('#as-prev').addEventListener('click', () => {
+  if (asPage > 1) { asPage--; loadAdaptiveScenes(); }
+});
+$('#as-next').addEventListener('click', () => {
+  if (asPage < asPages) { asPage++; loadAdaptiveScenes(); }
+});
 
 /* ------------- scenewatch scene descriptions (paged + time-filtered) ---------
    One row per captioned frame (scenewatch's two-frame motion gate; `reason`

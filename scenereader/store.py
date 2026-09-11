@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS events (
     score             REAL,
     top_score         REAL,
     box               TEXT,
+    -- the object's OWN trajectory motion (see frigate.path_motion): the signal
+    -- that decides who actually moved inside a multi-object scene.
+    motion_disp       REAL,
+    motion_pts        INTEGER,
     frame_path        TEXT,
     frame_clean_path  TEXT,
     has_snapshot      INTEGER NOT NULL DEFAULT 0,
@@ -147,6 +151,36 @@ CREATE TABLE IF NOT EXISTS person_aliases (
     updated_at   REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (day, anon_name)
 );
+
+-- L1 scenes: the adaptive burst of activity in ONE camera (see
+-- plans/adaptive-scene-narrative.md). A scene groups every object that COEXISTED
+-- in the camera within one inactivity window, and records who moved.
+CREATE TABLE IF NOT EXISTS scenes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera        TEXT    NOT NULL,
+    day           TEXT    NOT NULL,
+    place         TEXT,
+    start_time    REAL    NOT NULL DEFAULT 0,
+    end_time      REAL,
+    duration_s    REAL,
+    n_events      INTEGER NOT NULL DEFAULT 0,
+    objects_json  TEXT,
+    movers        TEXT,
+    narrative     TEXT,
+    narrative_ar  TEXT,
+    rep_event_id  INTEGER,
+    created_at    REAL    NOT NULL DEFAULT 0,
+    updated_at    REAL    NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_scenes_cam_ts ON scenes(camera, start_time);
+CREATE INDEX IF NOT EXISTS idx_scenes_day_ts ON scenes(day, start_time);
+
+CREATE TABLE IF NOT EXISTS scene_events (
+    scene_id  INTEGER NOT NULL,
+    event_id  INTEGER NOT NULL,
+    PRIMARY KEY (scene_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scene_events_event ON scene_events(event_id);
 """
 
 # Columns added after the initial release: (name, DDL). Applied with a guarded
@@ -156,18 +190,21 @@ _MIGRATIONS = (
     ("description_attr", "ALTER TABLE events ADD COLUMN description_attr TEXT"),
     ("link_confidence", "ALTER TABLE episodes ADD COLUMN link_confidence REAL"),
     ("narrative_ar", "ALTER TABLE episodes ADD COLUMN narrative_ar TEXT"),
+    ("motion_disp", "ALTER TABLE events ADD COLUMN motion_disp REAL"),
+    ("motion_pts", "ALTER TABLE events ADD COLUMN motion_pts INTEGER"),
 )
 
 # Bumped whenever `_SCHEMA`/`_MIGRATIONS` change; stored in the DB's own
 # `user_version`. WHY: a writer used to run `executescript(_SCHEMA)` on EVERY
 # open - so a diagnostic or a one-shot command took the store's write lock just to
 # ask a question. DDL now runs only when this number says it must.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 # Event columns the rest of the code may set on an existing row (enrichment).
 _ENRICH_COLS = (
     "label", "sub_label", "zones", "place", "start_time", "end_time", "duration",
-    "score", "top_score", "box", "frame_path", "frame_clean_path",
+    "score", "top_score", "box", "motion_disp", "motion_pts",
+    "frame_path", "frame_clean_path",
     "has_snapshot", "false_positive", "meta_json", "description_meta",
     "description_attr", "description_vlm", "vlm_model", "vlm_latency_ms",
     "vlm_at", "vlm_status", "episode_id", "tier", "importance",
@@ -323,6 +360,45 @@ def events_by_camera_window(conn, camera, after, before):
     ).fetchall()
 
 
+def all_events(conn, after=None, before=None):
+    """Every stored event, ordered by camera then start time.
+
+    The L1 scene builder needs the whole camera timeline - ALL labels, since the
+    point of a scene is the objects that COEXIST - not just the person subset the
+    episode builder reads.
+    """
+    sql = ("SELECT id, camera, label, zones, start_time, end_time, score, top_score,"
+           " motion_disp, motion_pts FROM events WHERE start_time > 0")
+    params: list = []
+    if after is not None:
+        sql += " AND start_time >= ?"
+        params.append(float(after))
+    if before is not None:
+        sql += " AND start_time <= ?"
+        params.append(float(before))
+    sql += " ORDER BY camera ASC, start_time ASC, id ASC"
+    return conn.execute(sql, params).fetchall()
+
+
+def moving_events(conn, exclude_labels=(), min_disp=0.05):
+    """Events whose OWN trajectory shows real movement, minus the given labels.
+
+    The movement-ownership index. A stationary `person` capture that overlaps one
+    of these was INCIDENTAL - something else was the mover - so the narrative must
+    not credit the person with entering or travelling
+    (plans/adaptive-scene-narrative.md section 4).
+    """
+    exclude = [str(x).strip().lower() for x in (exclude_labels or ()) if str(x).strip()]
+    sql = ("SELECT camera, label, start_time, end_time, motion_disp FROM events"
+           " WHERE motion_disp IS NOT NULL AND motion_disp >= ?")
+    params: list = [float(min_disp)]
+    if exclude:
+        sql += " AND lower(label) NOT IN (" + ",".join("?" * len(exclude)) + ")"
+        params.extend(exclude)
+    sql += " ORDER BY camera ASC, start_time ASC"
+    return conn.execute(sql, params).fetchall()
+
+
 def events_for_episode(conn, episode_id):
     """The ordered `episode_events` rows (visits) of one episode."""
     return conn.execute(
@@ -435,6 +511,45 @@ def add_visit(conn, episode_id, event_id, seq, place, enter_time, leave_time,
     for link_id in (event_ids or [event_id]):
         conn.execute("UPDATE events SET episode_id = ? WHERE id = ?",
                      (episode_id, link_id))
+
+
+# ---------------------------------------------------------------------------
+# scenes (L1 adaptive grouping / L2 camera story)
+# ---------------------------------------------------------------------------
+def clear_scenes(conn):
+    """Drop all derived scene state so L1/L2 can be rebuilt from `events`.
+
+    Like the episode rebuild, this touches no capture, frame or description - it
+    only re-derives the grouping, so a changed SCENE_GAP_S costs nothing but CPU.
+    """
+    conn.execute("DELETE FROM scene_events")
+    conn.execute("DELETE FROM scenes")
+
+
+def insert_scene(conn, camera, day, place, start_time, end_time, duration_s,
+                 n_events, objects_json, movers, rep_event_id,
+                 narrative=None, narrative_ar=None):
+    """Insert one scene (without its member links) and return its new id."""
+    now = time.time()
+    cur = conn.execute(
+        "INSERT INTO scenes (camera, day, place, start_time, end_time, duration_s,"
+        " n_events, objects_json, movers, narrative, narrative_ar, rep_event_id,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (camera, day, place, float(start_time), end_time, duration_s, int(n_events),
+         objects_json, movers, narrative, narrative_ar, rep_event_id, now, now))
+    return cur.lastrowid
+
+
+def link_scene_event(conn, scene_id, event_id):
+    """Link one capture to a scene (idempotent - a rebuild re-inserts freely)."""
+    conn.execute("INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?,?)",
+                 (int(scene_id), int(event_id)))
+
+
+def set_scene_narratives(conn, scene_id, narrative, narrative_ar):
+    """Write BOTH language variants of one scene's narrative."""
+    conn.execute("UPDATE scenes SET narrative = ?, narrative_ar = ?, updated_at = ?"
+                 " WHERE id = ?", (narrative, narrative_ar, time.time(), int(scene_id)))
 
 
 def days_with_events(conn):

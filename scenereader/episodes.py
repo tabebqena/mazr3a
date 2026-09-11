@@ -31,6 +31,16 @@ import time
 # default labels that form a person episode
 DEFAULT_LABELS = ("person",)
 
+# Frigate label -> Arabic noun, for the Arabic narrative. A label with no entry
+# keeps its English name, so the table can grow without breaking anything.
+_LABEL_AR = {
+    "person": "شخص", "people": "أشخاص", "dog": "كلب", "cat": "قط", "cow": "بقرة",
+    "sheep": "خروف", "horse": "حصان", "bird": "طائر", "car": "سيارة",
+    "truck": "شاحنة", "bus": "حافلة", "motorcycle": "دراجة نارية",
+    "bicycle": "دراجة", "train": "قطار", "boat": "قارب", "fire": "حريق",
+    "smoke": "دخان", "false_positive": "إنذار كاذب",
+}
+
 
 # ---------------------------------------------------------------------------
 # L1 - places
@@ -212,8 +222,8 @@ def person_events(conn, labels=DEFAULT_LABELS, after=None, before=None):
     if not labels:
         return []
     marks = ",".join("?" * len(labels))
-    sql = ("SELECT id, camera, label, zones, start_time, end_time, description_attr"
-           " FROM events WHERE label IN (" + marks + ")")
+    sql = ("SELECT id, camera, label, zones, start_time, end_time, description_attr,"
+           " motion_disp FROM events WHERE label IN (" + marks + ")")
     params: list = list(labels)
     if after is not None:
         sql += " AND start_time >= ?"
@@ -234,6 +244,72 @@ def _same_place(a, b):
     pa = str(a.get("place") or a.get("camera") or "").strip().lower()
     pb = str(b.get("place") or b.get("camera") or "").strip().lower()
     return bool(pa) and pa == pb
+
+
+def _disp(row):
+    """The event's OWN trajectory displacement (0.0 when unknown)."""
+    try:
+        return float(row["motion_disp"] or 0.0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0.0
+
+
+def _mover_index(foreign_movers, min_disp):
+    """camera (lower) -> sorted [(start, end, label)] of FOREIGN movers.
+
+    `foreign_movers` are events whose own trajectory moved and whose label is not
+    one the episode builder chains (e.g. dog / cow / truck while chaining
+    `person`). They are the movement-ownership index: a stationary person visit
+    overlapping one of these did not travel - something else moved.
+    """
+    index = {}
+    threshold = float(min_disp or 0.0)
+    for row in foreign_movers or ():
+        try:
+            disp = float(row["motion_disp"] or 0.0)
+            camera = str(row["camera"] or "").strip().lower()
+            label = str(row["label"] or "").strip().lower()
+            start = float(row["start_time"] or 0)
+            end = float(row["end_time"] or 0) or start
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if not camera or disp < threshold:
+            continue
+        index.setdefault(camera, []).append((start, end, label))
+    for items in index.values():
+        items.sort()
+    return index
+
+
+def _overlapping_movers(index, camera, start, end):
+    """Labels of foreign movers whose window overlaps [start, end) in this camera."""
+    labels = set()
+    for m_start, m_end, label in index.get(str(camera or "").strip().lower(), ()):
+        if m_start < end and start < m_end:
+            labels.add(label)
+    return sorted(labels)
+
+
+def _mark_incidental(visit, index, min_disp):
+    """Flag a NON-moving visit that overlaps a foreign mover as incidental.
+
+    It stays a real presence - we never drop a person - but the person did not
+    travel, so the composer says "was present at" instead of "entered/went to" and
+    names the object that actually moved. This is what stops a moving dog/cow/
+    truck from being narrated as a person's journey
+    (plans/adaptive-scene-narrative.md section 4).
+    """
+    visit["moved"] = float(visit.get("disp") or 0.0) >= float(min_disp or 0.0)
+    visit["foreign_movers"] = []
+    visit["incidental"] = False
+    if visit["moved"]:
+        return
+    movers = _overlapping_movers(index, visit.get("camera"),
+                                 float(visit["enter_time"]),
+                                 float(visit["leave_time"]))
+    if movers:
+        visit["foreign_movers"] = movers
+        visit["incidental"] = True
 
 
 def merge_visits(visits, gap_s=120.0):
@@ -269,6 +345,8 @@ def merge_visits(visits, gap_s=120.0):
                     0.0, current["leave_time"] - current["enter_time"])
                 current["event_ids"].append(visit["event_id"])
                 current["n_events"] += 1
+                current["disp"] = max(float(current.get("disp") or 0.0),
+                                      float(visit.get("disp") or 0.0))
                 current["_best"].append(
                     (max(0.0, leave - enter), visit["event_id"], visit["camera"]))
                 _best_s, best_id, best_cam = max(current["_best"])
@@ -282,6 +360,8 @@ def merge_visits(visits, gap_s=120.0):
             "enter_time": enter,
             "leave_time": leave,
             "duration_s": max(0.0, float(visit.get("duration_s") or (leave - enter))),
+            # the strongest OWN movement seen in any capture of this stay
+            "disp": float(visit.get("disp") or 0.0),
             "event_ids": [visit["event_id"]],
             "n_events": 1,
             "_best": [(max(0.0, leave - enter), visit["event_id"], visit["camera"])],
@@ -292,7 +372,8 @@ def merge_visits(visits, gap_s=120.0):
 
 
 def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
-                   visit_min_s=0.0, visit_merge_gap_s=120.0):
+                   visit_min_s=0.0, visit_merge_gap_s=120.0, move_min_disp=0.05,
+                   foreign_movers=None):
     """Link person captures into anonymous cross-camera episodes.
 
     Deterministic and explainable: a capture joins an OPEN episode only when that
@@ -303,13 +384,19 @@ def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
     Returns a list of dicts ordered by start time:
         {day, anon_name, label, start_time, end_time, link_confidence,
          visits: [{event_id, event_ids, n_events, camera, place, enter_time,
-                   leave_time, duration_s, partners}],
+                   leave_time, duration_s, partners, disp, moved, incidental,
+                   foreign_movers}],
          partners: [anon_name, ...]}
 
     `visit_merge_gap_s` is handed to `merge_visits`, which turns repeated captures
     of the same place into ONE stay (see its docstring) - without it the narrative
     repeats "returned to X" once per capture.
+
+    MOVEMENT OWNERSHIP: `foreign_movers` (see `_mover_index`) marks a stay
+    incidental when the person did not move but another object did - the case a
+    moving dog in a crowded frame used to turn into a person's journey.
     """
+    movers_index = _mover_index(foreign_movers, move_min_disp)
     open_eps = []   # list of dicts, each with 'visits'
     done = []
     for row in rows:
@@ -347,13 +434,17 @@ def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
                   "last_camera": camera, "confidence": None,
                   "visits": [{"event_id": row["id"], "camera": camera,
                               "place": place, "enter_time": start,
-                              "leave_time": end, "duration_s": max(0.0, end - start)}]}
+                              "leave_time": end,
+                              "duration_s": max(0.0, end - start),
+                              "disp": _disp(row)}]}
             open_eps.append(ep)
             continue
 
         best["visits"].append({"event_id": row["id"], "camera": camera,
                                "place": place, "enter_time": start,
-                               "leave_time": end, "duration_s": max(0.0, end - start)})
+                               "leave_time": end,
+                               "duration_s": max(0.0, end - start),
+                               "disp": _disp(row)})
         best["last_end"] = max(best["last_end"], end)
         best["last_camera"] = camera
         if best_gap and float(reid_max_gap_s) > 0:
@@ -378,6 +469,10 @@ def build_episodes(rows, places, reid_max_gap_s=90.0, episode_gap_s=600.0,
         ep["end_time"] = max(v["leave_time"] for v in ep["visits"])
         if ep["confidence"] is None:
             ep["confidence"] = 1.0 if len(ep["visits"]) == 1 else 0.5
+        # Movement ownership, applied AFTER merging so it sees the whole stay
+        # window (a stay is only incidental if NO capture in it showed own motion).
+        for visit in ep["visits"]:
+            _mark_incidental(visit, movers_index, move_min_disp)
 
     # drop episodes that never really appeared (configurable floor)
     if visit_min_s and float(visit_min_s) > 0:
@@ -512,18 +607,35 @@ def compose_narrative(episode, aliases=None, tz_offset_h=0.0):
         # "returned to" is kept for a place met EARLIER: after `merge_visits` a
         # continuous stay is a single visit, so a repeat here means the person
         # really left that place and came back.
+        #
+        # MOVEMENT OWNERSHIP: an INCIDENTAL visit is a non-moving presence whose
+        # window overlaps a foreign mover (a dog/cow/truck), so it must NOT read as
+        # a journey - "was present at" states the fact and names the mover
+        # (plans/adaptive-scene-narrative.md section 4).
         if idx == 0:
-            segment = "{} entered {} ({}) at {}".format(
-                name, place, visit["camera"], clock)
+            if visit.get("incidental"):
+                segment = "{} was present at {} ({}) at {}".format(
+                    name, place, visit["camera"], clock)
+            else:
+                segment = "{} entered {} ({}) at {}".format(
+                    name, place, visit["camera"], clock)
+        elif visit.get("incidental"):
+            segment = "then was present at {} ({}) at {}".format(
+                place, visit["camera"], clock)
+        elif str(place).strip().lower() in seen_places:
+            segment = "then returned to {} ({}) at {}".format(
+                place, visit["camera"], clock)
         else:
-            verb = "returned to" if str(place).strip().lower() in seen_places \
-                else "went to"
-            segment = "then {} {} ({}) at {}".format(verb, place, visit["camera"], clock)
+            segment = "then went to {} ({}) at {}".format(
+                place, visit["camera"], clock)
         if visit.get("duration_s") is not None:
             segment += ", stayed {}".format(_duration_en(visit["duration_s"]))
         partners = [aliases.get(p) or p for p in (visit.get("partners") or [])]
         if partners:
             segment += " with " + ", ".join(partners)
+        if visit.get("foreign_movers"):
+            segment += " (while {} moved)".format(
+                ", ".join(str(m) for m in visit["foreign_movers"]))
         parts.append(segment)
         seen_places.add(str(place).strip().lower())
     # A partner known only at EPISODE level (data built before per-visit partners,
@@ -569,9 +681,18 @@ def compose_narrative_ar(episode, aliases=None, tz_offset_h=0.0, places=None):
     for idx, visit in enumerate(visits):
         clock = _clock(visit["enter_time"], tz_offset_h)
         raw_place = str(visit["place"] or visit["camera"]).strip().lower()
+        # An INCIDENTAL (non-moving) visit uses the verbal noun "حضور" instead of
+        # "وصول/الانتقال", so it never reads as travel (see the English composer).
         if idx == 0:
-            segment = "وصول {} إلى {} ({}) في {}".format(
-                name, place_text(visit), visit["camera"], clock)
+            if visit.get("incidental"):
+                segment = "حضور {} في {} ({}) في {}".format(
+                    name, place_text(visit), visit["camera"], clock)
+            else:
+                segment = "وصول {} إلى {} ({}) في {}".format(
+                    name, place_text(visit), visit["camera"], clock)
+        elif visit.get("incidental"):
+            segment = "ثم الحضور في {} ({}) في {}".format(
+                place_text(visit), visit["camera"], clock)
         elif raw_place in seen_places:
             # a place met EARLIER = a real return (العودة), not "moving on"
             segment = "ثم العودة إلى {} ({}) في {}".format(
@@ -585,6 +706,10 @@ def compose_narrative_ar(episode, aliases=None, tz_offset_h=0.0, places=None):
                     for p in (visit.get("partners") or [])]
         if partners:
             segment += " برفقة " + "، ".join(partners)
+        if visit.get("foreign_movers"):
+            segment += " بينما كانت حركة {}".format(
+                "، ".join(_LABEL_AR.get(str(m).lower(), str(m))
+                          for m in visit["foreign_movers"]))
         parts.append(segment)
         seen_places.add(raw_place)
     # episode-level partners (older data, or a co-presence merged away) last
@@ -599,7 +724,7 @@ def compose_narrative_ar(episode, aliases=None, tz_offset_h=0.0, places=None):
 
 def rebuild(conn, places, store, labels=DEFAULT_LABELS, reid_max_gap_s=90.0,
             episode_gap_s=600.0, visit_min_s=0.0, tz_offset_h=0.0,
-            visit_merge_gap_s=120.0):
+            visit_merge_gap_s=120.0, move_min_disp=0.05, foreign_movers=None):
     """Re-derive every episode from `events`, write it, and return the count.
 
     Each episode gets BOTH narratives (English + Arabic) from the same facts, so
@@ -608,7 +733,9 @@ def rebuild(conn, places, store, labels=DEFAULT_LABELS, reid_max_gap_s=90.0,
     rows = person_events(conn, labels=labels)
     episodes = build_episodes(rows, places, reid_max_gap_s=reid_max_gap_s,
                               episode_gap_s=episode_gap_s, visit_min_s=visit_min_s,
-                              visit_merge_gap_s=visit_merge_gap_s)
+                              visit_merge_gap_s=visit_merge_gap_s,
+                              move_min_disp=move_min_disp,
+                              foreign_movers=foreign_movers)
     write_episodes(conn, episodes, store)
     for ep in episodes:
         aliases = store.get_aliases(conn, ep["day"])

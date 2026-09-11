@@ -37,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 _HTMX = None
 
 
@@ -639,6 +639,37 @@ async def episode_detail(episode_id: int, request: Request,
     item = eventstore.get_episode(db, episode_id)
     if item is None:
         raise HTTPException(status_code=404, detail="episode not found")
+    return item
+
+
+@app.get("/api/scenereader/scenes")
+async def scenereader_scenes(request: Request, user: dict = Depends(current_user),
+                             day: Optional[str] = None, camera: Optional[str] = None,
+                             after: Optional[float] = None, before: Optional[float] = None,
+                             with_events: Optional[int] = None,
+                             limit: int = 100, offset: int = 0):
+    """The adaptive scenes (L1): one camera's burst of activity, the objects that
+    COEXISTED in it, and which of them actually MOVED.
+
+    Deliberately under /api/scenereader/* so it never collides with the legacy
+    /api/scenes compat shim below (a different shape over a different grain).
+    """
+    db, _status, _trigger = _scenereader_paths(request)
+    result = eventstore.list_scenes(
+        db, day=day or None, camera=camera or None, after=after, before=before,
+        with_events=bool(with_events), limit=limit, offset=offset)
+    result["days"] = eventstore.scene_days(db)
+    return result
+
+
+@app.get("/api/scenereader/scenes/{scene_id}")
+async def scenereader_scene_detail(scene_id: int, request: Request,
+                                   user: dict = Depends(current_user)):
+    """One scene WITH its member captures (each proxied to a Frigate snapshot)."""
+    db, _status, _trigger = _scenereader_paths(request)
+    item = eventstore.get_scene(db, scene_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="scene not found")
     return item
 
 

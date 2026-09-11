@@ -13,8 +13,8 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v15` |
-| Last updated | 2026-09-10 |
+| Summary version | `v16` |
+| Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.4.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
@@ -142,7 +142,7 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scene log** of every capture with its tier — both read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scenes** tab of the adaptive L1 scenes — the coexisting objects and which of them actually MOVED — and a **Scene log** of every capture with its tier — all read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
@@ -155,20 +155,21 @@ with `docker compose up -d` / `docker compose down`.
 See [`plans/event-scene-reader.md`](plans/event-scene-reader.md). It **replaced
 the stopped `scenewatch`** ([`plans/scene-description.md`](plans/scene-description.md)),
 which over-subscribed the CPU with a 15 s per-camera sweep and held a 2B VLM
-resident.
+resident. The **adaptive scene layer** (movement ownership) is specified in
+[`plans/adaptive-scene-narrative.md`](plans/adaptive-scene-narrative.md).
 
 | | |
 |---|---|
 | Container | `scenereader` |
 | Image | **built** from [`scenereader/Dockerfile`](scenereader/Dockerfile) (`python:3.11-slim` + `openvino-genai`, `numpy`, `Pillow`); unprivileged uid 1000 |
-| Purpose | Read Frigate's own captures (never re-detecting), write a deterministic per-camera sentence, then link cameras into anonymous **person episodes** with a narrative, e.g. *"Person A entered Field 1 (cam04) at 22:36, stayed 12 min; then went to Store (cam07) at 22:49; left at 22:51."* **One STAY = one visit**: Frigate re-fires detection, so consecutive captures of the same place within `VISIT_MERGE_GAP_S` are merged into a single stay (span, not the sum), and the narrative only says *"returned to X"* for a real return after being elsewhere. |
-| Dev files | [`scenereader/scenereader.py`](scenereader/scenereader.py) (service), [`frigate.py`](scenereader/frigate.py), [`store.py`](scenereader/store.py), [`episodes.py`](scenereader/episodes.py), [`describe.py`](scenereader/describe.py), [`captioners.py`](scenereader/captioners.py), models [`models/scene/`](models/scene/) (git-ignored) |
-| Config | [`config/scenereader.conf`](config/scenereader.conf) (`/config/scenereader.conf`) + [`config/places.conf`](config/places.conf) (`/config/places.conf`). Episode shape: `EPISODE_GAP_S`, `REID_MAX_GAP_S`, `VISIT_MIN_S`, `VISIT_MERGE_GAP_S`; caption cost: `VLM_TIMEOUT_S`, `VLM_MAX_IMAGE_PX`, `MAX_EVENTS_PER_RUN`. |
+| Purpose | Read Frigate's own captures (never re-detecting), write a deterministic per-camera sentence, then link cameras into anonymous **person episodes** with a narrative, e.g. *"Person A entered Field 1 (cam04) at 22:36, stayed 12 min; then went to Store (cam07) at 22:49; left at 22:51."* **One STAY = one visit**: Frigate re-fires detection, so consecutive captures of the same place within `VISIT_MERGE_GAP_S` are merged into a single stay (span, not the sum), and the narrative only says *"returned to X"* for a real return after being elsewhere. **Adaptive scenes (L1) + movement ownership:** events are grouped into per-camera scenes bounded by `SCENE_GAP_S` of inactivity; each object's OWN trajectory (`data.path_data` → `events.motion_disp`) decides who MOVED, so a moving dog/cow/truck in a crowded frame is narrated as *"dog moved; person, cow present"* instead of the person *"entering / going to"* a place. Deterministic EN + AR, no model. |
+| Dev files | [`scenereader/scenereader.py`](scenereader/scenereader.py) (service), [`frigate.py`](scenereader/frigate.py), [`store.py`](scenereader/store.py), [`episodes.py`](scenereader/episodes.py), [`scenes.py`](scenereader/scenes.py) (L1/L2), [`describe.py`](scenereader/describe.py), [`captioners.py`](scenereader/captioners.py), models [`models/scene/`](models/scene/) (git-ignored) |
+| Config | [`config/scenereader.conf`](config/scenereader.conf) (`/config/scenereader.conf`) + [`config/places.conf`](config/places.conf) (`/config/places.conf`). Episode shape: `EPISODE_GAP_S`, `REID_MAX_GAP_S`, `VISIT_MIN_S`, `VISIT_MERGE_GAP_S`; scenes/movement: `SCENE_ENABLED`, `SCENE_GAP_S`, `SCENE_MAX_S`, `MOVE_MIN_DISP`, `SCENE_KEYFRAMES`; caption cost: `VLM_TIMEOUT_S`, `VLM_MAX_IMAGE_PX`, `MAX_EVENTS_PER_RUN`. |
 | Frame source | **Read in place, NEVER copied**: host `./media` IS Frigate's `/media/frigate`; event snapshots are `clips/<camera>-<event_id>.jpg` with a `-clean.webp` sibling (the un-annotated frame is the one captioned). Verified 2026-09-10 — there is **no** `media/snapshots/`. |
-| Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): Frigate's `config/frigate.db`, **read-only**, single denormalised `event` table, joined by the **exact** event id in the filename. `api` / `auto` fall back to `/api/events/<id>`. `score`/`top_score`/`box` columns are NULL → the live values are parsed from the `data` JSON. |
+| Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): Frigate's `config/frigate.db`, **read-only**, single denormalised `event` table, joined by the **exact** event id in the filename. `api` / `auto` fall back to `/api/events/<id>`. `score`/`top_score`/`box` columns are NULL → the live values are parsed from the `data` JSON; the object's own movement is derived from `data.path_data` into `events.motion_disp` / `events.motion_pts`. |
 | Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = a small **SmolVLM2-500M GGUF + mmproj** served by a **resident** `llama-server` (~0.5–0.7 GB); `openvino` = the **RETAINED** Qwen2-VL-2B INT4 IR that was already on the host (~2 GB). Switching is config-only — no re-download, no rebuild. |
 | Model prerequisite | **NOT deployed by git.** Small GGUF: [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) (**add-only**; never touches the retained IR). Retained OpenVINO IR: [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) (kept so the 2B never needs re-downloading) — see [`models/scene/README.md`](models/scene/README.md) |
-| Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-{scheduler,cli}.lock` (flock single-instance guards; harmless when stale). **No image copies anywhere.** |
+| Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases + **scenes** + **scene_events**), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-{scheduler,cli}.lock` (flock single-instance guards; harmless when stale). **No image copies anywhere.** |
 | Volumes | `./scenereader:/scenereader:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
 | Concurrency | **Short locks, one writer, by construction.** The CLI is a real `argparse` parser (`--help` works; an unknown flag exits 2) and a flock guard in the store dir refuses a SECOND `scheduler` (exit 3, with the holder's pid); two manual commands may not overlap either (a manual command may still run **beside** the daemon). The store's write lock is held for **milliseconds**: every ITEM is committed as it is written (`_commit`), a `release_txn()` net runs after each loop pass, and `prune()` commits unconditionally — a leaked transaction (or a batch that committed only at the end) was what made every other writer report `database is locked`. The one-shot CLI reports `exit 4` with a "store busy" message instead of a traceback. `--check`/`--status` open the store **read-only** and are safe next to the live service. |
@@ -310,7 +311,7 @@ sudo apt install -y git python3
 |---|---|
 | [`config/config.yaml`](config/config.yaml) | Frigate 0.17 (cameras, **zones**, go2rtc, model, detector, record, motion). Kept byte-identical to the host file — see the `frigate` service Notes for the re-adopt-after-UI-edit rule. |
 | [`config/firewatch.conf`](config/firewatch.conf) | firewatch tunables (motion gate, thresholds, store) |
-| [`config/scenereader.conf`](config/scenereader.conf) | scenereader tunables (Frigate access, scan/drain timing, idle governor, model backend incl. `VLM_TIMEOUT_S`, episodes incl. `VISIT_MERGE_GAP_S`, store) |
+| [`config/scenereader.conf`](config/scenereader.conf) | scenereader tunables (Frigate access, scan/drain timing, idle governor, model backend incl. `VLM_TIMEOUT_S`, episodes incl. `VISIT_MERGE_GAP_S`, adaptive scenes incl. `SCENE_GAP_S`/`MOVE_MIN_DISP`, store) |
 | [`config/places.conf`](config/places.conf) | **The human layer**: camera/zone → place names + the `ADJACENCY` routes that link one person across cameras (edit this to name the farm) |
 | [`config/heartbeat.conf`](config/heartbeat.conf) | Disk heartbeat global cap (`FS_PATH`, `MIN_FREE_GB`, `RELIEF_FREE_GB`, …) |
 | [`config/stores/*.conf`](config/stores/) | Per-service cleanup profiles |

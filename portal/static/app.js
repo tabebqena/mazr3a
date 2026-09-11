@@ -1994,6 +1994,7 @@ function markEvActive() {
 // Stop the player and drop the selection (leaving the tab / changing filters).
 function evTeardown() {
   clearEvIdle();
+  evExitFullscreen();          // leaving the player: drop any stage fullscreen
   hideEvOverlay();
   hideEvCenter();
   evPlaylist = false;
@@ -2008,6 +2009,7 @@ function evTeardown() {
   const stage = $('#ev-stage');
   if (stage) stage.classList.remove('has-clip');
   syncEvPlaylist();
+  syncEvFs();
   renderEvNow();
 }
 
@@ -2017,6 +2019,52 @@ $('#ev-label').addEventListener('change', () => { saveEvLabel(); loadEvents(); }
 wireTimeControls('ev', loadEvents, '24h');   // default = Last 24 hours
 $('#ev-playlist').addEventListener('click', toggleEvPlaylist);
 $('#ev-overlay-resume').addEventListener('click', resumeEvPlayback);
+
+/* ---- custom FULLSCREEN on the STAGE (never the <video> element) ----
+   The browser's native fullscreen targets the <video> element, which puts the
+   idle-stop Resume overlay (#ev-overlay - its SIBLING inside #ev-stage) OUTSIDE
+   the fullscreen view: an idle-stopped playlist then just looks frozen and the
+   user never sees the Resume button. The native button is suppressed
+   (controlslist="nofullscreen" on #ev-video) and #ev-fs fullscreens the whole
+   STAGE instead, so the caption bar, the center button AND the Resume overlay
+   all stay visible in fullscreen. */
+function evFsElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function evStageFullscreen() { return evFsElement() === $('#ev-stage'); }
+function syncEvFs() {
+  const b = $('#ev-fs');
+  if (!b) return;
+  const on = evStageFullscreen();
+  b.textContent = on ? '\u2715' : '\u26F6';   // \u2715 exit / \u26F6 enter
+  b.title = on ? 'Exit fullscreen' : 'Fullscreen';
+  b.setAttribute('aria-label', b.title);
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+function evExitFullscreen() {
+  if (!evFsElement()) return;
+  const ex = document.exitFullscreen || document.webkitExitFullscreen;
+  if (!ex) return;
+  try { const p = ex.call(document); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+}
+function evToggleFullscreen() {
+  const stage = $('#ev-stage');
+  if (!stage) return;
+  if (evFsElement()) { evExitFullscreen(); return; }
+  const req = stage.requestFullscreen || stage.webkitRequestFullscreen;
+  if (!req) return;   // no Fullscreen API: leave the native controls to it
+  try { const p = req.call(stage); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+}
+$('#ev-fs').addEventListener('click', evToggleFullscreen);
+// Keep the button in sync, and bail OUT of any stray <video> fullscreen (a
+// browser without controlslist, or a double-click Chrome maps to video
+// fullscreen) so the Resume overlay can never end up hidden behind it.
+['fullscreenchange', 'webkitfullscreenchange'].forEach(evt =>
+  document.addEventListener(evt, () => {
+    if (evFsElement() === $('#ev-video')) evExitFullscreen();
+    syncEvFs();
+  }));
+syncEvFs();
 // Collapse / expand the clip THUMBNAILS (the named "Clips" hamburger). Shown on
 // phones in BOTH orientations: collapsing hides the strip so the frame gets the
 // vertical space; in landscape it also shrinks the column to a slim handle.

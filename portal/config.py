@@ -17,6 +17,10 @@ import os
 # Keys are uppercase (config file keys are upper-cased on load).
 DEFAULTS = {
     "SECRET_KEY": "",                 # signs session cookies (must be set)
+    # Runtime user accounts live in the portal's OWN SQLite DB (portal/
+    # userstore.py) so add/edit/delete applies with NO container restart. The
+    # `user` lines in portal.conf are only a first-run SEED (see parse_file).
+    "PORTAL_USERS_DB": "/media/portal/users.db",
     "SESSION_DAYS": "7",              # cookie lifetime in days
     "COOKIE_SECURE": "true",          # Secure flag on the session cookie
     "STREAM_IDLE_TIMEOUT_S": "300",   # live-view idle time watch default

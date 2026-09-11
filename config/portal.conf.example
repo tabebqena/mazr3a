@@ -11,13 +11,24 @@
 # ============================================================
 
 # ------------------------------------------------------------------
-# Users - one line per user. This is the app-level gate (the Cloudflare
-# Access policy already protects the network in front). Generate a hash
-# line with:
+# Users - RUNTIME accounts live in the portal's own SQLite DB
+# (PORTAL_USERS_DB, default /media/portal/users.db). Add / edit / delete them
+# from the portal Account tab - a change applies IMMEDIATELY, with NO container
+# restart. The `user` lines below are only a FIRST-RUN SEED (used to bootstrap
+# an existing deployment / an initial admin); after that the DB is the source of
+# truth and these lines are ignored.
+#
+# This is the app-level gate (the Cloudflare Access policy already protects the
+# network in front). Generate a seed hash line with:
 #     python portal/genpass.py --username admin        # prompts (hidden)
 # Format: user <name> <pbkdf2$iters$salt$hash> [default_camera=<cam>]
+# The user literally named `admin` is seeded as the first administrator.
 # ------------------------------------------------------------------
 # user admin pbkdf2$600000$<salt_hex>$<hash_hex> default_camera=cam01
+
+# Runtime user DB (portal/userstore.py). The dir is created on demand under the
+# rw ./media mount; the same dir already holds the bandwidth usage DB.
+PORTAL_USERS_DB=/media/portal/users.db
 
 # Signs session cookies. REQUIRED - use a long random string:
 #   python -c "import secrets; print(secrets.token_urlsafe(48))"

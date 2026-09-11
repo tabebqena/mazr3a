@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v27` |
+| Summary version | `v28` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.6.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.7.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -142,12 +142,12 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), **Events** as a large playback frame fed by a horizontal clip strip with a **playlist** auto-advance switch (stopped after 1 min idle and resumable; last camera/class remembered, Last-24h default), fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scenes** tab of the adaptive L1 scenes — the coexisting objects and which of them actually MOVED — and a **Scene log** of every capture with its tier — all read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab, and **per-user bandwidth usage** (the portal counts the real egress bytes it sends each user for Live video, event clips and snapshots/JSON via [`portal/usage.py`](portal/usage.py); every user sees their own totals in the footer/nav **Usage** panel, the admin gets a per-user **Usage** tab) |
-| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py) (per-user bandwidth store — the portal's ONLY writable DB), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), **Events** as a large playback frame fed by a horizontal clip strip with a **playlist** auto-advance switch (stopped after 1 min idle and resumable; last camera/class remembered, Last-24h default), fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scenes** tab of the adaptive L1 scenes — the coexisting objects and which of them actually MOVED — and a **Scene log** of every capture with its tier — all read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab, and **per-user bandwidth usage** (the portal counts the real egress bytes it sends each user for Live video, event clips and snapshots/JSON via [`portal/usage.py`](portal/usage.py); accounts are managed at RUNTIME from the new **Account** tab - reachable by clicking the username - which shows the profile (username read-only, editable display name + photo, password change) and the EMBEDDED **usage** card; an admin additionally gets the **Users** table (create/edit/delete, with **password-hash** + **is-active** columns) and every user's usage. Accounts live in [`portal/userstore.py`](portal/userstore.py) (`media/portal/users.db`), so any change applies **immediately with NO container restart** - the separate Usage tab was removed) |
+| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py) (per-user bandwidth store) + [`portal/userstore.py`](portal/userstore.py) (RUNTIME user accounts; the portal's ONLY writable DBs), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
-| Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/usage.db`) |
-| Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090` |
+| Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/usage.db` + `media/portal/users.db`) |
+| Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB` (default `/media/portal/users.db`) |
 | Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Nav layout:** on phones (both orientations) the bar collapses into a scrollable `#nav-toggle` hamburger dropdown carrying the **username** (`#nav-user`), the tabs, **Sign out** (`#nav-logout`), and the version (`#ver-no-nav`). The **username** and **sign-out** appear ONLY there on phones (the topbar `#logout-btn` and the fixed `.app-ver` tag are hidden on phones); the horizontal (tablet/desktop) bar is a scrollable inline link row with the **username** (`#user-chip`) + sign-out in the userbox and the version tag as the lowermost fixed row. A phone in **landscape** turns the Live controls into a **thin vertical column** beside the frame (max frame height) and lays the **Events** tab out as a **3-column grid** (narrow scrollable filters | large video | a narrow scrollable clip strip `#ev-clips`; filters grid is narrower via `#view-events .controls`, all via `body.events-full`). **Center play/stop (YouTube-style):** tapping the Live or Events frame shows a big round `#live-center` / `#ev-center` button (glyph set from the real state) that stops/resumes the live stream or plays/pauses the clip; pan-drag and the native controls strip are ignored. A **Stop** button (`#live-stop`) also halts the live stream. **Events clip list:** the Prev/Next pager is **gone** - the strip shows the first `EV_PAGE` events and grows with a trailing **Load more** (`#ev-loadmore`), ending in **No more videos** (`.ev-end`); the **count** (`#ev-count`, e.g. `564 event(s)`) sits at the TOP of the thumbnail area. The named hamburger `#ev-clips-toggle` collapses the thumbnails in BOTH portrait and landscape, and the strip **auto-collapses while a clip plays** and re-appears when it stops (`body.ev-clips-collapsed`, theater mode). The old prev/next camera buttons were **removed** (cameras are picked from the thumbnails / modal). (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
 
 ### 3.7 `scenereader` — cross-camera episode narrator
@@ -315,9 +315,9 @@ sudo apt install -y git python3
 | [`config/places.conf`](config/places.conf) | **The human layer**: camera/zone → place names + the `ADJACENCY` routes that link one person across cameras (edit this to name the farm) |
 | [`config/heartbeat.conf`](config/heartbeat.conf) | Disk heartbeat global cap (`FS_PATH`, `MIN_FREE_GB`, `RELIEF_FREE_GB`, …) |
 | [`config/stores/*.conf`](config/stores/) | Per-service cleanup profiles |
-| [`config/stores/portal.conf`](config/stores/portal.conf) | Portal usage-store profile (`media/portal/usage.db`; the DB is hard-protected, so row retention is **in-app**, `USAGE_RETENTION_DAYS`) |
+| [`config/stores/portal.conf`](config/stores/portal.conf) | Portal data-store profile (`media/portal/usage.db` + `media/portal/users.db`; both hard-protected, so usage retention is **in-app**, `USAGE_RETENTION_DAYS`) |
 | [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf) | MQTT broker |
-| [`config/portal.conf.example`](config/portal.conf.example) | Portal template (users/secret/tunables) |
+| [`config/portal.conf.example`](config/portal.conf.example) | Portal template (secret + tunables; the `user` lines are only a first-run seed) + `PORTAL_USERS_DB` |
 | [`config/telegram.conf.example`](config/telegram.conf.example) | Telegram template (creds + tunables) |
 | [`config/cleanup_firewatch.conf`](config/cleanup_firewatch.conf) | firewatch store cleanup tunables (worker) |
 | [`config/cleanup_media.conf`](config/cleanup_media.conf) | **SUPERSEDED** reference only |
@@ -328,8 +328,8 @@ sudo apt install -y git python3
 |---|---|
 | `.env` | Camera RTSP credentials (`FRIGATE_*`) |
 | `config/telegram.conf` | Bot token + `CHAT_ID`(s) + tunables |
-| `config/portal.conf` | Portal users (PBKDF2) + `SECRET_KEY` |
-| `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the scenereader **text** store (`media/events/`) + watchdog CSVs |
+| `config/portal.conf` | Portal `SECRET_KEY` + tunables (the `user` seed lines are optional now) |
+| `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the scenereader **text** store (`media/events/`) + the portal's own `media/portal/{usage,users}.db` + watchdog CSVs |
 | `mosquitto/data/`, `mosquitto/log/` | Broker runtime state |
 | `models/fire/versions/` | Versioned fire-model archive |
 | `models/scene/` | **TWO** git-ignored models: the small SmolVLM2-500M GGUF + mmproj (`smolvlm2-500m/`) and the RETAINED Qwen2-VL-2B OpenVINO INT4 IR. Neither is ever deleted or re-downloaded; `MODEL_BACKEND` selects which runs. |
@@ -339,7 +339,7 @@ sudo apt install -y git python3
 ### 7.3 Credentials — how they work
 - **Camera creds:** `.env` → `env_file` on the `frigate` container → `{FRIGATE_*}` placeholders in `config/config.yaml`. Frigate 0.17 has **no `!env_var` tag** — only `FRIGATE_`-prefixed substitution. `cam08` (Hikvision) uses separate `FRIGATE_HIK_RTSP_USER/PASS`.
 - **Telegram:** shared git-ignored `config/telegram.conf`, read by all senders + the bot. `CHAT_ID` accepts a comma-separated recipient list.
-- **Portal:** git-ignored `config/portal.conf`; add a user with `python portal/genpass.py --username NAME`.
+- **Portal:** git-ignored `config/portal.conf` holds `SECRET_KEY` + tunables. Accounts are **runtime** records in `media/portal/users.db` — managed from the portal **Account** tab (no container restart) and seeded ONCE from any `user` line; `python portal/genpass.py --username NAME` still generates such a seed line.
 
 ---
 
@@ -358,11 +358,11 @@ All persistent data lives under the deploy root; a **single cleaner** (root cron
 | [`watchdog.conf`](config/stores/watchdog.conf) | dir | `{DEPLOY}/media/watchdog` (`*.csv`) | 14 | 0 | 20 |
 | [`mosquitto.conf`](config/stores/mosquitto.conf) | dir | `{DEPLOY}/mosquitto` (`data,log`) | 7 | 0 | 30 |
 | [`firewatch.conf`](config/stores/firewatch.conf) | docker-exec | in-container worker | 90 | 2 | 50 |
-| [`portal.conf`](config/stores/portal.conf) | dir | `{DEPLOY}/media/portal` (usage DB) | 0 | 0 | 90 |
+| [`portal.conf`](config/stores/portal.conf) | dir | `{DEPLOY}/media/portal` (usage + users DBs) | 0 | 0 | 90 |
 
 - firewatch evidence is **DB-aware**: the profile delegates to `cleanup_firewatch_store.py` in the container (SQLite is the source of truth; only DB-referenced JPEGs are removed — never Frigate media, which shares the `./media` tree).
 - scenereader adds **no** image store: its frames are Frigate's own (governed by `frigate.conf` above), so it needs **no cleanup profile**. Its text DB lives in `media/events/` and is hard-protected from deletion (`_HARD_PROTECT` covers `*.db`/`*.db-wal`/`*.db-shm`). Row expiry is owned by the service (`EVENTS_RETENTION_DAYS`).
-- portal usage adds **no image store**: its per-user bandwidth DB lives in `media/portal/usage.db`. Like the scenereader DB it is hard-protected from deletion, so the `portal.conf` profile can free nothing — **row** expiry is owned by the portal itself (`USAGE_RETENTION_DAYS`, default 180, pruned in-app by [`portal/usage.py`](portal/usage.py)).
+- portal data adds **no image store**: the portal owns two small DBs under `media/portal/` — `usage.db` (per-user bandwidth; **row** expiry owned by the portal via `USAGE_RETENTION_DAYS`, default 180, pruned in-app by [`portal/usage.py`](portal/usage.py)) and `users.db` (runtime user accounts, see [`portal/userstore.py`](portal/userstore.py)). Both are hard-protected from deletion, so the `portal.conf` profile can free nothing.
 - Inspect: `sudo /usr/bin/python3 scripts/heartbeat_cleanup.py --check` (permission/usage table) and `--dry-run` (preview deletions). Log: `heartbeat-cleanup.log`.
 
 ---

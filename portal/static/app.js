@@ -1,4 +1,4 @@
-/* mazr3a CCTV portal SPA - vanilla JS.
+ /* mazr3a CCTV portal SPA - vanilla JS.
    Views: Login, Live (single camera; go2rtc MSE over WebSocket - the same
    transport Frigate's own UI uses - proxied same-origin through the portal,
    with an hls.js HLS fallback and a detect-snapshot poster, idle time watch),
@@ -14,6 +14,9 @@ const state = {
   settings: null,
   cameras: [],
   usage: null,       // caller's own bandwidth breakdown (from /api/usage)
+  users: [],         // admin: every account (from /api/users)
+  userTarget: null,  // Account tab: username being viewed (null = yourself)
+  userPhoto: '',     // Account tab: pending profile photo data URL
   live: { cam: null, playing: false, mode: '', sound: false, imgLive: false,
           revealed: false },   // true once this live attempt dropped the poster
   // imgLive: the <img> is the poster shown while a live attempt is starting
@@ -184,8 +187,9 @@ async function boot() {
   } catch (e) { return; }
   hideLogin();
   // The signed-in username: inside the collapsed menu on phones (#nav-user) and
-  // in the userbox of the horizontal layout (#user-chip). Guarded so a missing
-  // node can never break boot.
+  // in the userbox of the horizontal layout (#user-chip). Both are CLICKABLE
+  // links to the Account (User) tab. Guarded so a missing node can never break
+  // boot.
   const navUser = $('#nav-user');
   if (navUser) navUser.textContent = state.me.username;
   const userChip = $('#user-chip');
@@ -195,9 +199,9 @@ async function boot() {
   // it again. The server is the real gate (/api/admin/logs 403s everyone
   // else) - the nav link visibility is purely cosmetic.
   $('#nav-debug').classList.toggle('hidden', !state.me.is_admin);
-  // Same admin gate for the Usage tab (the server 403s /api/admin/usage anyway).
-  const navUsage = $('#nav-usage');
-  if (navUsage) navUsage.classList.toggle('hidden', !state.me.is_admin);
+  // A non-admin only sees the tabs they were granted in the Account tab
+  // (empty permissions = all standard tabs). The server remains the real gate.
+  applyNavPermissions();
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
@@ -223,11 +227,12 @@ function onRoute() {
   setNavOpen(false);   // a route change always dismisses the collapsed menu
   const raw = (location.hash || '#/live').replace(/^#\//, '');
   const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes',
-                 'debug', 'usage'];
+                 'debug', 'user'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
-  // Debug/Usage are admin-only: a non-admin who lands on them falls back to Live.
-  if ((view === 'debug' || view === 'usage')
-      && !(state.me && state.me.is_admin)) view = 'live';
+  if (raw === 'usage') view = 'user';   // the Usage tab was removed
+  // Debug is admin-only, and a non-admin who lands on a tab they were not
+  // granted falls back to Live.
+  if (!viewAllowed(view)) view = 'live';
   // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
   document.body.classList.toggle('live-full', view === 'live');
   // Events gets its OWN full-bleed layout on a phone held in LANDSCAPE (a
@@ -245,7 +250,7 @@ function onRoute() {
   else if (view === 'adaptive') reloadAdaptiveScenes();  // page-based: reset to page 1
   else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
-  else if (view === 'usage') loadUsageAdmin();  // admin per-user bandwidth
+  else if (view === 'user') loadUserView();     // account tab (usage embedded)
 }
 
 async function loadCameras() {
@@ -2414,12 +2419,13 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeSceneLightbox();
 });
 
-/* ---------------- bandwidth usage (self view + admin tab) ----------------
+/* ---------------- bandwidth usage (self + embedded admin view) ----------------
    The portal counts the REAL bytes it sends each logged-in user (Live video,
    event clips, snapshots/JSON) as daily counters - see portal/usage.py. Every
-   user sees their OWN totals (footer chip on desktop, nav summary on phones,
-   plus the Usage panel) from /api/usage; the admin additionally sees everyone
-   from /api/admin/usage (the Usage tab, gated exactly like Debug). */
+   user sees their OWN totals in the footer chip and the Account tab's usage card
+   (from /api/usage); an admin also sees everyone's (from /api/admin/usage).
+   NOTE: the separate Usage TAB was removed - usage now lives INSIDE the Account
+   (User) tab, reachable by clicking the username. */
 const USAGE_KINDS = [['live', 'Live'], ['events', 'Events video'],
                      ['other', 'Other']];
 
@@ -2452,6 +2458,12 @@ function usageSelfTable(b) {
     '</tbody></table></div>';
 }
 
+function usageNote(retentionDays) {
+  return '<p class="usage-note">Bytes the portal sent to this account - Live ' +
+    'video, event clips, snapshots/JSON - counted daily. History kept ' +
+    esc(retentionDays || 180) + ' days.</p>';
+}
+
 function renderUsageSelf() {
   const u = state.usage;
   if (!u) return;
@@ -2460,8 +2472,6 @@ function renderUsageSelf() {
     fmtBytes(t.events) + ' \u00b7 Other ' + fmtBytes(t.other);
   const chip = $('#usage-chip');
   if (chip) { chip.textContent = 'Today: ' + txt; chip.classList.remove('hidden'); }
-  const nav = $('#usage-nav');
-  if (nav) { nav.textContent = txt; nav.classList.remove('hidden'); }
 }
 
 async function loadUsageSelf() {
@@ -2469,42 +2479,20 @@ async function loadUsageSelf() {
   renderUsageSelf();
 }
 
-function openUsageModal() {
-  if (!state.usage) return;
-  setNavOpen(false);
-  $('#usage-title').textContent = 'Bandwidth usage - ' + state.usage.username;
-  const r = state.usage.retention_days || 180;
-  $('#usage-body').innerHTML = usageSelfTable(state.usage) +
-    '<p class="usage-note">Bytes the portal sent to you - Live video, event ' +
-    'clips, snapshots/JSON - counted daily. History kept ' + esc(r) +
-    ' days.</p>';
-  $('#usage-modal').classList.remove('hidden');
-}
-function closeUsageModal() { $('#usage-modal').classList.add('hidden'); }
-
-/* Admin Usage tab: one row per user (today's kinds plus 30d/all-time totals). */
-async function loadUsageAdmin() {
-  const st = $('#usage-status');
-  const box = $('#usage-list');
-  if (!st || !box) return;
-  if (!isAdmin()) {
-    box.innerHTML = '<div class="empty">Admins only.</div>';
-    return;
-  }
-  st.textContent = 'Loading\u2026';
+/* Admin: every user's usage, rendered into the Account tab's admin card. */
+async function loadAllUsage() {
+  const box = $('#user-all-usage');
+  if (!box) return;
   let data;
   try { data = await api('/api/admin/usage'); }
-  catch (e) { st.textContent = 'Could not load usage: ' + e.message; return; }
+  catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
   const users = (data && data.users) || [];
   const r = (data && data.retention_days) || 180;
   if (!users.length) {
-    st.textContent = 'No usage recorded yet (history kept ' + r + ' days).';
     box.innerHTML = '<div class="empty">No usage recorded yet.</div>';
     return;
   }
-  st.textContent = 'Per-user egress counted at the portal - history kept ' +
-    r + ' days.';
-  let head = '<tr><th>User</th><th>Live (today)</th><th>Events (today)</th>' +
+  const head = '<tr><th>User</th><th>Live (today)</th><th>Events (today)</th>' +
     '<th>Other (today)</th><th>Today</th><th>30 days</th><th>All time</th></tr>';
   const rows = users.map(u => {
     const t = u.today || {}, d30 = u.d30 || {}, tot = u.total || {};
@@ -2517,33 +2505,381 @@ async function loadUsageAdmin() {
       '<td>' + fmtBytes(tot.bytes) + '</td></tr>';
   }).join('');
   box.innerHTML = '<div class="usage-scroll"><table class="usage-table">' +
-    '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
+    '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>' +
+    usageNote(r);
 }
 
-(function wireUsage() {
-  const chip = $('#usage-chip');
-  if (chip) chip.addEventListener('click', openUsageModal);
-  const nav = $('#usage-nav');
-  if (nav) {
-    nav.addEventListener('click', openUsageModal);
-    nav.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault(); openUsageModal();
-      }
-    });
+/* ---------------- Account (User) tab ----------------
+   The Account tab (reachable by clicking the username) shows the signed-in
+   user's profile; an admin can open ANY account from the Users table. Accounts
+   live in the portal's own users DB (portal/userstore.py), so add / edit /
+   delete applies at once with NO container restart. */
+
+/* Standard (non-admin) tabs a user can be granted. Keep in sync with
+   ALLOWED_PERMISSIONS in portal/userstore.py. */
+const USER_PERMS = [['live', 'Live'], ['events', 'Events'], ['fire', 'Fire alerts'],
+                    ['episodes', 'Episodes'], ['adaptive', 'Scenes'],
+                    ['scenes', 'Scene log']];
+const USER_VIEWS = USER_PERMS.map(p => p[0]);
+
+function isAdmin() { return !!(state.me && state.me.is_admin); }
+
+/* True when the Account tab is showing YOUR OWN account. */
+function isSelfTarget() {
+  return !!(state.me && (state.userTarget || '').toLowerCase() ===
+    state.me.username.toLowerCase());
+}
+
+/* A view is reachable when granted (empty permissions = every standard tab).
+   The Account tab ('user') is always available. */
+function viewAllowed(v) {
+  if (isAdmin()) return true;
+  if (v === 'debug') return false;
+  if (USER_VIEWS.indexOf(v) < 0) return true;
+  const p = (state.me && state.me.permissions) || [];
+  return !p.length || p.indexOf(v) >= 0;
+}
+
+/* Show only the granted tabs (the server is still the real gate). */
+function applyNavPermissions() {
+  const p = (state.me && state.me.permissions) || [];
+  $$('#nav a[data-view]').forEach(a => {
+    const v = a.dataset.view;
+    if (USER_VIEWS.indexOf(v) < 0) return;    // account/admin links untouched
+    a.classList.toggle('hidden', !!(p.length && p.indexOf(v) < 0));
+  });
+}
+
+/* Generated avatar so an account without a photo still shows something. */
+function avatarPlaceholder(name) {
+  const ch = (String(name || '?').trim().charAt(0) || '?').toUpperCase();
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160">' +
+    '<rect width="160" height="160" fill="#1b222c"/>' +
+    '<text x="80" y="104" font-size="76" text-anchor="middle" fill="#7d8b99" ' +
+    'font-family="sans-serif">' + ch + '</text></svg>';
+  return 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+
+/* Read an image file and downscale it (<=256 px, JPEG) so the stored data URL
+   stays small. Falls back to the raw data URL if the canvas path fails. */
+function fileToDataUrl(file, maxPx) {
+  maxPx = maxPx || 256;
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.onload = () => {
+      const raw = String(reader.result || '');
+      const img = new Image();
+      img.onerror = () => reject(new Error('not a valid image'));
+      img.onload = () => {
+        try {
+          const s = Math.min(1, maxPx / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * s));
+          const h = Math.max(1, Math.round(img.height * s));
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.85));
+        } catch (e) { resolve(raw); }
+      };
+      img.src = raw;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderUserPhoto(name) {
+  const img = $('#user-photo-img');
+  if (img) img.src = state.userPhoto || avatarPlaceholder(name);
+  const clear = $('#user-photo-clear');
+  if (clear) clear.disabled = !state.userPhoto;
+}
+
+function renderPermBoxes(perms, editable) {
+  const box = $('#user-perms');
+  if (!box) return;
+  const list = perms || [];
+  const all = !list.length;            // empty = every standard tab
+  box.innerHTML = USER_PERMS.map(([v, label]) =>
+    '<label class="check"><input type="checkbox" value="' + v + '"' +
+    ((all || list.indexOf(v) >= 0) ? ' checked' : '') +
+    (editable ? '' : ' disabled') + '> ' + esc(label) + '</label>').join('');
+}
+
+function renderUserProfile(p) {
+  const admin = isAdmin();
+  state.userPhoto = p.photo || '';
+  const title = $('#user-title');
+  if (title) title.textContent = '#' + (p.username || '');
+  $('#user-username').value = p.username || '';
+  $('#user-display').value = p.display_name || '';
+  $('#user-camera').value = p.default_camera || '';
+  const q = $('#user-quota');
+  if (q) q.value = p.quota_bytes ? fmtBytes(p.quota_bytes) : '';
+  renderUserPhoto(p.username);
+  const self = !!(state.me &&
+    (p.username || '').toLowerCase() === state.me.username.toLowerCase());
+  const admBox = $('#user-admin');
+  if (admBox) { admBox.checked = !!p.is_admin; admBox.disabled = !admin; }
+  const actBox = $('#user-active');
+  if (actBox) {
+    actBox.checked = p.is_active !== false;
+    // Only an admin may toggle it, and never on their own account (that would
+    // lock them out immediately - the server enforces this too).
+    actBox.disabled = !admin || self;
   }
-  const close = $('#usage-close');
-  if (close) close.addEventListener('click', closeUsageModal);
-  $$('[data-usage-close]').forEach(
-    el => el.addEventListener('click', closeUsageModal));
-  const refresh = $('#usage-refresh');
-  if (refresh) refresh.addEventListener('click', () => {
-    loadUsageAdmin(); loadUsageSelf();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeUsageModal();
-  });
-})();
+  renderPermBoxes(p.permissions, admin);
+  const save = $('#user-save');
+  if (save) save.disabled = false;
+}
+
+async function saveUserProfile() {
+  const target = state.userTarget;
+  const btn = $('#user-save');
+  btn.disabled = true;
+  const body = {
+    display_name: $('#user-display').value.trim(),
+    default_camera: $('#user-camera').value.trim(),
+    photo: state.userPhoto || '',
+  };
+  if (isAdmin()) {
+    body.is_admin = $('#user-admin').checked;
+    const checked = $$('#user-perms input:checked').map(i => i.value);
+    // A full selection is stored as [] ("all"), so a future tab is auto-granted.
+    body.permissions = checked.length === USER_PERMS.length ? [] : checked;
+    if (!isSelfTarget()) body.is_active = $('#user-active').checked;
+  }
+  try {
+    const p = await api('/api/users/' + encodeURIComponent(target),
+                        { method: 'PATCH', body });
+    renderUserProfile(p);
+    toast('Saved');
+    if (isAdmin()) loadUserList();
+  } catch (e) {
+    toast('Could not save: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveUserPassword() {
+  const msg = $('#pw-msg');
+  const target = state.userTarget;
+  const isSelf = !state.me ||
+    target.toLowerCase() === state.me.username.toLowerCase();
+  const cur = $('#pw-current').value;
+  const nw = $('#pw-new').value;
+  const cf = $('#pw-confirm').value;
+  msg.textContent = '';
+  if (!nw || nw.length < 6) {
+    msg.textContent = 'New password must be at least 6 characters.'; return;
+  }
+  if (nw !== cf) {
+    msg.textContent = 'New password and confirmation do not match.'; return;
+  }
+  const body = { new_password: nw };
+  if (isSelf) body.current_password = cur;   // self must confirm the current one
+  const btn = $('#pw-save');
+  btn.disabled = true;
+  try {
+    await api('/api/users/' + encodeURIComponent(target) + '/password',
+              { method: 'POST', body });
+    $('#pw-current').value = ''; $('#pw-new').value = ''; $('#pw-confirm').value = '';
+    msg.textContent = 'Password updated.';
+  } catch (e) {
+    msg.textContent = 'Could not update: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadUserUsage(profile) {
+  const box = $('#user-usage');
+  if (!box) return;
+  box.innerHTML = '<div class="empty">Loading\u2026</div>';
+  const me = state.me ? state.me.username.toLowerCase() : '';
+  try {
+    let data;
+    if ((profile.username || '').toLowerCase() === me) {
+      data = await api('/api/usage');
+      state.usage = data;
+      renderUsageSelf();
+    } else {
+      const all = await api('/api/admin/usage');
+      data = (all.users || []).find(u =>
+        (u.username || '').toLowerCase() ===
+        (profile.username || '').toLowerCase());
+      if (!data) data = { today: {}, d7: {}, d30: {}, total: {} };
+    }
+    box.innerHTML = usageSelfTable(data) + usageNote(data.retention_days);
+  } catch (e) {
+    box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+  }
+}
+
+function userRow(u) {
+  const photo = u.photo
+    ? '<img class="user-thumb" src="' + esc(u.photo) + '" alt="">'
+    : '<span class="user-thumb empty-av">' +
+      esc((String(u.username || '?').charAt(0) || '?').toUpperCase()) + '</span>';
+  const perms = (u.permissions && u.permissions.length)
+    ? u.permissions.join(', ') : 'all';
+  const hash = u.password_hash || '';
+  const hashShort = hash.length > 26 ? hash.slice(0, 26) + '\u2026' : hash;
+  const active = (u.username || '').toLowerCase() ===
+    (state.userTarget || '').toLowerCase();
+  const self = state.me &&
+    (u.username || '').toLowerCase() === state.me.username.toLowerCase();
+  const del = self ? '' :
+    '<button class="user-del" type="button" data-user-del="' + esc(u.username) +
+    '" title="Delete user">\u2715</button>';
+  return '<tr' + (active ? ' class="active"' : '') + '>' +
+    '<td><button class="user-link" type="button" data-user-open="' +
+      esc(u.username) + '">' + esc(u.username) + '</button></td>' +
+    '<td>' + esc(u.display_name || '') + '</td>' +
+    '<td class="user-cell-photo">' + photo + '</td>' +
+    '<td>' + (u.is_admin ? 'yes' : '') + '</td>' +
+    '<td>' + (u.is_active === false ? 'disabled' : 'yes') + '</td>' +
+    '<td>' + esc(perms) + '</td>' +
+    '<td>' + (u.quota_bytes ? fmtBytes(u.quota_bytes) : '\u2014') + '</td>' +
+    '<td class="user-hash" title="' + esc(hash) + '">' + esc(hashShort) + '</td>' +
+    '<td class="user-cell-act">' + del + '</td>' +
+    '</tr>';
+}
+
+async function loadUserList() {
+  const box = $('#user-list');
+  if (!box) return;
+  let data;
+  try { data = await api('/api/users'); }
+  catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+  state.users = data.users || [];
+  if (!state.users.length) {
+    box.innerHTML = '<div class="empty">No users.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="usage-scroll"><table class="usage-table user-table">' +
+    '<thead><tr><th>Username</th><th>Display name</th><th>Photo</th>' +
+    '<th>Admin</th><th>Active</th><th>Permissions</th><th>Quota</th>' +
+    '<th>Password hash</th><th></th></tr></thead>' +
+    '<tbody>' + state.users.map(userRow).join('') + '</tbody></table></div>';
+}
+
+async function loadUserView() {
+  if (!state.me) return;
+  const admin = isAdmin();
+  let target = state.userTarget;
+  if (!target ||
+      (!admin && target.toLowerCase() !== state.me.username.toLowerCase())) {
+    target = state.me.username;
+  }
+  state.userTarget = target;
+  // The "current password" field only applies to your OWN account.
+  const isSelf = target.toLowerCase() === state.me.username.toLowerCase();
+  $('#pw-current-wrap').classList.toggle('hidden', !isSelf);
+  let profile;
+  try { profile = await api('/api/users/' + encodeURIComponent(target)); }
+  catch (e) { toast('Could not load account: ' + e.message); return; }
+  renderUserProfile(profile);
+  loadUserUsage(profile);
+  $('#user-admin-card').classList.toggle('hidden', !admin);
+  if (admin) { loadUserList(); loadAllUsage(); }
+  else { $('#user-all-usage').innerHTML = ''; }
+}
+
+/* Open a specific account in the Account tab (admin: from the Users table). */
+function openUserTab(username) {
+  state.userTarget = username || null;
+  setNavOpen(false);
+  if ((location.hash || '') === '#/user') loadUserView();
+  else location.hash = '#/user';
+}
+
+/* ---- Account tab wiring ---- */
+$('#user-save').addEventListener('click', saveUserProfile);
+$('#pw-save').addEventListener('click', saveUserPassword);
+$('#user-usage-refresh').addEventListener('click', () => {
+  loadUserUsage({ username: state.userTarget || (state.me && state.me.username) });
+  if (isAdmin()) loadAllUsage();
+});
+$('#user-photo-pick').addEventListener('click', () => $('#user-photo-file').click());
+$('#user-photo-file').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (f) {
+    try {
+      state.userPhoto = await fileToDataUrl(f);
+      renderUserPhoto($('#user-username').value);
+    } catch (err) { toast('Could not read that image'); }
+  }
+  e.target.value = '';
+});
+$('#user-photo-clear').addEventListener('click', () => {
+  state.userPhoto = '';
+  renderUserPhoto($('#user-username').value);
+});
+// Admin: open / delete a user (delegated - rows are re-rendered on every load).
+$('#user-list').addEventListener('click', async (e) => {
+  const open = e.target.closest('[data-user-open]');
+  if (open) { openUserTab(open.dataset.userOpen); return; }
+  const del = e.target.closest('[data-user-del]');
+  if (!del) return;
+  const name = del.dataset.userDel;
+  if (!window.confirm('Delete user "' + name + '"? This cannot be undone.')) return;
+  del.disabled = true;
+  try {
+    await api('/api/users/' + encodeURIComponent(name), { method: 'DELETE' });
+    toast('Deleted ' + name);
+    if ((state.userTarget || '').toLowerCase() === name.toLowerCase()) {
+      state.userTarget = null;
+    }
+    await loadUserList();
+    if (isAdmin()) loadAllUsage();
+  } catch (err) {
+    toast('Could not delete: ' + err.message);
+    del.disabled = false;
+  }
+});
+// Add-user modal (admin).
+function openNewUser() {
+  ['#nu-username', '#nu-display', '#nu-password'].forEach(s => { $(s).value = ''; });
+  $('#nu-admin').checked = false;
+  $('#nu-msg').textContent = '';
+  $('#user-new-modal').classList.remove('hidden');
+}
+function closeNewUser() { $('#user-new-modal').classList.add('hidden'); }
+$('#user-new').addEventListener('click', openNewUser);
+$('#user-new-close').addEventListener('click', closeNewUser);
+$$('[data-user-new-close]').forEach(el => el.addEventListener('click', closeNewUser));
+$('#nu-save').addEventListener('click', async () => {
+  const btn = $('#nu-save');
+  const msg = $('#nu-msg');
+  msg.textContent = '';
+  btn.disabled = true;
+  try {
+    await api('/api/users', { method: 'POST', body: {
+      username: $('#nu-username').value.trim(),
+      display_name: $('#nu-display').value.trim(),
+      password: $('#nu-password').value,
+      is_admin: $('#nu-admin').checked,
+    }});
+    closeNewUser();
+    toast('User created');
+    loadUserList();
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeNewUser();
+});
+// The username (topbar chip / collapsed menu) and the footer usage chip all
+// open the Account tab for YOURSELF.
+function gotoSelfTab() { openUserTab(null); }
+$('#user-chip').addEventListener('click', gotoSelfTab);
+$('#nav-user').addEventListener('click', gotoSelfTab);
+$('#usage-chip').addEventListener('click', gotoSelfTab);
 
 /* ---------------- admin Debug: logs of containers (selectable) ---------------- */
 /* The read-only `logs` sidecar stays idle; the portal pulls its container
@@ -2552,9 +2888,8 @@ async function loadUsageAdmin() {
    logs instead of every container at once ("All containers" is the default).
    Every card ALSO carries its own refresh button so one container's tail can be
    reloaded without re-fetching the rest; lines render newest-first. */
-function isAdmin() {
-  return !!(state.me && state.me.is_admin);
-}
+/* isAdmin() is defined once, with the Account (User) tab above, and shared by
+   this Debug section. */
 
 /* Fill the Container dropdown from /api/admin/containers (no log tails pulled
    just to build the list). Keeps the previously selected container when it

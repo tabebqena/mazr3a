@@ -35,8 +35,10 @@
       <nav id="nav">
         <!-- Signed-in user, shown at the TOP of the collapsed menu (phones),
              above the tabs. The horizontal bar uses #user-chip in the userbox
-             instead. Filled by app.js at boot from /api/me. -->
-        <span id="nav-user" class="nav-user"></span>
+             instead. Filled by app.js at boot from /api/me. CLICKING IT opens
+             the Account (User) tab. -->
+        <a id="nav-user" class="nav-user" data-view="user" href="#/user"
+           title="Account settings"></a>
         <a data-view="live" href="#/live">Live</a>
         <a data-view="events" href="#/events">Events</a>
         <a data-view="fire" href="#/fire">Fire alerts</a>
@@ -51,28 +53,23 @@
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
-        <!-- Admin-only Usage tab: per-user bandwidth (the portal counts the real
-             bytes it sends each user; see portal/usage.py). Gated exactly like
-             Debug (nav hidden for non-admins; the server 403s /api/admin/usage). -->
-        <a data-view="usage" href="#/usage" id="nav-usage" class="hidden">Usage</a>
+        <!-- NOTE: the bandwidth Usage TAB was REMOVED. Usage now lives INSIDE
+             the Account (User) tab below, reachable by clicking the username. -->
         <!-- Collapsed-menu extras (phones only - hidden when the nav is an
              inline row on tablet/desktop): sign out and the version. Sign out
              mirrors #logout-btn; the version mirrors the footer label (same
              APP_VERSION source) so the menu is self-contained. -->
         <button id="nav-logout" class="nav-logout" type="button">Sign out</button>
-        <!-- Self-view bandwidth summary (phones: the fixed footer tag is hidden,
-             so the caller's own usage shows here instead). Filled from
-             /api/usage by app.js; clicking opens the Usage panel. -->
-        <span id="usage-nav" class="nav-usage hidden" role="button" tabindex="0"
-              title="Your bandwidth usage - tap for details"></span>
         <span class="nav-ver">v<span id="ver-no-nav">{{ APP_VERSION }}</span></span>
       </nav>
       <div class="userbox">
         <!-- Signed-in user for the HORIZONTAL nav layout (tablet/desktop), shown
              just before the sign-out button. On phones this is hidden and the
              username shows inside the collapsed menu (#nav-user) instead. Both
-             are filled from /api/me at boot. -->
-        <span id="user-chip" class="user-chip"></span>
+             are filled from /api/me at boot; CLICKING either opens the Account
+             (User) tab. -->
+        <button id="user-chip" class="user-chip" type="button"
+                title="Account settings"></button>
         <button id="logout-btn" title="Sign out">&#9211;</button>
         <!-- Phones (both orientations, every tab): collapses the tab bar into a
              dropdown menu so it never costs a row/height. Hidden on
@@ -407,19 +404,110 @@
         <div id="dbg-list" class="dbg-list"></div>
       </section>
 
-      <!-- Admin-only Usage: per-user bandwidth measured at the portal. The
-           portal counts the real bytes it sends each logged-in user (Live
-           video, event clips, snapshots/JSON) as daily counters (see
-           portal/usage.py). Loaded on tab open from /api/admin/usage (403s
-           every non-admin); every user still has their own footer/nav summary
-           and the Usage panel. -->
-      <section id="view-usage" class="view hidden">
-        <div class="controls">
-          <button id="usage-refresh" type="button"
-                  title="Reload usage totals">Refresh</button>
+      <!-- Account (User) tab: the signed-in user's profile, reachable by
+           clicking the username (#nav-user / #user-chip). Shows the read-only
+           username, an editable display name + photo, and a change-password
+           card; the bandwidth Usage card is EMBEDDED here (the separate Usage
+           tab was removed). Admins additionally get the Users table
+           (add / edit / delete accounts - applied immediately, no container
+           restart) plus the all-users usage table. -->
+      <section id="view-user" class="view hidden">
+        <!-- Profile card -->
+        <div class="card user-card">
+          <div class="user-card-head">
+            <span>Profile</span>
+            <span id="user-title" class="muted"></span>
+          </div>
+          <div class="user-grid">
+            <div class="user-photo">
+              <img id="user-photo-img" alt="Profile photo">
+              <div class="user-photo-actions">
+                <button id="user-photo-pick" type="button">Change photo</button>
+                <button id="user-photo-clear" type="button" class="ghost">Remove</button>
+              </div>
+              <input id="user-photo-file" type="file" accept="image/*" class="hidden">
+            </div>
+            <div class="user-fields">
+              <label>Username
+                <input id="user-username" readonly autocomplete="off">
+              </label>
+              <label>Display name
+                <input id="user-display" maxlength="64" autocomplete="off">
+              </label>
+              <label>Default camera
+                <input id="user-camera" placeholder="(server default)"
+                       autocomplete="off">
+              </label>
+              <label>Quota
+                <input id="user-quota" disabled placeholder="(not in use yet)">
+              </label>
+              <label class="check" id="user-admin-row">
+                <input id="user-admin" type="checkbox"> Administrator
+              </label>
+              <label class="check" id="user-active-row">
+                <input id="user-active" type="checkbox"> Active
+                <span class="muted">(disable to block sign-in)</span>
+              </label>
+              <div class="user-perms">
+                <span class="user-perms-label">Tabs</span>
+                <div id="user-perms" class="user-perms-box"></div>
+                <div class="user-perms-hint muted">
+                  Select the tabs this user may open (all when none is set).
+                </div>
+              </div>
+              <div class="user-actions">
+                <button id="user-save" type="button">Save changes</button>
+              </div>
+            </div>
+          </div>
         </div>
-        <div id="usage-status" class="status"></div>
-        <div id="usage-list" class="usage-list"></div>
+
+        <!-- Change password card -->
+        <div class="card user-card">
+          <div class="user-card-head"><span>Change password</span></div>
+          <div class="user-fields pw-fields">
+            <label id="pw-current-wrap">Current password
+              <input id="pw-current" type="password"
+                     autocomplete="current-password">
+            </label>
+            <label>New password
+              <input id="pw-new" type="password" autocomplete="new-password"
+                     minlength="6">
+            </label>
+            <label>Confirm new password
+              <input id="pw-confirm" type="password" autocomplete="new-password"
+                     minlength="6">
+            </label>
+            <div class="user-actions">
+              <button id="pw-save" type="button">Update password</button>
+            </div>
+            <div id="pw-msg" class="status"></div>
+          </div>
+        </div>
+
+        <!-- Usage card (EMBEDDED - the Usage tab was removed) -->
+        <div class="card user-card">
+          <div class="user-card-head">
+            <span>Bandwidth usage</span>
+            <button id="user-usage-refresh" type="button" class="ghost"
+                    title="Reload usage totals">Refresh</button>
+          </div>
+          <div id="user-usage" class="usage-body"></div>
+        </div>
+
+        <!-- Admin only: user management + every user's usage -->
+        <div class="card user-card hidden" id="user-admin-card">
+          <div class="user-card-head">
+            <span>Users</span>
+            <button id="user-new" type="button" class="ghost"
+                    title="Create a new account">+ Add user</button>
+          </div>
+          <div id="user-list" class="user-list"></div>
+          <div class="user-card-head user-card-head-sub">
+            <span>All users &middot; usage</span>
+          </div>
+          <div id="user-all-usage" class="usage-body"></div>
+        </div>
       </section>
     </main>
   </div>
@@ -436,9 +524,10 @@
   <footer class="app-ver" title="Portal version">
     <!-- Self-view bandwidth summary (every user). The portal counts the real
          bytes it sends this account (see portal/usage.py); filled from
-         /api/usage by app.js, clicking opens the Usage panel. -->
+         /api/usage by app.js. Clicking opens the Account (User) tab, which now
+         carries the EMBEDDED usage card (the Usage tab was removed). -->
     <button id="usage-chip" class="usage-chip hidden" type="button"
-            title="Your bandwidth usage - click for details"></button>
+            title="Your bandwidth usage - open the account tab"></button>
     v<span id="ver-no">{{ APP_VERSION }}</span>
   </footer>
 
@@ -483,17 +572,37 @@
     </div>
   </div>
 
-  <!-- Self-view bandwidth panel: the caller's own totals by kind (today /
-       7d / 30d / all time), opened from the footer chip or the nav summary. -->
-  <div id="usage-modal" class="usage-modal hidden" role="dialog"
-       aria-modal="true" aria-label="My bandwidth usage">
-    <div class="usage-backdrop" data-usage-close></div>
+  <!-- Add-user modal (admin only): create an account without leaving the
+       Account tab. Applied immediately at the API - no container restart. -->
+  <div id="user-new-modal" class="usage-modal hidden" role="dialog"
+       aria-modal="true" aria-label="Add user">
+    <div class="usage-backdrop" data-user-new-close></div>
     <div class="usage-card">
       <div class="usage-head">
-        <span id="usage-title">My bandwidth usage</span>
-        <button id="usage-close" type="button" aria-label="Close">&times;</button>
+        <span>Add user</span>
+        <button id="user-new-close" type="button" aria-label="Close">&times;</button>
       </div>
-      <div id="usage-body" class="usage-body"></div>
+      <div class="usage-body">
+        <div class="user-fields">
+          <label>Username
+            <input id="nu-username" maxlength="64" autocomplete="off">
+          </label>
+          <label>Display name
+            <input id="nu-display" maxlength="64" autocomplete="off">
+          </label>
+          <label>Password
+            <input id="nu-password" type="password" autocomplete="new-password"
+                   minlength="6">
+          </label>
+          <label class="check">
+            <input id="nu-admin" type="checkbox"> Administrator
+          </label>
+          <div class="user-actions">
+            <button id="nu-save" type="button">Create user</button>
+          </div>
+          <div id="nu-msg" class="status"></div>
+        </div>
+      </div>
     </div>
   </div>
 

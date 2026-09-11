@@ -150,8 +150,18 @@ nav .nav-user {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-height: 32px; max-height: 32px;
 }
-/* Username for the HORIZONTAL nav layout (tablet/desktop): hidden on phones. */
-.user-chip { display: none; }
+/* Username for the HORIZONTAL nav layout (tablet/desktop): hidden on phones.
+   It is a BUTTON now - clicking it opens the Account (User) tab - so reset the
+   generic button chrome and render it as plain muted text. */
+.user-chip {
+  display: none;
+  width: auto; min-height: 0; padding: 4px 8px;
+  background: transparent; border: 0; color: var(--muted);
+  font-size: 13px; cursor: pointer;
+  max-width: 40vw; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-chip:hover { color: var(--text); text-decoration: underline; }
 
 /* ================= LAYOUT (mobile-first) ================= */
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
@@ -776,7 +786,7 @@ body.lb-open { overflow: hidden; }
      phone-only extras (sign out / version). The username shows here as
      #user-chip in the userbox instead. */
   .nav-toggle { display: none; }
-  nav .nav-user, nav .nav-logout, nav .nav-ver, nav .nav-usage { display: none; }
+  nav .nav-user, nav .nav-logout, nav .nav-ver { display: none; }
   nav {
     position: static; top: auto; right: auto; left: auto;
     display: flex; flex-direction: row; flex: 1; order: 0;
@@ -792,11 +802,7 @@ body.lb-open { overflow: hidden; }
   nav::-webkit-scrollbar { display: none; }
   nav a { flex: 0 0 auto; display: inline-block; padding: 7px 13px; }
   /* Username in the userbox, just before the sign-out button. */
-  .user-chip {
-    display: inline-block; color: var(--muted); font-size: 13px;
-    max-width: 40vw; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
-  }
+  .user-chip { display: inline-block; }
   /* Large screens: the topbar shows the sign-out button (phones keep it in the
      menu only) and the version tag is the lowermost fixed row. */
   #logout-btn { display: inline-flex; align-items: center; }
@@ -1070,9 +1076,11 @@ body.lb-open { overflow: hidden; }
 
 /* ================= BANDWIDTH USAGE =================
    Self-view: a clickable summary of the caller's own egress next to the version
-   tag (desktop) and inside the collapsed nav menu (phones), plus the Usage
-   panel. The admin Usage tab renders a per-user table. The portal counts the
-   real bytes it sends each user - see portal/usage.py. */
+   tag (desktop); clicking it opens the Account (User) tab, whose EMBEDDED usage
+   card renders the today / 7d / 30d / all-time table. The Account tab also
+   carries the admin's Users table + the all-users usage table (the separate
+   Usage tab was removed). The portal counts the real bytes it sends each user -
+   see portal/usage.py. */
 
 /* The footer tag is pointer-events:none so it never eats taps; re-enable it for
    the chip only, which IS interactive. */
@@ -1085,15 +1093,6 @@ body.lb-open { overflow: hidden; }
   cursor: pointer; white-space: nowrap;
 }
 .usage-chip:hover { color: var(--text); border-color: var(--muted); }
-
-/* Collapsed-menu (phones) self-view line - hidden on tablet/desktop (see the
-   media query above). */
-nav .nav-usage {
-  display: block; padding: 8px 12px; margin: 2px 0 0;
-  border-top: 1px solid var(--line);
-  color: var(--muted); font-size: 12px; cursor: pointer;
-}
-nav .nav-usage:hover { color: var(--text); }
 
 .usage-modal { position: fixed; inset: 0; z-index: 80; }
 .usage-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
@@ -1127,3 +1126,88 @@ table.usage-table th, table.usage-table td {
 table.usage-table thead th { color: var(--muted); font-weight: 600; }
 table.usage-table tbody th { text-align: left; color: var(--muted); font-weight: 600; }
 table.usage-table tbody td:first-child { text-align: left; color: var(--text); }
+
+/* ================= ACCOUNT (USER) TAB =================
+   The signed-in user's profile - reachable by clicking the username - with the
+   EMBEDDED bandwidth Usage card; an admin also gets the Users table (add / edit
+   / delete accounts) + the all-users usage table. Accounts live in the portal's
+   own DB (portal/userstore.py), so edits apply with NO container restart. */
+.user-card { margin-bottom: 14px; }
+.user-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; font-weight: 700;
+  background: rgba(255,255,255,.03);
+  border-bottom: 1px solid var(--line);
+}
+.user-card-head-sub { border-top: 1px solid var(--line); }
+.user-card-head button.ghost {
+  width: auto; min-width: 0; min-height: 32px; padding: 4px 12px;
+  background: var(--panel2); border: 1px solid var(--line);
+  color: var(--accent); font-size: 13px;
+}
+.user-grid { display: grid; grid-template-columns: 1fr; gap: 14px; padding: 12px; }
+.user-photo { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.user-photo img {
+  width: 128px; height: 128px; border-radius: 50%;
+  object-fit: cover; background: var(--panel2); border: 1px solid var(--line);
+}
+.user-photo-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.user-photo-actions button {
+  width: auto; min-width: 0; min-height: 34px; padding: 5px 12px; font-size: 13px;
+}
+.user-fields { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.user-fields > label {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  color: var(--muted); font-size: 12px;
+}
+.user-fields > label.check { flex-direction: row; align-items: center; gap: 8px; }
+.user-fields input[readonly] { color: var(--muted); }
+.user-fields input:disabled { opacity: .7; }
+.user-actions { display: flex; gap: 8px; }
+.user-actions button {
+  width: auto; min-width: 0; padding: 8px 16px;
+  background: var(--accent); color: #06210f; font-weight: 700; border: 0;
+}
+.user-actions button:disabled { opacity: .5; cursor: default; }
+.user-perms { display: flex; flex-direction: column; gap: 6px; }
+.user-perms-label { color: var(--muted); font-size: 12px; }
+.user-perms-box { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.user-perms-box label.check {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text); font-size: 13px;
+}
+.user-perms-box input[type="checkbox"] { width: auto; }
+.user-perms-hint { font-size: 11.5px; }
+.pw-fields { max-width: 460px; }
+.user-list { padding: 0 12px 12px; }
+.user-thumb {
+  width: 34px; height: 34px; border-radius: 50%; object-fit: cover;
+  background: var(--panel2); border: 1px solid var(--line); vertical-align: middle;
+}
+.user-thumb.empty-av {
+  display: inline-grid; place-items: center; color: var(--muted); font-weight: 700;
+}
+.user-cell-photo { text-align: center; }
+.user-cell-act { text-align: right; }
+/* Stored password hash (pbkdf2$...): truncated in the cell, full value in the
+   title tooltip. Monospace so the prefix is recognisable at a glance. */
+.user-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px; color: var(--muted); max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+button.user-link {
+  width: auto; min-width: 0; min-height: 0; padding: 2px 4px;
+  background: transparent; border: 0; color: var(--accent);
+  font: inherit; text-decoration: underline; cursor: pointer;
+}
+button.user-del {
+  width: auto; min-width: 0; min-height: 0; padding: 2px 8px;
+  background: transparent; border: 1px solid var(--line);
+  color: var(--red); cursor: pointer; border-radius: 6px;
+}
+table.user-table tr.active { background: rgba(53,194,111,.10); }
+
+@media (min-width: 640px) and (min-height: 560px) {
+  .user-grid { grid-template-columns: 190px minmax(0, 1fr); }
+}

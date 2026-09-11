@@ -282,12 +282,14 @@ services:
   #
   # Dependency-only image (./portal carries deps; python:3.11-slim +
   # fastapi/uvicorn/httpx). Code + config are mounted read-only so edits
-  # need only `docker compose restart portal`. ./media is mounted rw for TWO
+  # need only `docker compose restart portal`. ./media is mounted rw for THREE
   # reasons: (1) SQLite WAL readers need -shm/-wal write access to read the
-  # firewatch evidence DB, and (2) the portal's OWN per-user bandwidth DB
-  # (media/portal/usage.db, see portal/usage.py) lives there. The portal still
-  # never writes the other services' stores - those are PRAGMA query_only.
-  # First build needs network for pip.
+  # firewatch evidence DB, (2) the portal's OWN per-user bandwidth DB
+  # (media/portal/usage.db, see portal/usage.py) lives there, and (3) the
+  # RUNTIME user-accounts DB (media/portal/users.db, see portal/userstore.py) -
+  # accounts are managed from the Account tab, so no restart is needed for
+  # add/edit/delete. The portal still never writes the other services' stores -
+  # those are PRAGMA query_only. First build needs network for pip.
   # ------------------------------------------------------------------
   portal:
     container_name: portal
@@ -299,9 +301,10 @@ services:
       - "8080:8080"         # internal host port for the Cloudflare Tunnel
     volumes:
       - ./portal:/srv/app/portal:ro    # portal package + static SPA
-      - ./config:/config:ro            # portal.conf (users + secret; git-ignored)
+      - ./config:/config:ro            # portal.conf (secret + tunables; the
+                                       # `user` lines are only a first-run seed)
       - ./media:/media                 # firewatch evidence (rw for WAL read) +
-                                       # the portal's own media/portal/usage.db
+                                       # the portal's own media/portal/{usage,users}.db
     environment:
       - PORTAL_CONF=/config/portal.conf
       - PORTAL_LOGS_API=http://logs:8090   # read-only logs sidecar (Debug tab)

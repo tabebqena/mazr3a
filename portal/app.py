@@ -20,7 +20,9 @@ from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
 )
 
-from portal import auth, config as pconf, eventstore, firestore, frigate, usage
+from portal import (
+    auth, config as pconf, eventstore, firestore, frigate, usage, userstore,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONF_PATH = os.environ.get("PORTAL_CONF", "/config/portal.conf")
@@ -37,16 +39,29 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 _HTMX = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    cfg, users = pconf.parse_file(CONF_PATH)
+    cfg, seed_users = pconf.parse_file(CONF_PATH)
     app.state.cfg = cfg
-    app.state.users = users
     app.state.secret = pconf.get(cfg, "SECRET_KEY")
+    # Runtime user accounts: the portal OWNS media/portal/users.db (portal/
+    # userstore.py), seeded ONCE from the `user` lines still in portal.conf.
+    # The live store is read on every request, so create/edit/delete applies with
+    # NO container restart (the old code snapshotted portal.conf users here).
+    app.state.users_store = userstore.UserStore(
+        pconf.get(cfg, "PORTAL_USERS_DB", "/media/portal/users.db"))
+    try:
+        app.state.users_store.configure()
+        if seed_users:
+            seeded = app.state.users_store.seed(seed_users)
+            if seeded:
+                print(f"user store: seeded {seeded} account(s) from portal.conf")
+    except Exception as exc:
+        print(f"WARNING: user store unavailable ({exc}) - login is impossible")
     app.state.client = httpx.AsyncClient(
         timeout=httpx.Timeout(10.0),
         follow_redirects=True,
@@ -67,8 +82,8 @@ async def lifespan(app: FastAPI):
     usage_task = asyncio.create_task(app.state.usage.run())
     if not app.state.secret:
         print("WARNING: portal.conf SECRET_KEY is empty - sessions will not work")
-    if not users:
-        print("WARNING: no users configured in portal.conf - login is impossible")
+    if not app.state.users_store.count():
+        print("WARNING: no users configured - login is impossible")
     yield
     usage_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -116,27 +131,31 @@ def _clear_session(response: Response):
 
 
 def current_user(request: Request):
-    """Dependency: the authenticated user dict or a 401."""
+    """Dependency: the authenticated user dict or a 401.
+
+    Reads the LIVE user store (portal/userstore.py), so a deleted account's
+    session is rejected on the next request - no restart needed.
+    """
     if not request.app.state.secret:
         raise HTTPException(status_code=401, detail="not configured")
     token = request.cookies.get(COOKIE_NAME)
     name = auth.read_session(request.app.state.secret, token)
     if not name:
         raise HTTPException(status_code=401, detail="not authenticated")
-    for user in request.app.state.users:
-        if user["username"] == name:
-            return user
-    raise HTTPException(status_code=401, detail="not authenticated")
+    user = request.app.state.users_store.get(name)
+    if user is None or not user.get("is_active"):
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return user
 
 
 def current_admin(request: Request, user: dict = Depends(current_user)):
-    """Dependency: like current_user but ONLY the admin user (403 otherwise).
+    """Dependency: like current_user but ONLY an admin (403 otherwise).
 
-    The admin is the user whose username is `admin` (see plans/
-    portal-admin-debug-logs.md). Front-end nav gating uses /api/me is_admin,
-    but this server-side check is the real gate for admin-only routes.
+    `is_admin` is a column in the runtime users DB and is editable from the
+    Account tab, so the front-end nav gating uses /api/me is_admin AND this
+    server-side check is the real gate for admin-only routes.
     """
-    if (user.get("username") or "").lower() != "admin":
+    if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="admin only")
     return user
 
@@ -262,13 +281,17 @@ async def login(request: Request):
     body = await request.json()
     username = str(body.get("username") or "").strip()
     password = str(body.get("password") or "")
-    for user in request.app.state.users:
-        if user["username"] == username and auth.verify_password(
-                password, user["password_hash"]):
-            response = JSONResponse({"ok": True, "username": username,
-                                     "default_camera": user["default_camera"]})
-            _set_session(response, username, request)
-            return response
+    # Live store lookup (usernames are case-insensitive): a user created from
+    # the Account tab can sign in immediately, with no container restart. An
+    # INACTIVE account can never sign in.
+    user = request.app.state.users_store.get(username)
+    if (user and user.get("is_active")
+            and auth.verify_password(password, user["password_hash"])):
+        response = JSONResponse({"ok": True, "username": user["username"],
+                                 "display_name": user["display_name"],
+                                 "default_camera": user["default_camera"]})
+        _set_session(response, user["username"], request)
+        return response
     raise HTTPException(status_code=401, detail="invalid credentials")
 
 
@@ -283,10 +306,206 @@ async def logout():
 async def me(request: Request, user: dict = Depends(current_user)):
     return {
         "username": user["username"],
-        "is_admin": (user.get("username") or "").lower() == "admin",
+        "display_name": user.get("display_name") or user["username"],
+        "photo": user.get("photo") or "",
+        "is_admin": bool(user.get("is_admin")),
+        "permissions": user.get("permissions") or [],
+        "quota_bytes": int(user.get("quota_bytes") or 0),
         "default_camera": (user.get("default_camera")
                            or pconf.get(_cfg(request), "DEFAULT_CAMERA")),
     }
+
+
+# --------------------------------------------------------------------------
+# User management - RUNTIME accounts, NO container restart.
+#
+# Accounts live in the portal's own SQLite DB (portal/userstore.py) so they can
+# be created / edited / deleted from the Account tab at once (previously they
+# were `user` lines in portal.conf, read once at startup). Those lines are now
+# only a first-run SEED.
+#
+# Self-service: a user may edit their own display name / photo / default camera
+# and change their own password. Admin-only: create/delete users, toggle
+# is_admin / is_active, set permissions + quota, inspect the stored
+# password_hash. The last ACTIVE administrator can never be demoted,
+# deactivated or deleted, and nobody can delete/deactivate their own account.
+# --------------------------------------------------------------------------
+def _is_admin(user: dict) -> bool:
+    return bool(user and user.get("is_admin"))
+
+
+def _same_user(user: dict, username: str) -> bool:
+    return (user.get("username") or "").lower() == (username or "").lower()
+
+
+def _user_store(request: Request) -> userstore.UserStore:
+    return request.app.state.users_store
+
+
+def _user_or_404(request: Request, username: str) -> dict:
+    record = _user_store(request).get_public(username)
+    if record is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return record
+
+
+@app.get("/api/users")
+async def list_users(request: Request, admin: dict = Depends(current_admin)):
+    """All accounts (admin only) + the assignable permission catalogue.
+
+    Includes each stored password_hash so the admin Users table can show it.
+    """
+    return {"users": _user_store(request).list(include_secrets=True),
+            "permissions": list(userstore.ALLOWED_PERMISSIONS)}
+
+
+@app.post("/api/users")
+async def create_user(request: Request, admin: dict = Depends(current_admin)):
+    """Create an account (admin only). Applies immediately - no restart."""
+    body = await request.json()
+    try:
+        username = userstore.normalize_username(body.get("username"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid username")
+    password = str(body.get("password") or "")
+    if len(password) < 6:
+        raise HTTPException(status_code=400,
+                            detail="password must be at least 6 characters")
+    if not userstore.valid_photo(body.get("photo")):
+        raise HTTPException(status_code=400, detail="invalid photo")
+    store = _user_store(request)
+    if store.get(username) is not None:
+        raise HTTPException(status_code=409, detail="username already exists")
+    try:
+        store.create(
+            username, auth.hash_password(password),
+            display_name=body.get("display_name") or username,
+            is_admin=bool(body.get("is_admin")),
+            is_active=bool(body.get("is_active", True)),
+            permissions=body.get("permissions"),
+            quota_bytes=body.get("quota_bytes") or 0,
+            default_camera=body.get("default_camera") or "",
+        )
+        if body.get("photo"):
+            store.update(username, photo=body["photo"])
+    except Exception as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"could not create user: {exc}")
+    return store.get_public(username)
+
+
+@app.get("/api/users/{username}")
+async def get_user(username: str, request: Request,
+                   user: dict = Depends(current_user)):
+    """One account: your own, or any account for an admin."""
+    if not (_is_admin(user) or _same_user(user, username)):
+        raise HTTPException(status_code=403, detail="not allowed")
+    return _user_or_404(request, username)
+
+
+@app.patch("/api/users/{username}")
+async def update_user(username: str, request: Request,
+                      user: dict = Depends(current_user)):
+    """Update an account: self (display name/photo/default camera) or admin."""
+    store = _user_store(request)
+    target = store.get(username)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    admin = _is_admin(user)
+    if not (admin or _same_user(user, target["username"])):
+        raise HTTPException(status_code=403, detail="not allowed")
+    body = await request.json()
+    fields = {}
+    if "display_name" in body:
+        fields["display_name"] = str(body.get("display_name") or "")[:64]
+    if "default_camera" in body:
+        fields["default_camera"] = str(body.get("default_camera") or "")[:64]
+    if "photo" in body:
+        if not userstore.valid_photo(body.get("photo")):
+            raise HTTPException(status_code=400, detail="invalid photo")
+        fields["photo"] = str(body.get("photo") or "")
+    if admin:
+        if "permissions" in body:
+            fields["permissions"] = userstore.normalize_permissions(
+                body.get("permissions"))
+        if "quota_bytes" in body:
+            try:
+                fields["quota_bytes"] = max(0, int(body.get("quota_bytes") or 0))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="invalid quota")
+        if "is_admin" in body:
+            new_admin = 1 if body.get("is_admin") else 0
+            # Never remove the last USABLE administrator (would lock everyone
+            # out). An already-inactive admin does not count.
+            if (not new_admin and target["is_admin"] and target["is_active"]
+                    and store.count_admins() <= 1):
+                raise HTTPException(
+                    status_code=400,
+                    detail="cannot remove the last administrator")
+            fields["is_admin"] = new_admin
+        if "is_active" in body:
+            new_active = 1 if body.get("is_active") else 0
+            if not new_active and _same_user(user, target["username"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="cannot deactivate your own account")
+            # Never disable the last usable administrator.
+            if (not new_active and target["is_active"] and target["is_admin"]
+                    and store.count_admins() <= 1):
+                raise HTTPException(
+                    status_code=400,
+                    detail="cannot deactivate the last administrator")
+            fields["is_active"] = new_active
+    try:
+        store.update(target["username"], **fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return store.get_public(target["username"])
+
+
+@app.post("/api/users/{username}/password")
+async def change_user_password(username: str, request: Request,
+                               user: dict = Depends(current_user)):
+    """Change a password: self (must confirm current) or an admin reset."""
+    store = _user_store(request)
+    target = store.get(username)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    is_self = _same_user(user, target["username"])
+    if not (_is_admin(user) or is_self):
+        raise HTTPException(status_code=403, detail="not allowed")
+    body = await request.json()
+    new_password = str(body.get("new_password") or "")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400,
+                            detail="password must be at least 6 characters")
+    # Anyone changing THEIR OWN password must prove the current one; an admin
+    # resetting ANOTHER user's password does not need it.
+    if is_self and not auth.verify_password(
+            str(body.get("current_password") or ""), target["password_hash"]):
+        raise HTTPException(status_code=403,
+                            detail="current password is incorrect")
+    store.set_password(target["username"], auth.hash_password(new_password))
+    return {"ok": True}
+
+
+@app.delete("/api/users/{username}")
+async def delete_user(username: str, request: Request,
+                      admin: dict = Depends(current_admin)):
+    """Delete an account (admin only). Never your own or the last admin."""
+    store = _user_store(request)
+    target = store.get(username)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if _same_user(admin, target["username"]):
+        raise HTTPException(status_code=400,
+                            detail="cannot delete your own account")
+    if (target["is_admin"] and target["is_active"]
+            and store.count_admins() <= 1):
+        raise HTTPException(status_code=400,
+                            detail="cannot delete the last administrator")
+    store.delete(target["username"])
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------
@@ -459,8 +678,8 @@ async def live_mse(camera: str, websocket: WebSocket):
     secret = websocket.app.state.secret
     token = websocket.cookies.get(COOKIE_NAME)
     name = auth.read_session(secret, token) if secret else None
-    authed = bool(name) and any(u["username"] == name
-                                for u in websocket.app.state.users)
+    ws_user = websocket.app.state.users_store.get(name) if name else None
+    authed = bool(ws_user) and bool(ws_user.get("is_active"))
     if not authed or not frigate.valid_camera_name(camera):
         await websocket.close(code=4401)
         return

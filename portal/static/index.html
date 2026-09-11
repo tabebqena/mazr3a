@@ -588,25 +588,17 @@
        shows before the app boots. app.js re-fills #ver-no from /api/settings
        (the same constant) once the app boots. Never hard-code a version here. -->
   <footer class="app-ver" title="Portal version">
-    <!-- Quota progress bar (LARGE screens - the footer tag is hidden on phones,
-         which show #quota-nav in the collapsed menu instead). Filled by app.js
-         from /api/me (quota) + /api/usage (used); hidden when no quota is set.
-         Clicking opens the Account (User) tab. -->
+    <!-- Quota progress bar (LARGE screens only - the phone collapsed menu shows
+         #quota-nav instead). Filled by app.js from /api/me (quota) +
+         /api/usage (used); hidden when no quota is set. Clicking opens the
+         Account (User) tab. -->
     <button id="quota-footer" class="quota-widget hidden" type="button"
             title="Bandwidth used / quota - open the account tab">
       <span id="quota-footer-text" class="quota-label"></span>
       <span class="quota-track"><span id="quota-footer-fill"
             class="quota-fill"></span></span>
     </button>
-    <!-- Self-view bandwidth summary (every user). The portal counts the real
-         bytes it sends this account (see portal/usage.py); filled from
-         /api/usage by app.js. Clicking opens the Account (User) tab, which now
-         carries the EMBEDDED usage card (the Usage tab was removed). -->
-    <span class="app-ver-line">
-      <button id="usage-chip" class="usage-chip hidden" type="button"
-              title="Your bandwidth usage - open the account tab"></button>
-      v<span id="ver-no">{{ APP_VERSION }}</span>
-    </span>
+    <span class="app-ver-line">v<span id="ver-no">{{ APP_VERSION }}</span></span>
   </footer>
 
   <!-- Fire evidence lightbox: clicking a fire card image opens this full-screen

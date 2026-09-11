@@ -112,10 +112,12 @@ async function api(path, opts) {
 
 /* ---------------- login / app shell ---------------- */
 function showLogin() {
+  document.body.classList.remove('authed');
   $('#app').classList.add('hidden');
   $('#login-view').classList.remove('hidden');
 }
 function hideLogin() {
+  document.body.classList.add('authed');
   $('#login-view').classList.add('hidden');
   $('#app').classList.remove('hidden');
 }
@@ -2500,13 +2502,7 @@ function usageNote(retentionDays) {
 }
 
 function renderUsageSelf() {
-  const u = state.usage;
-  if (!u) return;
-  const t = u.today || {};
-  const txt = 'Live ' + fmtBytes(t.live) + ' \u00b7 Events ' +
-    fmtBytes(t.events) + ' \u00b7 Other ' + fmtBytes(t.other);
-  const chip = $('#usage-chip');
-  if (chip) { chip.textContent = 'Today: ' + txt; chip.classList.remove('hidden'); }
+  if (!state.usage) return;
   renderQuotaBars();
 }
 
@@ -2978,7 +2974,6 @@ function gotoSelfTab() {
 }
 $('#user-chip').addEventListener('click', gotoSelfTab);
 $('#nav-user').addEventListener('click', gotoSelfTab);
-$('#usage-chip').addEventListener('click', gotoSelfTab);
 $('#quota-footer').addEventListener('click', gotoSelfTab);
 $('#quota-nav').addEventListener('click', gotoSelfTab);
 

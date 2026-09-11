@@ -711,19 +711,14 @@ body.lb-open { overflow: hidden; }
   padding: 12px 16px; border-radius: 10px; z-index: 60;
 }
 
-/* ================= BOTTOM-MOST VERSION LABEL =================
-   Tiny fixed tag pinned to the lowest corner of the screen on every view;
-   non-interactive (pointer-events: none) and under the toast layer. */
-.app-ver {
-  /* Phones show the version INSIDE the collapsed menu (#ver-no-nav); the fixed
-     corner tag is hidden there and restored as the lowermost row on
-     tablet/desktop (see that media query). */
-  display: none;
-  position: fixed; right: 10px; bottom: 6px; z-index: 40;
-  color: var(--muted); font-size: 11px; letter-spacing: .4px;
-  line-height: 1; opacity: .85;
-  pointer-events: none; -webkit-user-select: none; user-select: none;
-}
+/* ================= FOOTER BAR (large screens) =================
+   A REAL, full-width footer at the bottom of the page holding the quota
+   progress bar + the version label. It is part of the normal document flow -
+   NOT position:fixed and with NO z-index (so it can never float over content).
+   `body.authed` becomes a full-height flex column on large screens so a short
+   page still pushes the bar to the bottom. Hidden on phones (they show the
+   quota + version inside the collapsed menu) and while signed out. */
+.app-ver { display: none; }
 
 /* ================= ADMIN DEBUG LOGS =================
    Debug tab (admin only): a pull of the last log lines of every container,
@@ -806,9 +801,29 @@ body.lb-open { overflow: hidden; }
   /* Username in the userbox, just before the sign-out button. */
   .user-chip { display: inline-block; }
   /* Large screens: the topbar shows the sign-out button (phones keep it in the
-     menu only) and the version tag is the lowermost fixed row. */
+     menu only). */
   #logout-btn { display: inline-flex; align-items: center; }
-  .app-ver { display: block; }
+  /* Signed-in pages become a full-height COLUMN so the footer bar sits at the
+     bottom of the viewport even when the content is short. */
+  body.authed {
+    display: flex; flex-direction: column;
+    min-height: 100vh; min-height: 100dvh;
+  }
+  body.authed #app { flex: 1 1 auto; min-height: 0; }
+  /* Live/Events full-bleed normally pin #app to 100vh; let it flex instead so
+     the footer stays visible (specificity beats `body.live-full #app`). */
+  body.authed.live-full #app,
+  body.authed.events-full #app { height: auto; }
+  /* The footer bar: quota progress + version, in normal flow (no fixed/z-index). */
+  body.authed .app-ver {
+    display: flex; align-items: center; gap: 12px;
+    flex: 0 0 auto; width: 100%; padding: 6px 16px;
+    border-top: 1px solid var(--line); background: var(--panel);
+    color: var(--muted); font-size: 11px; letter-spacing: .4px;
+    line-height: 1.2;
+  }
+  body.authed .app-ver-line { margin-left: auto; margin-top: 0; }
+  #quota-footer { width: min(260px, 40vw); margin: 0; }
   /* Large screens always show the clip strip: hide its phone-only toggle and
      ignore any collapsed state left over from a phone layout. */
   .ev-clips-toggle { display: none; }
@@ -1084,19 +1099,8 @@ body.lb-open { overflow: hidden; }
    Usage tab was removed). The portal counts the real bytes it sends each user -
    see portal/usage.py. */
 
-/* The footer tag is pointer-events:none so it never eats taps; re-enable it for
-   the chip only, which IS interactive. */
-.usage-chip {
-  pointer-events: auto;
-  margin-right: 8px;
-  background: var(--panel2); color: var(--muted);
-  border: 1px solid var(--line); border-radius: 999px;
-  padding: 2px 8px; font-size: 11px; line-height: 1.4;
-  cursor: pointer; white-space: nowrap;
-}
-.usage-chip:hover { color: var(--text); border-color: var(--muted); }
-/* Line holding the usage chip + version label under the quota bar. */
-.app-ver-line { display: block; margin-top: 3px; }
+/* Version label inside the footer bar (large screens). */
+.app-ver-line { display: block; }
 
 /* ---- Per-user quota progress bar ----
    Shown on LARGE screens in the fixed footer (#quota-footer) and on PHONES in

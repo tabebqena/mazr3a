@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v31` |
+| Summary version | `v32` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.9.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.9.1` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -153,9 +153,10 @@ with `docker compose up -d` / `docker compose down`.
 > **Per-user quota.** Every account carries a per-user egress **quota**
 > (`quota_bytes`, table default **5 GiB**; `0`/unset = unlimited), editable in the admin
 > **Manage** tab. The SPA renders a **used / quota progress bar** (with the
-> percentage) — in the fixed footer tag on large screens (`#quota-footer`) and in
-> the phone collapsed menu (`#quota-nav`). An admin can no longer change their
-> **own** administrator flag from the portal (UI disabled + server guard).
+> percentage) — in the **footer bar** on large screens (`#quota-footer`, a real
+> full-width footer in normal flow, no fixed/z-index) and in the phone collapsed
+> menu (`#quota-nav`). An admin can no longer change their **own** administrator
+> flag from the portal (UI disabled + server guard).
 
 ### 3.7 `scenereader` — cross-camera episode narrator
 

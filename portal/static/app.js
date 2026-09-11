@@ -1588,6 +1588,13 @@ $('#ev-label').addEventListener('change', () => { saveEvLabel(); loadEvents(); }
 wireTimeControls('ev', loadEvents, '24h');   // default = Last 24 hours
 $('#ev-playlist').addEventListener('click', toggleEvPlaylist);
 $('#ev-overlay-resume').addEventListener('click', resumeEvPlayback);
+// Collapse / expand the clip THUMBNAILS (the named hamburger). Only meaningful
+// in the phone-landscape 3-column layout; the CSS shows the button only there
+// and body.ev-clips-collapsed shrinks the clips column to a slim handle.
+$('#ev-clips-toggle').addEventListener('click', () => {
+  const collapsed = document.body.classList.toggle('ev-clips-collapsed');
+  $('#ev-clips-toggle').setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+});
 $('#ev-prev').addEventListener('click', () => {
   if (evPage > 1) { evPage--; renderEvPage(); }
 });

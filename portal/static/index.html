@@ -215,9 +215,21 @@
 
         <div id="ev-status" class="status"></div>
 
-        <!-- Lower horizontal navigation: one button per clip in the current page.
-             Clicking a clip plays it in the large frame above. -->
-        <div id="ev-strip" class="ev-strip" role="listbox" aria-label="Clips"></div>
+        <!-- Clip thumbnails: one button per clip in the current page. Clicking a
+             clip plays it in the large frame above. In phone LANDSCAPE this is
+             the third column and can be collapsed to a slim handle via the named
+             hamburger #ev-clips-toggle (app.js toggles body.ev-clips-collapsed);
+             in every other layout the strip sits below the player and the
+             toggle is hidden (CSS). -->
+        <div id="ev-clips" class="ev-clips">
+          <button id="ev-clips-toggle" class="ev-clips-toggle" type="button"
+                  aria-expanded="true" aria-controls="ev-strip"
+                  title="Show / hide clip thumbnails">
+            <span class="ev-clips-icon" aria-hidden="true">&#9776;</span>
+            <span class="ev-clips-name">Clips</span>
+          </button>
+          <div id="ev-strip" class="ev-strip" role="listbox" aria-label="Clips"></div>
+        </div>
 
         <div id="ev-pager" class="pager hidden">
           <button id="ev-prev" type="button">&#8249; Prev</button>

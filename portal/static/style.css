@@ -492,6 +492,17 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
   width: auto; min-width: 0; margin-top: 12px; padding: 8px 18px;
 }
 
+/* Events filters: a touch NARROWER than the shared .controls grid so more
+   fields fit per row (reduces the width each control occupies). */
+#view-events .controls { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
+
+/* Clip-thumbnail wrapper + its collapse toggle. The toggle (a named hamburger)
+   is shown ONLY in the phone-landscape 3-column layout (see the landscape media
+   query); elsewhere it is hidden and .ev-clips is a plain block wrapping the
+   strip so the layout is unchanged. */
+.ev-clips { display: block; }
+.ev-clips-toggle { display: none; }
+
 /* Lower horizontal navigation: one button per clip in the current page. */
 .ev-strip {
   display: flex; gap: 8px; margin-top: 12px;
@@ -882,10 +893,11 @@ body.lb-open { overflow: hidden; }
 
   /* ============================================================
      EVENTS TAB in phone LANDSCAPE: three columns side by side -
-       [1] filters (narrow, scrolls)  [2] the video (large)  [3] the clip
-       thumbnails (narrow, scrolls VERTICALLY). The view fills the window
-       height so nothing is pushed off-screen; the router adds body.events-full
-       only for the Events view.
+       [1] filters (NARROW, scrolls)  [2] the video (large)  [3] the clip
+       thumbnails (VERTICAL, scrolls) - the third column collapses to a slim
+       handle via the named hamburger #ev-clips-toggle. The view fills the
+       window height so nothing is pushed off-screen; the router adds
+       body.events-full only for the Events view.
      ============================================================ */
   body.events-full { overflow: hidden; }
   body.events-full #app {
@@ -900,23 +912,32 @@ body.lb-open { overflow: hidden; }
   body.events-full #view-events {
     flex: 1 1 auto; min-height: 0; padding-bottom: 0;
     display: grid;
-    grid-template-columns: minmax(128px, 1fr) minmax(0, 3fr) minmax(140px, 1.15fr);
+    /* [1] filters (narrower than before) | [2] video | [3] clips */
+    grid-template-columns: minmax(104px, 0.85fr) minmax(0, 3fr) minmax(132px, 1.1fr);
     grid-template-rows: minmax(0, 1fr) auto;
     grid-template-areas:
-      "filters stage strip"
-      "status  pager strip";
+      "filters stage clips"
+      "status  pager clips";
     gap: 6px 8px;
   }
-  /* [1] Filters: a single narrow scrollable column. */
+  /* Collapsed clips: shrink the third column to a slim handle. */
+  body.ev-clips-collapsed #view-events {
+    grid-template-columns: minmax(104px, 0.85fr) minmax(0, 3fr) 44px;
+  }
+  /* [1] Filters: a single NARROW scrollable column. */
   body.events-full #view-events .controls {
     grid-area: filters;
     display: flex; flex-direction: column; flex-wrap: nowrap;
-    gap: 5px; margin: 0; align-items: stretch;
+    gap: 4px; margin: 0; align-items: stretch;
     overflow-y: auto; overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
   }
   body.events-full #view-events .controls label {
     font-size: 11px; white-space: normal;
+  }
+  body.events-full #view-events .controls input,
+  body.events-full #view-events .controls select {
+    min-height: 34px; padding: 5px 6px; font-size: 12px;
   }
   body.events-full #view-events .controls label.check {
     flex-direction: row; align-items: center; align-self: stretch;
@@ -930,15 +951,35 @@ body.lb-open { overflow: hidden; }
   }
   body.events-full #view-events #ev-status { grid-area: status; margin: 0; }
   body.events-full #view-events #ev-pager { grid-area: pager; margin: 0; }
-  /* [3] Clips: the strip becomes a VERTICAL, scrollable column. */
+  /* [3] Clips: a header toggle + a VERTICAL, scrollable strip. */
+  body.events-full #view-events .ev-clips {
+    grid-area: clips;
+    display: flex; flex-direction: column; gap: 6px;
+    height: 100%; min-height: 0;
+  }
+  body.events-full #view-events .ev-clips-toggle {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    flex: 0 0 auto; width: 100%; min-height: 32px; padding: 4px 8px;
+    font-size: 12px; font-weight: 600;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  }
+  body.events-full #view-events .ev-clips-toggle .ev-clips-icon { font-size: 15px; }
   body.events-full #view-events .ev-strip {
-    grid-area: strip;
+    flex: 1 1 auto;
     flex-direction: column; flex-wrap: nowrap;
     margin: 0; padding: 2px;
-    height: 100%; min-height: 0;
+    min-height: 0;
     overflow-x: hidden; overflow-y: auto;
     scroll-snap-type: y proximity;
     -webkit-overflow-scrolling: touch;
   }
   body.events-full #view-events .ev-clip { width: 100%; }
+  /* Collapsed: hide the strip; the toggle becomes a slim vertical handle. */
+  body.ev-clips-collapsed #view-events .ev-strip { display: none; }
+  body.ev-clips-collapsed #view-events .ev-clips-toggle {
+    height: 100%; min-height: 0;
+  }
+  body.ev-clips-collapsed #view-events .ev-clips-toggle .ev-clips-name {
+    display: none;
+  }
 }

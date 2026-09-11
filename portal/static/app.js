@@ -182,10 +182,13 @@ async function boot() {
     state.me = await api('/api/me');
   } catch (e) { return; }
   hideLogin();
-  // The signed-in username lives in the collapsed nav menu (phones); the topbar
-  // no longer shows it. Guarded so a missing node can never break boot.
+  // The signed-in username: inside the collapsed menu on phones (#nav-user) and
+  // in the userbox of the horizontal layout (#user-chip). Guarded so a missing
+  // node can never break boot.
   const navUser = $('#nav-user');
   if (navUser) navUser.textContent = state.me.username;
+  const userChip = $('#user-chip');
+  if (userChip) userChip.textContent = state.me.username;
   // Admin-only Debug tab: show the nav link only for the admin user. Toggled
   // on every boot (not just revealed) so a logout->login as a non-admin hides
   // it again. The server is the real gate (/api/admin/logs 403s everyone
@@ -1222,16 +1225,9 @@ if (stageEl) {
 }
 syncLiveTools();   // initial state: no frame/no audio yet -> row tools disabled
 
-/* -------- camera switching: thumbnail row / modal, prev + next buttons ---- */
+/* -------- camera switching: thumbnail row / modal ------------------------- */
 function camNames() {
   return state.cameras.map(c => c.name).filter(n => n);
-}
-function switchCam(step) {
-  const names = camNames();
-  if (names.length < 2) return;
-  const i = names.indexOf(state.live.cam);
-  const next = names[(i + step + names.length) % names.length];
-  if (next && next !== state.live.cam) selectCam(next);
 }
 function rememberCam(cam) {
   state.live.cam = cam;                 // startStream also sets it (idempotent)
@@ -1332,10 +1328,6 @@ $('#live-sound').addEventListener('click', (e) => {
   e.preventDefault();
   toggleLiveSound();
 });
-// Prev/next camera (wrap around) - small buttons below the live frame.
-$('#cam-prev').addEventListener('click', () => switchCam(-1));
-$('#cam-next').addEventListener('click', () => switchCam(1));
-
 /* ---------------- shared time-range + pagination helpers ---------------- */
 const TIME_PRESETS = [
   ['', 'All time'], ['1h', 'Last 1 hour'], ['6h', 'Last 6 hours'],

@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v21` |
+| Summary version | `v22` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.4.6` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.4.7` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -148,7 +148,7 @@ with `docker compose up -d` / `docker compose down`.
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw for SQLite WAL read) |
 | Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090` |
-| Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Phone layout:** on phones (both orientations) the tab bar collapses into a scrollable `#nav-toggle` hamburger dropdown (which also carries the **username**, **Sign out**, and the version); a phone in **landscape** turns the Live controls into a **thin vertical column** beside the frame (max frame height) and shrinks prev/next to round overlay buttons, and lays the **Events** tab out as a **3-column grid** (narrow scrollable filters | large video | narrow scrollable clip strip, via `body.events-full`). A **Stop** button (`#live-stop`) halts the live stream on demand (offers Resume). (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
+| Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. **Nav layout:** the horizontal (tablet/desktop) bar is a scrollable inline link row with the **username** (`#user-chip`) + sign-out pinned in the userbox; on phones (both orientations) the bar collapses into a scrollable `#nav-toggle` hamburger dropdown carrying the **username** (`#nav-user`), the tabs, **Sign out** (`#nav-logout`), and the version. A phone in **landscape** turns the Live controls into a **thin vertical column** beside the frame (max frame height) and lays the **Events** tab out as a **3-column grid** (narrow scrollable filters | large video | narrow scrollable clip strip, via `body.events-full`). A **Stop** button (`#live-stop`) halts the live stream on demand (offers Resume); the old prev/next camera buttons were **removed** (cameras are picked from the thumbnails / modal). (`plans/portal-live-landscape.md`). Edits need `docker compose restart portal`. |
 
 ### 3.7 `scenereader` — cross-camera episode narrator
 

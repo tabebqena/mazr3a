@@ -137,15 +137,18 @@ nav .nav-ver {
   border-top: 1px solid var(--line);
   color: var(--muted); font-size: 12px;
 }
-/* Signed-in username, shown at the top of the collapsed menu (the topbar no
-   longer carries it). Hidden when the nav is an inline row (tablet/desktop). */
+/* Signed-in username at the TOP of the collapsed menu (phones). Pinned to ONE
+   compact line (no icon, no wrap) so its vertical length stays constant; hidden
+   when the nav is an inline row (tablet/desktop) - there #user-chip is used. */
 nav .nav-user {
-  padding: 4px 12px 8px; margin-bottom: 2px;
+  padding: 7px 12px; margin: 0 0 4px;
   border-bottom: 1px solid var(--line);
   color: var(--text); font-weight: 600; font-size: 13px;
+  line-height: 1.25;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-nav .nav-user::before { content: '\1F464  '; }
+/* Username for the HORIZONTAL nav layout (tablet/desktop): hidden on phones. */
+.user-chip { display: none; }
 
 /* ================= LAYOUT (mobile-first) ================= */
 main { max-width: var(--content); margin: 0 auto; padding: 12px; }
@@ -344,19 +347,6 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
   background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.22);
   color: #fff; letter-spacing: .3px; pointer-events: none;
 }
-/* Prev/next camera: small buttons below the live frame. */
-.live-foot {
-  display: flex; justify-content: center; gap: 10px; margin-top: 8px;
-}
-.live-foot button {
-  width: auto; min-width: 0; min-height: 30px; padding: 2px 12px;
-  font-size: 16px; line-height: 1; border-radius: 20px;
-  background: var(--panel2);
-}
-.live-foot button:hover { border-color: var(--accent); }
-.live-foot button:active { transform: scale(.96); }
-.live-foot button:disabled { opacity: .45; cursor: default; }
-
 /* Inline camera row: hidden on phones (cameras are picked via the modal);
    shown as a horizontal scroll strip on >=640px. */
 .cam-strip {
@@ -705,18 +695,30 @@ body.lb-open { overflow: hidden; }
 
   .topbar { flex-wrap: nowrap; padding: 10px 16px; }
   /* Restore the inline nav row and hide the collapsed-menu hamburger + its
-     phone-only extras (username / sign out / version). */
+     phone-only extras (sign out / version). The username shows here as
+     #user-chip in the userbox instead. */
   .nav-toggle { display: none; }
   nav .nav-user, nav .nav-logout, nav .nav-ver { display: none; }
   nav {
     position: static; top: auto; right: auto; left: auto;
     display: flex; flex-direction: row; flex: 1; order: 0;
     width: auto; min-width: 0; max-width: none;
-    gap: 6px; padding: 0; overflow: visible;
+    gap: 6px; padding: 0;
+    /* The links scroll horizontally when the bar is tight; brand + userbox
+       (username / sign out) stay pinned. */
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
     background: none; border: 0; border-radius: 0; box-shadow: none;
     z-index: auto;
   }
+  nav::-webkit-scrollbar { display: none; }
   nav a { flex: 0 0 auto; display: inline-block; padding: 7px 13px; }
+  /* Username in the userbox, just before the sign-out button. */
+  .user-chip {
+    display: inline-block; color: var(--muted); font-size: 13px;
+    max-width: 40vw; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
 
   .controls { gap: 10px 14px; }
   .controls label { font-size: 12px; }
@@ -742,7 +744,6 @@ body.lb-open { overflow: hidden; }
   .cam-modal { align-items: center; padding: 20px; }
   .cam-modal-card { border-radius: 16px; border-bottom: 1px solid var(--line); }
   .cam-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-  .live-foot button { padding: 6px 18px; }
 }
 
 /* ============================================================
@@ -874,25 +875,10 @@ body.lb-open { overflow: hidden; }
   /* The camera name is already overlaid on the frame; drop the text status line. */
   body.live-full #view-live .status { display: none; }
 
-  /* The fixed version tag (bottom-right) would sit under the next-cam overlay /
-     the Events clip column in this short layout - hide it here (the version
-     lives in the nav menu). */
+  /* The fixed version tag (bottom-right) would sit under the Events clip column
+     in this short layout - hide it here (the version lives in the nav menu). */
   body.live-full .app-ver,
   body.events-full .app-ver { display: none; }
-
-  /* prev/next: tiny round overlays pinned to the frame's bottom corners. The
-     right offset clears the 52px control column + its 6px gap + 8px edge. */
-  body.live-full #view-live .live-foot {
-    position: absolute; left: 8px; right: 66px; bottom: 8px;
-    margin: 0; justify-content: space-between;
-    pointer-events: none;
-  }
-  .live-foot button {
-    width: 34px; min-width: 34px; min-height: 34px; padding: 0;
-    border-radius: 50%; font-size: 18px;
-    background: rgba(0,0,0,.5); border-color: rgba(255,255,255,.28);
-    pointer-events: auto;
-  }
 
   /* ============================================================
      EVENTS TAB in phone LANDSCAPE: three columns side by side -

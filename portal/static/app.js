@@ -2756,6 +2756,9 @@ function renderManageEdit() {
   const isSelf = u.username.toLowerCase() === meName;
   $('#mu-edit-name').textContent = u.username;
   $('#mu-pw').value = '';
+  // Changing your OWN password must confirm the CURRENT one (server rule).
+  $('#mu-pw-current').value = '';
+  $('#mu-pw-current-wrap').classList.toggle('hidden', !isSelf);
   $('#mu-admin').checked = !!u.is_admin;
   $('#mu-active').checked = u.is_active !== false;
   // You cannot deactivate or delete your OWN account (the server blocks it too).
@@ -2820,12 +2823,19 @@ $('#mu-pw-save').addEventListener('click', async () => {
   if (!pw || pw.length < 6) {
     msg.textContent = 'New password must be at least 6 characters.'; return;
   }
+  const body = { new_password: pw };
+  // Your OWN account needs the current password; resetting ANOTHER user's does
+  // not (the backend hashes it either way).
+  if (!$('#mu-pw-current-wrap').classList.contains('hidden')) {
+    body.current_password = $('#mu-pw-current').value;
+  }
   const btn = $('#mu-pw-save');
   btn.disabled = true;
   try {
     await api('/api/users/' + encodeURIComponent(state.manageTarget) + '/password',
-              { method: 'POST', body: { new_password: pw } });
+              { method: 'POST', body });
     $('#mu-pw').value = '';
+    $('#mu-pw-current').value = '';
     msg.textContent = 'Password updated.';
   } catch (e) {
     msg.textContent = 'Could not update: ' + e.message;

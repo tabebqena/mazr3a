@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v29` |
+| Summary version | `v30` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.8.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.8.1` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 

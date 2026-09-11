@@ -512,6 +512,12 @@
               <button id="mu-delete" type="button" class="ghost">Delete user</button>
             </div>
             <div class="user-fields">
+              <!-- Shown only when editing YOUR OWN account: changing your own
+                   password must confirm the current one (the server enforces it). -->
+              <label id="mu-pw-current-wrap" class="hidden">Current password
+                <input id="mu-pw-current" type="password"
+                       autocomplete="current-password">
+              </label>
               <label>New password
                 <input id="mu-pw" type="password" autocomplete="new-password"
                        minlength="6">

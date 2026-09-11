@@ -17,7 +17,7 @@
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.10.0` (see [`portal/app.py`](portal/app.py:42)) — bump on every portal change |
-| Portal PWA | Installable on Android (per-request manifest + fingerprinted icons, **no service worker by design**) — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
+| Portal PWA | Installable on Android (per-request manifest + fingerprinted icons, **no service worker by design**). Needs a Cloudflare Access **Bypass** for `/manifest.webmanifest` + `/static/icons/*` (else WebAPK minting fails and the icon is only a browser shortcut) — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 
 ---
 

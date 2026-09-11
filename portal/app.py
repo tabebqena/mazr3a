@@ -39,7 +39,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 _HTMX = None
 
 
@@ -309,7 +309,7 @@ async def me(request: Request, user: dict = Depends(current_user)):
         "display_name": user.get("display_name") or user["username"],
         "photo": user.get("photo") or "",
         "is_admin": bool(user.get("is_admin")),
-        "permissions": user.get("permissions") or [],
+        "permissions": _effective_permissions(user),
         "quota_bytes": int(user.get("quota_bytes") or 0),
         "default_camera": (user.get("default_camera")
                            or pconf.get(_cfg(request), "DEFAULT_CAMERA")),
@@ -334,6 +334,18 @@ def _is_admin(user: dict) -> bool:
     return bool(user and user.get("is_admin"))
 
 
+def _effective_permissions(user: dict) -> list:
+    """The `tab_*` keys a user may open.
+
+    An ADMIN implicitly has EVERY tab - the full CURRENT catalogue is reported
+    so the nav shows all of them, and `is_admin` keeps any FUTURE tab open
+    automatically. A non-admin gets exactly the stored keys (EMPTY = no tabs).
+    """
+    if _is_admin(user):
+        return list(userstore.ALLOWED_PERMISSIONS)
+    return list(user.get("permissions") or [])
+
+
 def _same_user(user: dict, username: str) -> bool:
     return (user.get("username") or "").lower() == (username or "").lower()
 
@@ -356,7 +368,8 @@ async def list_users(request: Request, admin: dict = Depends(current_admin)):
     Includes each stored password_hash so the admin Users table can show it.
     """
     return {"users": _user_store(request).list(include_secrets=True),
-            "permissions": list(userstore.ALLOWED_PERMISSIONS)}
+            "permissions": list(userstore.ALLOWED_PERMISSIONS),
+            "tabs": list(userstore.AVAILABLE_TABS)}
 
 
 @app.post("/api/users")

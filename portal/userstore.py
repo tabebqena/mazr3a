@@ -36,9 +36,13 @@ import re
 import sqlite3
 import time
 
-# Standard (non-admin) SPA tabs a user can be granted. Keep in sync with
-# USER_PERMS in portal/static/app.js and VIEWS in app.js.
-ALLOWED_PERMISSIONS = ("live", "events", "fire", "episodes", "adaptive", "scenes")
+# The app tabs a NON-ADMIN can be granted, stored as `tab_<name>` permission
+# keys (e.g. `tab_live`). An ADMIN implicitly has EVERY tab - current AND future
+# - so an admin's access never depends on these keys. A non-admin gets exactly
+# the stored keys (an EMPTY list = no tabs). Keep AVAILABLE_TABS in sync with
+# TABS in portal/static/app.js.
+AVAILABLE_TABS = ("live", "events", "fire", "episodes", "adaptive", "scenes")
+ALLOWED_PERMISSIONS = tuple("tab_" + t for t in AVAILABLE_TABS)
 
 # Usernames are path-safe (used in /api/users/<name>) and modest in length.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -98,7 +102,15 @@ def normalize_permissions(value):
         value = [k for k, v in value.items() if v]
     if not isinstance(value, (list, tuple, set)):
         return []
-    wanted = {str(v).strip().lower() for v in value}
+    # Accept a bare tab name ('live') or the prefixed key ('tab_live').
+    wanted = set()
+    for item in value:
+        key = str(item).strip().lower()
+        if not key:
+            continue
+        if not key.startswith("tab_"):
+            key = "tab_" + key
+        wanted.add(key)
     return [p for p in ALLOWED_PERMISSIONS if p in wanted]
 
 

@@ -53,8 +53,13 @@
         <!-- Admin-only Debug tab (shown only when the logged-in user is the
              admin - app.js removes .hidden at boot based on /api/me is_admin). -->
         <a data-view="debug" href="#/debug" id="nav-debug" class="hidden">Debug</a>
-        <!-- NOTE: the bandwidth Usage TAB was REMOVED. Usage now lives INSIDE
-             the Account (User) tab below, reachable by clicking the username. -->
+        <!-- Admin-only Manage tab: user administration (create an account; then
+             SELECT a user to edit their password + tab_* permissions) plus every
+             user's bandwidth usage. Shown only to admins (app.js); the API 403s. -->
+        <a data-view="manage" href="#/manage" id="nav-manage" class="hidden">Manage</a>
+        <!-- NOTE: the bandwidth Usage TAB was REMOVED. Each user's own usage now
+             lives INSIDE the Account tab (reachable by clicking the username);
+             the all-users usage table lives in the Manage tab above. -->
         <!-- Collapsed-menu extras (phones only - hidden when the nav is an
              inline row on tablet/desktop): sign out and the version. Sign out
              mirrors #logout-btn; the version mirrors the footer label (same
@@ -404,13 +409,11 @@
         <div id="dbg-list" class="dbg-list"></div>
       </section>
 
-      <!-- Account (User) tab: the signed-in user's profile, reachable by
+      <!-- Account (User) tab: the signed-in user's OWN profile, reachable by
            clicking the username (#nav-user / #user-chip). Shows the read-only
-           username, an editable display name + photo, and a change-password
-           card; the bandwidth Usage card is EMBEDDED here (the separate Usage
-           tab was removed). Admins additionally get the Users table
-           (add / edit / delete accounts - applied immediately, no container
-           restart) plus the all-users usage table. -->
+           username, an editable display name + photo, a change-password card,
+           and the EMBEDDED bandwidth usage card (the separate Usage tab was
+           removed). An admin manages OTHER accounts from the Manage tab. -->
       <section id="view-user" class="view hidden">
         <!-- Profile card -->
         <div class="card user-card">
@@ -438,23 +441,6 @@
                 <input id="user-camera" placeholder="(server default)"
                        autocomplete="off">
               </label>
-              <label>Quota
-                <input id="user-quota" disabled placeholder="(not in use yet)">
-              </label>
-              <label class="check" id="user-admin-row">
-                <input id="user-admin" type="checkbox"> Administrator
-              </label>
-              <label class="check" id="user-active-row">
-                <input id="user-active" type="checkbox"> Active
-                <span class="muted">(disable to block sign-in)</span>
-              </label>
-              <div class="user-perms">
-                <span class="user-perms-label">Tabs</span>
-                <div id="user-perms" class="user-perms-box"></div>
-                <div class="user-perms-hint muted">
-                  Select the tabs this user may open (all when none is set).
-                </div>
-              </div>
               <div class="user-actions">
                 <button id="user-save" type="button">Save changes</button>
               </div>
@@ -495,18 +481,75 @@
           <div id="user-usage" class="usage-body"></div>
         </div>
 
-        <!-- Admin only: user management + every user's usage -->
-        <div class="card user-card hidden" id="user-admin-card">
+      </section>
+
+      <!-- Admin-only Manage tab. The FIRST card manages users: add an account
+           by username + password, then SELECT a user in the list to edit their
+           password and check the tab_* permissions they get. The second card
+           shows every user's bandwidth usage. Accounts live in the portal's own
+           users DB, so every change applies immediately (no container restart). -->
+      <section id="view-manage" class="view hidden">
+        <!-- Card 1: manage users -->
+        <div class="card user-card">
+          <div class="user-card-head"><span>Manage users</span></div>
+          <div class="mu-add">
+            <label>New username
+              <input id="mu-new-username" maxlength="64" autocomplete="off">
+            </label>
+            <label>New password
+              <input id="mu-new-password" type="password"
+                     autocomplete="new-password" minlength="6">
+            </label>
+            <button id="mu-add" type="button">Add user</button>
+          </div>
+          <div id="mu-msg" class="status"></div>
+          <div id="mu-list" class="user-list"></div>
+
+          <!-- Edit the SELECTED user: password + tab_* permissions -->
+          <div id="mu-edit" class="mu-edit hidden">
+            <div class="user-card-head user-card-head-sub">
+              <span>Edit user: <b id="mu-edit-name"></b></span>
+              <button id="mu-delete" type="button" class="ghost">Delete user</button>
+            </div>
+            <div class="user-fields">
+              <label>New password
+                <input id="mu-pw" type="password" autocomplete="new-password"
+                       minlength="6">
+              </label>
+              <div class="user-actions">
+                <button id="mu-pw-save" type="button">Update password</button>
+              </div>
+              <label class="check">
+                <input id="mu-admin" type="checkbox"> Administrator
+              </label>
+              <label class="check">
+                <input id="mu-active" type="checkbox"> Active
+                <span class="muted">(disable to block sign-in)</span>
+              </label>
+              <div class="user-perms">
+                <span class="user-perms-label">Tab access</span>
+                <div id="mu-perms" class="user-perms-box"></div>
+                <div class="user-perms-hint muted">
+                  Check the tabs this user may open. An administrator always has
+                  every tab (current and future). Unchecked = access denied.
+                </div>
+              </div>
+              <div class="user-actions">
+                <button id="mu-save" type="button">Save changes</button>
+              </div>
+              <div id="mu-edit-msg" class="status"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: every user's bandwidth usage -->
+        <div class="card user-card">
           <div class="user-card-head">
-            <span>Users</span>
-            <button id="user-new" type="button" class="ghost"
-                    title="Create a new account">+ Add user</button>
-          </div>
-          <div id="user-list" class="user-list"></div>
-          <div class="user-card-head user-card-head-sub">
             <span>All users &middot; usage</span>
+            <button id="mu-usage-refresh" type="button" class="ghost">
+              Refresh</button>
           </div>
-          <div id="user-all-usage" class="usage-body"></div>
+          <div id="mu-all-usage" class="usage-body"></div>
         </div>
       </section>
     </main>
@@ -568,40 +611,6 @@
           <img id="sc-lb-img" alt="scene frame - larger view">
         </div>
         <div id="sc-lb-meta" class="fw-lb-meta"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Add-user modal (admin only): create an account without leaving the
-       Account tab. Applied immediately at the API - no container restart. -->
-  <div id="user-new-modal" class="usage-modal hidden" role="dialog"
-       aria-modal="true" aria-label="Add user">
-    <div class="usage-backdrop" data-user-new-close></div>
-    <div class="usage-card">
-      <div class="usage-head">
-        <span>Add user</span>
-        <button id="user-new-close" type="button" aria-label="Close">&times;</button>
-      </div>
-      <div class="usage-body">
-        <div class="user-fields">
-          <label>Username
-            <input id="nu-username" maxlength="64" autocomplete="off">
-          </label>
-          <label>Display name
-            <input id="nu-display" maxlength="64" autocomplete="off">
-          </label>
-          <label>Password
-            <input id="nu-password" type="password" autocomplete="new-password"
-                   minlength="6">
-          </label>
-          <label class="check">
-            <input id="nu-admin" type="checkbox"> Administrator
-          </label>
-          <div class="user-actions">
-            <button id="nu-save" type="button">Create user</button>
-          </div>
-          <div id="nu-msg" class="status"></div>
-        </div>
       </div>
     </div>
   </div>

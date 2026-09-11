@@ -174,6 +174,7 @@ function onRoute() {
   // Live is full-bleed (fills the screen, no dead scroll); other views scroll.
   document.body.classList.toggle('live-full', view === 'live');
   if (view !== 'live') stopStream();           // only the Live view streams
+  if (view !== 'events') evTeardown();         // release the Events player
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
   VIEWS.forEach(v => $('#view-' + v).classList.toggle('hidden', v !== view));
   if (view === 'live') ensureLive();
@@ -189,6 +190,7 @@ async function loadCameras() {
   const data = await api('/api/cameras');
   state.cameras = data.cameras || [];
   refreshCamSelects();                 // Events/Fire selects keep a dropdown
+  loadEventsPrefs();                   // restore the saved Events camera + class
 
   // Reopen the LAST camera the user watched (persisted), else the default.
   let def = null;
@@ -202,18 +204,22 @@ async function loadCameras() {
 }
 
 /* Fill the Events/Fire camera <select>s from state.cameras. The Live view no
-   longer uses a <select> - cameras are picked from the thumbnail row/modal. */
+   longer uses a <select> - cameras are picked from the thumbnail row/modal.
+   The current choice is PRESERVED when the options are rebuilt (a periodic
+   /api/cameras refresh must never silently reset an Events filter). */
 function refreshCamSelects() {
   const opts = camNames().map(n => {
     const c = state.cameras.find(x => x.name === n);
     const tag = c && !c.online ? ' (offline)' : '';
     return '<option value="' + esc(n) + '">' + esc(n) + tag + '</option>';
   }).join('');
-  $('#ev-cam').innerHTML = '<option value="">all cameras</option>' + opts;
-  $('#fw-cam').innerHTML = '<option value="">all cameras</option>' + opts;
-  $('#sc-cam').innerHTML = '<option value="">all cameras</option>' + opts;
-  $('#ep-cam').innerHTML = '<option value="">all cameras</option>' + opts;
-  $('#as-cam').innerHTML = '<option value="">all cameras</option>' + opts;
+  const all = '<option value="">all cameras</option>' + opts;
+  ['#ev-cam', '#fw-cam', '#sc-cam', '#ep-cam', '#as-cam'].forEach(id => {
+    const sel = $(id);
+    const prev = sel.value;
+    sel.innerHTML = all;
+    if (prev && $$('option', sel).some(o => o.value === prev)) sel.value = prev;
+  });
 }
 
 /* ---------------- Live view: HLS (go2rtc) via hls.js ------------------------ */
@@ -1283,12 +1289,15 @@ function fillTimeSelect(sel) {
 }
 
 // Wire one view's Time preset select + custom From/To row; any change auto-refreshes.
-function wireTimeControls(prefix, onApply) {
+// `defaultKey` (optional) selects an initial preset - the Events tab passes '24h'
+// so it opens on the last day instead of "All time"; Fire/Scenes keep the default.
+function wireTimeControls(prefix, onApply, defaultKey) {
   const timeSel = $('#' + prefix + '-time');
   const wrap = $('#' + prefix + '-custom-wrap');
   const fromEl = $('#' + prefix + '-from');
   const toEl = $('#' + prefix + '-to');
   fillTimeSelect(timeSel);
+  if (defaultKey) timeSel.value = defaultKey;
   const sync = () => {
     const custom = timeSel.value === 'custom';
     wrap.classList.toggle('hidden', !custom);
@@ -1332,16 +1341,200 @@ function renderPager(prefix, page, pages) {
   if (pn) pn.textContent = 'Page ' + page + ' / ' + pages;
 }
 
-/* ---------------- Frigate events & detections (paged + time-filtered) -------- */
+/* ---------------- Frigate events: large player + clip strip + playlist --------
+   The filter bar (Camera/Class/Time/Refresh) is UNCHANGED; it feeds ONE large
+   <video> (#ev-video) through a horizontally scrolling strip of clip buttons
+   (#ev-strip). Replaces the old grid of per-card inline videos.
+     - evAll      : the filtered events (newest first) = the playlist order.
+     - evSelIdx   : index into evAll of the clip in the stage (-1 = none).
+     - evPlaylist : the auto-advance switch (ON -> play the next clip on 'ended').
+     - idle 60 s  : with no user interaction, turn the playlist OFF + pause and
+                    show the Resume overlay (never auto-play the next clip).
+   Clips stream from /api/events/<id>/clip.mp4 (seekable - the portal proxy now
+   forwards Range); the poster is /api/events/<id>/snapshot.jpg.
+   See plans/portal-events-tab-player.md. */
 const EV_PAGE = 24;
-const EV_MAX = 5000;     // client-side paging cap for a single Frigate fetch
-let evAll = [];          // current filter's full event array (newest first)
-let evPage = 1;
+const EV_MAX = 5000;        // client-side cap for a single Frigate fetch
+const EV_IDLE_MS = 60000;   // idle stop: 1 minute (fixed; Live uses STREAM_IDLE_TIMEOUT_S)
+const EV_STORE = { cam: 'portal.evCam', label: 'portal.evLabel' };
+
+let evAll = [];             // current filter's full event array (newest first)
+let evPage = 1;             // strip page (window of EV_PAGE)
+let evSelIdx = -1;          // index into evAll of the clip in the stage
+let evPlaylist = false;     // auto-advance switch
+let evPlaylistResume = false;  // playlist was ON when the idle stop fired
+let evIdleTimer = null;
+
+/* ---- remembered filters: last camera + last class (localStorage, best effort) */
+function loadEventsPrefs() {
+  try {
+    const cam = localStorage.getItem(EV_STORE.cam);
+    const sel = $('#ev-cam');
+    if (cam != null && sel && $$('option', sel).some(o => o.value === cam)) {
+      sel.value = cam;
+    }
+    const lab = localStorage.getItem(EV_STORE.label);
+    if (lab != null) $('#ev-label').value = lab;
+  } catch (e) { /* localStorage unavailable - filters just stay at defaults */ }
+}
+function saveEvCam() {
+  try { localStorage.setItem(EV_STORE.cam, $('#ev-cam').value); } catch (e) { /* ignore */ }
+}
+function saveEvLabel() {
+  try { localStorage.setItem(EV_STORE.label, $('#ev-label').value.trim()); } catch (e) { /* ignore */ }
+}
+
+/* ---- idle stop: 60 s without USER interaction stops the playlist ----
+   The timer is (re)armed only by real interaction (and by enabling the
+   playlist / resuming), NEVER by an auto-advance - otherwise a running
+   playlist would keep resetting it and the stop would never fire. */
+function armEvIdle() {
+  clearEvIdle();
+  if (evSelIdx < 0) return;
+  evIdleTimer = setTimeout(onEvIdle, EV_IDLE_MS);
+}
+function clearEvIdle() {
+  if (evIdleTimer) { clearTimeout(evIdleTimer); evIdleTimer = null; }
+}
+function onEvIdle() {
+  evIdleTimer = null;
+  if (evSelIdx < 0) return;
+  if (!evPlaylist) return;              // nothing to stop - leave the clip alone
+  evPlaylistResume = true;              // Resume restores this
+  evPlaylist = false;
+  syncEvPlaylist();
+  const v = $('#ev-video');
+  if (v && !v.paused) v.pause();        // never fetch/play the next clip
+  showEvOverlay('Playlist paused after 1 minute of inactivity.');
+}
+function showEvOverlay(msg) {
+  $('#ev-overlay-msg').textContent = msg;
+  $('#ev-overlay').classList.remove('hidden');
+}
+function hideEvOverlay() { $('#ev-overlay').classList.add('hidden'); }
+
+/* Resume (user gesture): continue the clip and restore the playlist it had. */
+function resumeEvPlayback() {
+  hideEvOverlay();
+  if (evPlaylistResume) { evPlaylist = true; evPlaylistResume = false; syncEvPlaylist(); }
+  const v = $('#ev-video');
+  if (v && v.currentSrc) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+  armEvIdle();
+}
+
+/* ---- playlist switch ---- */
+function syncEvPlaylist() {
+  const b = $('#ev-playlist');
+  if (!b) return;
+  const ev = evAll[evSelIdx];
+  b.disabled = !(ev && ev.has_clip);
+  b.setAttribute('aria-pressed', evPlaylist ? 'true' : 'false');
+  b.textContent = 'Playlist: ' + (evPlaylist ? 'on' : 'off');
+}
+function toggleEvPlaylist() {
+  if (evSelIdx < 0) return;
+  evPlaylist = !evPlaylist;
+  evPlaylistResume = false;
+  hideEvOverlay();
+  syncEvPlaylist();
+  armEvIdle();
+  const v = $('#ev-video');
+  if (evPlaylist && v && v.ended) evAdvance();   // already finished -> next now
+}
+function nextPlayableIdx(from) {
+  for (let i = from + 1; i < evAll.length; i++) {
+    if (evAll[i] && evAll[i].has_clip) return i;
+  }
+  return -1;
+}
+function evAdvance() {
+  const next = nextPlayableIdx(evSelIdx);
+  if (next < 0) {                       // end of the playlist: stop, no loop
+    evPlaylist = false;
+    syncEvPlaylist();
+    $('#ev-status').textContent = 'End of playlist.';
+    return;
+  }
+  evSelect(next, true);
+}
+
+/* ---- playback ---- */
+function evClipUrl(ev) { return '/api/events/' + encodeURIComponent(ev.id) + '/clip.mp4'; }
+function evSnapUrl(ev) { return '/api/events/' + encodeURIComponent(ev.id) + '/snapshot.jpg'; }
+
+// Show the event at `idx` in the large frame; `autoplay` starts it immediately.
+function evSelect(idx, autoplay) {
+  if (idx < 0 || idx >= evAll.length) return;
+  evSelIdx = idx;
+  const ev = evAll[idx];
+  const v = $('#ev-video');
+  const stage = $('#ev-stage');
+  hideEvOverlay();
+  if (stage) stage.classList.add('has-clip');
+  if (v) {
+    try { v.pause(); } catch (e) { /* ignore */ }
+    if (ev.has_clip) {
+      v.poster = evSnapUrl(ev);
+      v.src = evClipUrl(ev);
+      try { v.currentTime = 0; } catch (e) { /* ignore */ }
+      if (autoplay) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+    } else {
+      // Snapshot only: no clip to play, just the still in the frame.
+      try { v.removeAttribute('src'); v.load(); } catch (e) { /* ignore */ }
+      v.poster = evSnapUrl(ev);
+    }
+  }
+  if (!ev.has_clip) evPlaylist = false;   // nothing to auto-advance from a still
+  syncEvPlaylist();
+  renderEvNow();
+  const page = Math.floor(idx / EV_PAGE) + 1;
+  if (page !== evPage) { evPage = page; renderEvPage(); }   // renderEvPage re-marks
+  else markEvActive();
+}
+function renderEvNow() {
+  const el = $('#ev-now');
+  if (!el) return;
+  const ev = evAll[evSelIdx];
+  if (!ev) { el.textContent = ''; return; }
+  const parts = [ev.camera || '', ev.label || 'detection', fmtDT(ev.start_time)];
+  if (!ev.has_clip) parts.push('(snapshot only)');
+  el.textContent = parts.filter(Boolean).join('  \u00b7  ');
+}
+function markEvActive() {
+  const strip = $('#ev-strip');
+  if (!strip) return;
+  $$('.ev-clip', strip).forEach(b => {
+    const on = Number(b.dataset.idx) === evSelIdx;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on) b.scrollIntoView({ block: 'nearest', inline: 'center' });
+  });
+}
+
+// Stop the player and drop the selection (leaving the tab / changing filters).
+function evTeardown() {
+  clearEvIdle();
+  hideEvOverlay();
+  evPlaylist = false;
+  evPlaylistResume = false;
+  evSelIdx = -1;
+  const v = $('#ev-video');
+  if (v) {
+    try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* ignore */ }
+    v.poster = '';
+  }
+  const stage = $('#ev-stage');
+  if (stage) stage.classList.remove('has-clip');
+  syncEvPlaylist();
+  renderEvNow();
+}
 
 $('#ev-refresh').addEventListener('click', loadEvents);
-$('#ev-cam').addEventListener('change', loadEvents);
-$('#ev-label').addEventListener('change', loadEvents);
-wireTimeControls('ev', loadEvents);
+$('#ev-cam').addEventListener('change', () => { saveEvCam(); loadEvents(); });
+$('#ev-label').addEventListener('change', () => { saveEvLabel(); loadEvents(); });
+wireTimeControls('ev', loadEvents, '24h');   // default = Last 24 hours
+$('#ev-playlist').addEventListener('click', toggleEvPlaylist);
+$('#ev-overlay-resume').addEventListener('click', resumeEvPlayback);
 $('#ev-prev').addEventListener('click', () => {
   if (evPage > 1) { evPage--; renderEvPage(); }
 });
@@ -1349,22 +1542,20 @@ $('#ev-next').addEventListener('click', () => {
   if (evPage < Math.max(1, Math.ceil(evAll.length / EV_PAGE))) { evPage++; renderEvPage(); }
 });
 
-// Clicking a clip's play button swaps its thumbnail preview for the playing video.
-$('#ev-list').addEventListener('click', (e) => {
-  const btn = e.target.closest('.evmedia-play');
+// Playlist auto-advance: the current clip ended -> play the next one.
+$('#ev-video').addEventListener('ended', () => { if (evPlaylist) evAdvance(); });
+// Any interaction inside the tab is a user present: (re)arm the idle stop.
+['pointerdown', 'keydown', 'wheel'].forEach(evt =>
+  $('#view-events').addEventListener(evt, armEvIdle, { passive: true }));
+// Click a clip in the strip: select + play it in the large frame.
+$('#ev-strip').addEventListener('click', (e) => {
+  const btn = e.target.closest('.ev-clip');
   if (!btn) return;
-  const media = btn.parentElement;
-  const img = media.querySelector('.evmedia-img');
-  const vid = media.querySelector('.evmedia-video');
-  if (!vid) return;
-  if (img) img.classList.add('hidden');
-  btn.classList.add('hidden');
-  vid.classList.remove('hidden');
-  vid.play().catch(() => {});
+  evPlaylistResume = false;
+  evSelect(Number(btn.dataset.idx), true);
 });
 
 async function loadEvents() {
-  const box = $('#ev-list');
   const st = $('#ev-status');
   st.textContent = 'Loading…';
   hidePager('ev');
@@ -1378,74 +1569,59 @@ async function loadEvents() {
     const events = await api('/api/events?' + p.toString());
     evAll = Array.isArray(events) ? events : [];
     evPage = 1;
+    evTeardown();                     // new filter: drop the old clip + playlist
     st.textContent = '';
     renderEvPage();
+    // Ready the frame with the first PLAYABLE clip's poster (no autoplay): the
+    // stage is populated without spending bandwidth until the user presses play.
+    const first = evAll.findIndex(x => x && x.has_clip);
+    if (first >= 0) evSelect(first, false);
+    else if (evAll.length) evSelect(0, false);   // snapshots only
   } catch (e) {
     evAll = [];
+    evTeardown();
     st.textContent = '';
-    box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    $('#ev-strip').innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
     hidePager('ev');
   }
 }
 
 function renderEvPage() {
-  const box = $('#ev-list');
   const pages = Math.max(1, Math.ceil(evAll.length / EV_PAGE));
   if (evPage > pages) evPage = pages;
-  const slice = evAll.slice((evPage - 1) * EV_PAGE, evPage * EV_PAGE);
+  const base = (evPage - 1) * EV_PAGE;
+  const slice = evAll.slice(base, base + EV_PAGE);
   $('#ev-status').textContent =
     (evAll.length ? evAll.length + ' event(s)' : '') +
     (evAll.length >= EV_MAX ? ' (older events omitted - narrow the time filter)' : '');
-  renderEvents(slice, box);
+  renderEvStrip(slice, base);
   renderPager('ev', evPage, pages);
 }
 
-function renderEvents(events, box) {
+// The lower horizontal navigation: one button per clip in the current page.
+function renderEvStrip(events, baseIdx) {
+  const box = $('#ev-strip');
   if (!Array.isArray(events) || !events.length) {
     box.innerHTML = '<div class="empty">No events</div>';
     return;
   }
-  box.innerHTML = events.map(ev => {
-    const lab = esc(ev.label || 'detection');
-    const cam = esc(ev.camera || '');
-    const score = ev.top_score != null ? ev.top_score : ev.score || 0;
-    const id = encodeURIComponent(ev.id);
-    const snapUrl = '/api/events/' + id + '/snapshot.jpg';
-    const clipUrl = '/api/events/' + id + '/clip.mp4';
-    const hasSnap = !!ev.has_snapshot;
-    const hasClip = !!ev.has_clip;
-
-    let media;
-    if (hasClip) {
-      // Thumbnail is the clip preview; the ▶ button swaps it for the playing video.
-      media =
-        '<div class="thumb evmedia">' +
-          (hasSnap
-            ? '<img class="evmedia-img" loading="lazy" src="' + snapUrl + '" alt="">'
-            : '<div class="evmedia-nosnap" title="no preview"></div>') +
-          '<button class="evmedia-play" type="button" aria-label="Play clip">&#9654;</button>' +
-          '<video class="evmedia-video hidden" controls playsinline preload="none" ' +
-            'src="' + clipUrl + '"></video>' +
-        '</div>';
-    } else {
-      media =
-        '<div class="thumb">' +
-          (hasSnap
-            ? '<img loading="lazy" src="' + snapUrl + '" alt="">'
-            : '<div class="empty" style="padding:10px">no snapshot</div>') +
-        '</div>';
-    }
-
-    return '<div class="card">' +
-      media +
-      '<div class="meta">' +
-        '<span class="tag">' + lab + '</span>' +
-        '<span class="tag">' + cam + '</span>' +
-        '<span>score ' + Number(score).toFixed(2) + '</span>' +
-        '<span class="muted">' + fmtDT(ev.start_time) + '</span>' +
-      '</div>' +
-    '</div>';
+  box.innerHTML = events.map((ev, i) => {
+    const idx = baseIdx + i;
+    const glyph = ev.has_clip ? '<span class="ev-playglyph">&#9654;</span>' : '';
+    const thumb = ev.has_snapshot
+      ? '<img loading="lazy" src="' + evSnapUrl(ev) + '" alt="">'
+      : '<span class="ev-noclip">no preview</span>';
+    return '<button class="ev-clip" type="button" role="option" data-idx="' + idx +
+      '" aria-selected="false" title="' + esc(fmtDT(ev.start_time)) + '">' +
+      '<span class="ev-thumb">' + thumb + glyph + '</span>' +
+      '<span class="ev-meta">' +
+        '<span class="ev-lab">' + esc(ev.label || 'detection') + '</span>' +
+        '<span class="ev-time">' + esc(ev.camera || '') + ' &middot; ' +
+          esc(fmtDT(ev.start_time)) + '</span>' +
+      '</span>' +
+    '</button>';
   }).join('');
+  markEvActive();
 }
 
 /* ---------------- Firewatch fire detections & alerts (paged + time-filtered) -- */

@@ -37,7 +37,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 _HTMX = None
 
 
@@ -507,14 +507,26 @@ async def events(request: Request, user: dict = Depends(current_user)):
 # cookie (the SPA is same-origin so the cookie flows on <img>/fetch too).
 # --------------------------------------------------------------------------
 async def _frigate_media(request: Request, path: str, media_type: str):
+    """Stream a Frigate snapshot/clip through the portal cookie.
+
+    Range is FORWARDED so a <video> can seek (the large Events player relies on
+    this): the browser's Range/If-Range go upstream and a 206 is relayed with
+    Content-Range/Accept-Ranges. Without this the proxy always returned a full
+    200 and the player could not scrub.
+    """
     client = request.app.state.client
+    fwd = {}
+    if request.headers.get("range"):
+        fwd["Range"] = request.headers["range"]
+    if request.headers.get("if-range"):
+        fwd["If-Range"] = request.headers["if-range"]
     req = client.build_request("GET", _frigate_base(request) + path,
-                               params=request.query_params)
+                               params=request.query_params, headers=fwd)
     try:
         resp = await client.send(req, stream=True)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"frigate unreachable: {exc}")
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 206):
         await resp.aclose()
         raise HTTPException(status_code=resp.status_code, detail="frigate error")
 
@@ -525,8 +537,12 @@ async def _frigate_media(request: Request, path: str, media_type: str):
         finally:
             await resp.aclose()
 
-    return StreamingResponse(gen(), media_type=media_type,
-                             headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store", "Accept-Ranges": "bytes"}
+    for h in ("content-range", "content-length"):
+        if resp.headers.get(h):
+            headers[h] = resp.headers[h]
+    return StreamingResponse(gen(), status_code=resp.status_code,
+                             media_type=media_type, headers=headers)
 
 
 @app.get("/api/events/{event_id}/snapshot.jpg")

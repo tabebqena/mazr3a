@@ -145,7 +145,11 @@
         </div>
       </section>
 
-      <!-- Frigate events & detections -->
+      <!-- Frigate events & detections. The filter bar is UNCHANGED; below it a
+           LARGE PLAYER fed by a horizontal CLIP STRIP, a PLAYLIST switch (auto-
+           plays the next clip), and an idle-stop Resume overlay. The strip and
+           the player replaced the old grid of per-card inline <video> elements.
+           See plans/portal-events-tab-player.md. -->
       <section id="view-events" class="view hidden">
         <div class="controls">
           <label>Camera <select id="ev-cam"></select></label>
@@ -163,8 +167,37 @@
           </div>
           <button id="ev-refresh" type="button" title="Reload events">Refresh</button>
         </div>
+
+        <!-- The large playback frame. ONE <video> is reused for every clip; the
+             poster is the event snapshot so the frame is populated before play
+             (no clip bytes are fetched until the user presses play). -->
+        <div id="ev-stage" class="ev-stage">
+          <div id="ev-stage-empty" class="ev-stage-empty">Select a clip below</div>
+          <video id="ev-video" controls playsinline preload="metadata"></video>
+          <div class="ev-now-bar">
+            <span id="ev-now" class="ev-now"></span>
+            <!-- Playlist switch: when ON, the next clip starts automatically as
+                 soon as the current one ends. Disabled with no playable clip. -->
+            <button id="ev-playlist" type="button" aria-pressed="false" disabled
+                    title="Play the next clip automatically">Playlist: off</button>
+          </div>
+          <!-- Idle stop: after 1 minute without interaction the playlist is
+               turned OFF and the clip is paused - this Resume button (a user
+               gesture) continues where it left off and restores the playlist. -->
+          <div id="ev-overlay" class="ev-overlay hidden">
+            <div class="ev-overlay-card">
+              <div id="ev-overlay-msg">Playlist paused after 1 minute of inactivity.</div>
+              <button id="ev-overlay-resume" type="button">&#9654; Resume playing</button>
+            </div>
+          </div>
+        </div>
+
         <div id="ev-status" class="status"></div>
-        <div id="ev-list" class="list"></div>
+
+        <!-- Lower horizontal navigation: one button per clip in the current page.
+             Clicking a clip plays it in the large frame above. -->
+        <div id="ev-strip" class="ev-strip" role="listbox" aria-label="Clips"></div>
+
         <div id="ev-pager" class="pager hidden">
           <button id="ev-prev" type="button">&#8249; Prev</button>
           <span id="ev-pageno" class="pageno"></span>

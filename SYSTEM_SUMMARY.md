@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v16` |
+| Summary version | `v17` |
 | Last updated | 2026-09-11 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.4.0` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.4.2` (see [`portal/app.py`](portal/app.py:40)) — bump on every portal change |
 
 ---
 
@@ -142,13 +142,13 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), events/detections, fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scenes** tab of the adaptive L1 scenes — the coexisting objects and which of them actually MOVED — and a **Scene log** of every capture with its tier — all read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab |
+| Purpose | Login (PBKDF2), live view (MSE-over-WebSocket primary, HLS fallback), **Events** as a large playback frame fed by a horizontal clip strip with a **playlist** auto-advance switch (stopped after 1 min idle and resumable; last camera/class remembered, Last-24h default), fire alerts (cards/lightbox also show portal-derived **motion** + burst **hits** badges inferred in [`portal/firestore.py`](portal/firestore.py)), **scenereader Episodes** (the cross-camera person stories: each card shows the narrative **in English AND Arabic**, the visits as thumbnails, and the link-confidence; plus a **Scenes** tab of the adaptive L1 scenes — the coexisting objects and which of them actually MOVED — and a **Scene log** of every capture with its tier — all read-only via [`portal/eventstore.py`](portal/eventstore.py), with a **Process now** button that asks the service for a caption batch), admin Debug tab |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw for SQLite WAL read) |
 | Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090` |
-| Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). Edits need `docker compose restart portal`. |
+| Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy (`_frigate_media`) **forwards `Range`** (relays `206` + `Content-Range`) so the large player can seek. Edits need `docker compose restart portal`. |
 
 ### 3.7 `scenereader` — cross-camera episode narrator
 

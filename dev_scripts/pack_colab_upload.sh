@@ -15,6 +15,7 @@
 #                                  to check that our own real fires are still detected.
 #   model/                         models/fire/best.pt (v4 base) + labelmap.txt
 #   scripts/prep_fireviewer_dataset.py   the parquet->YOLO converter, run inside Colab
+#   scripts/colab_train_v6.py            the detached, Drive-resilient trainer the notebook launches
 #
 # Usage:
 #   ./dev_scripts/pack_colab_upload.sh [output.zip]
@@ -60,9 +61,9 @@ copy_imgs "$MT/our-camera-clips/fire_events_over_0_5_false_positives"  "$WORK/ne
 echo "collecting our-domain fire audit set -> $WORK/audit"
 copy_imgs "$MT/our-camera-clips/fire_events_over_0_5"                  "$WORK/audit"
 
-echo "bundling base checkpoint + converter"
+echo "bundling base checkpoint + scripts"
 cp models/fire/best.pt models/fire/labelmap.txt "$WORK/model/"
-cp dev_scripts/prep_fireviewer_dataset.py "$WORK/scripts/"
+cp dev_scripts/prep_fireviewer_dataset.py dev_scripts/colab_train_v6.py "$WORK/scripts/"
 
 printf 'FireViewer v6 Colab upload bundle\ncreated (UTC): %s\ngit: %s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse --short HEAD 2>/dev/null || echo n/a)" \

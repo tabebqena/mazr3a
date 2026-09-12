@@ -180,15 +180,20 @@ def main():
                 for f in sorted(names):
                     if os.path.splitext(f)[1].lower() not in IMG_EXTS:
                         continue
+                    src = os.path.join(dirpath, f)
                     dst = os.path.join(train_img, f)
-                    if os.path.exists(dst):        # basename clash across sources
-                        stem, ext = os.path.splitext(f)
-                        k = 1
-                        while os.path.exists(os.path.join(
-                                train_img, f"{stem}__neg{k}{ext}")):
-                            k += 1
-                        dst = os.path.join(train_img, f"{stem}__neg{k}{ext}")
-                    copy_if_missing(os.path.join(dirpath, f), dst)
+                    if os.path.exists(dst):
+                        # Idempotent re-run: the same image is already staged
+                        # (same basename AND size) -> reuse it. Only a REAL
+                        # basename clash (different size) gets renamed.
+                        if os.path.getsize(dst) != os.path.getsize(src):
+                            stem, ext = os.path.splitext(f)
+                            k = 1
+                            while os.path.exists(os.path.join(
+                                    train_img, f"{stem}__neg{k}{ext}")):
+                                k += 1
+                            dst = os.path.join(train_img, f"{stem}__neg{k}{ext}")
+                    copy_if_missing(src, dst)
                     lbl = os.path.join(
                         train_lbl,
                         os.path.splitext(os.path.basename(dst))[0] + ".txt")

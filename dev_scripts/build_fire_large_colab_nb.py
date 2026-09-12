@@ -21,12 +21,16 @@ Data entry supports either (a) Google Drive (recommended for the ~600-700 MB zip
 (b) files.upload(). Set the DRIVE_* variables to "" to trigger an upload dialog instead.
 
 Usage:
-    python dev_scripts/build_fire_large_colab_nb.py   # writes notebooks/fire-large-finetune-colab.ipynb
+    python dev_scripts/build_fire_large_colab_nb.py
+        # writes notebooks/fire-large-finetune-colab.ipynb
+    python dev_scripts/build_fire_large_colab_nb.py --out <dir>/fire-large-finetune-colab.ipynb
+        # write it anywhere (e.g. beside the dataset export it trains on)
 """
+import argparse
 import json
 import os
 
-OUT = "notebooks/fire-large-finetune-colab.ipynb"
+DEFAULT_OUT = "notebooks/fire-large-finetune-colab.ipynb"
 
 
 def md(source):
@@ -315,7 +319,7 @@ C_NEXT = md(
 )
 
 
-def build():
+def build(out=DEFAULT_OUT):
     cells = [
         C_TITLE,
         C_SETUP,
@@ -340,11 +344,18 @@ def build():
         "nbformat": 4,
         "nbformat_minor": 0,
     }
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "w", encoding="utf-8") as fh:
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
         json.dump(nb, fh, indent=1, ensure_ascii=False)
-    print(f"wrote {OUT} ({len(cells)} cells)")
+    print(f"wrote {out} ({len(cells)} cells)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--out", default=DEFAULT_OUT,
+                    help="notebook output path (default: %(default)s)")
+    build(ap.parse_args().out)
 
 
 if __name__ == "__main__":
-    build()
+    main()

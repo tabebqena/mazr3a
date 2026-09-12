@@ -55,6 +55,14 @@ USAGE
     FV=model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py --out $FV/fireviewer_v1_yolo --zip
 
+    # Colab: after snapshot_download() the parquet sits in data/<split>/ at the root of
+    # --corpus (no blobs/refs/snapshots), which is accepted directly:
+    #   snapshot_download('fireviewer/fire-smoke-detection-corpus-v1', repo_type='dataset',
+    #                     local_dir='/content/fvcache',
+    #                     allow_patterns=['data/train/*', 'data/validation/*'])
+    .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
+        --corpus /content/fvcache --out /content/fv_yolo --splits train,validation
+
     # Quick evaluation sample: 400 imgs from the held-out validation split, proportional
     # across sources (per-image sampling -> exactly 400):
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
@@ -102,7 +110,18 @@ def require_pyarrow():
 
 
 def resolve_snapshot(corpus):
-    """Return the snapshot dir (refs/main revision, else the newest snapshot)."""
+    """Return the dir that holds `data/<split>/*.parquet`.
+
+    Two accepted layouts:
+      * an HF datasets cache (blobs/ + refs/ + snapshots/) -> the refs/main revision
+        (or the newest snapshot that has data/);
+      * a PLAIN directory that already contains `data/<split>/*.parquet` - this is what
+        `huggingface_hub.snapshot_download(repo_id, repo_type='dataset',
+        allow_patterns=['data/**'])` produces, e.g. inside Colab, so the corpus can be
+        prepared on the GPU box without uploading 31 GB.
+    """
+    if os.path.isdir(os.path.join(corpus, "data")):
+        return corpus
     ref = os.path.join(corpus, "refs", "main")
     rev = None
     if os.path.isfile(ref):

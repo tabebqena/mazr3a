@@ -52,8 +52,8 @@ Needs `pyarrow` in the venv used to run it:
 USAGE
 -----
     # Full export (all 102,257 imgs, ~31 GB on disk) + Colab zip:
-    .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
-        --out model-training/fireviewer_v1_yolo --zip
+    FV=model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1
+    .venv/bin/python dev_scripts/prep_fireviewer_dataset.py --out $FV/fireviewer_v1_yolo --zip
 
     # Quick evaluation sample: 400 imgs from the held-out validation split, proportional
     # across sources (per-image sampling -> exactly 400):

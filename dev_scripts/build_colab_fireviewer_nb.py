@@ -87,6 +87,12 @@ C_CONFIG = code([
     "# default; set False for a clean corpus-only attribution run and compare (plan §14).\n",
     "ADD_NEGATIVES = True\n",
     "\n",
+    "# --- disk ---\n",
+    "# Cell 7 deletes the ~25 GB parquet cache before training to free space. Set False if you\n",
+    "# intend several runs in one runtime (Run A / Run B): the cache is then RE-USED instead of\n",
+    "# re-downloaded; ~49 GB stays on disk (free-tier /content is ~78 GB, so it fits).\n",
+    "FREE_CACHE = True\n",
+    "\n",
     "# --- training hyperparameters ---\n",
     "EPOCHS   = 15     # ~61k train images/epoch; raise only if time allows\n",
     "BATCH    = 16     # lower to 8 on a T4 if OOM\n",
@@ -196,9 +202,12 @@ C_VERIFY = code([
     "    print(f'{sp}: images={n} boxes={b} ' +\n",
     "          ', '.join(f'{names[k]}={v}' for k, v in sorted(c.items())))\n",
     "\n",
-    "shutil.rmtree(CACHE, ignore_errors=True)\n",
-    "print('parquet cache removed ->', CACHE, '| disk now:')\n",
-    "!df -h /content | tail -n 1\n",
+    "if FREE_CACHE:\n",
+    "    shutil.rmtree(CACHE, ignore_errors=True)\n",
+    "    free = shutil.disk_usage('/content').free / 1e9\n",
+    "    print(f'parquet cache removed -> {CACHE} | /content free: {free:.1f} GB')\n",
+    "else:\n",
+    "    print(f'FREE_CACHE=False -> keeping {CACHE} (re-used by a second run)')\n",
 ])
 
 C_MODEL = code([

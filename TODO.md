@@ -66,6 +66,15 @@ the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
     rule geometry and the device id (47 crossings that day, 49 person entries;
     2 re-sent alarms). That is the payload **(a)** would bridge; the WS mirror is
     status-only. Listener still running (pid `1520455`, port 50235) and still temporary.
+- **Sweep for left-behind / forgotten running processes.** Several helpers were started
+ "temporarily" over the last weeks and may still be alive: the cam01 event listener
+ (pid `1520455`, port 50235), ad-hoc `docker exec` / `python3` probes,
+ `machine-monitor.py` or `watchdog_baseline.py` runs, SSH tunnels, and stray
+ `ollama` / embedding / indexer processes. Audit the host (`ps`, `ss -tlnp`,
+ `docker ps`, `systemctl`, crontab) plus this dev machine, list anything that should
+ have exited, decide whether it is still needed, then stop/disable it or promote it
+ to a managed service. Also sanity-check for ports held open and CPU/temperature
+ impact of the leftovers.
 
 ## scenereader — cross-camera episode narrator (in progress)
 

@@ -94,6 +94,8 @@ runs/
 # images staged by dev_scripts/find_unlabelled_images.py (fire-model-training/unlabelled-images-dir),
 # the curated negatives (fire-model-training/default-other) and eval artifacts.
 fire-model-training/*
+model-training/*
+
 
 # Firewatch alert clip exports (Frigate recordings around registered fire alerts) -
 # large media artifacts, not source. Host staging dir (/home/dr/frigate/firewatch_clips)

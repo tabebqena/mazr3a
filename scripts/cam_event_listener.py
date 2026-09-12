@@ -15,10 +15,11 @@ WHAT IT DOES
        persists the returned ID, and refreshes it with
            PUT  /LAPI/V1.0/System/Event/Subscription/<ID> {"Duration":<duration>}
        every duration/2 seconds.  On exit it DELETEs the subscription.
-    2. Serves the pushes on 0.0.0.0:<listen-port> as a tiny HTTP server
-       (and a raw-TCP fallback if the camera ever speaks non-HTTP).  Each push
-       is stored verbatim plus one NDJSON line; base64 pictures are decoded to
-       image files.
+    2. Serves the pushes on 0.0.0.0:<listen-port>.  Every connection is logged
+       (first bytes) and its payload is streamed INCREMENTALLY to disk — so a
+       one-shot HTTP POST and a long-lived streaming channel are both handled
+       with bounded memory.  Each push also gets one NDJSON line; base64
+       pictures are decoded to image files.
     3. Optionally ALSO opens the camera WebSocket event-status subscription
        (ws://cam/.../WsSubscription/WsSubscribers, WsCreate Type 8) and appends
        its {"url":...,"data":...} frames to ws_events.ndjson.
@@ -32,8 +33,10 @@ SAFETY — CAMERA
     * Every camera call has a socket timeout.  No configuration is written.
 
 SAFETY — SERVER
-    * Bounded concurrency (--max-conn, default 4), per-connection read timeout,
-      hard request-body cap (--max-body-mb, default 32).
+    * Bounded concurrency (--max-conn, default 16 — the camera may hold several
+      channels open), a per-connection idle timeout (--stream-idle-s, default 20),
+      and hard caps on each connection's stored bytes (--max-body-mb, default 32).
+      Nothing is buffered unbounded: payloads are written to disk as they arrive.
     * Output is size-capped (--max-total-mb, default 512) with oldest-first
       pruning; the log rotates (5 MB x 3).  Stdlib only; writes ONLY under --out.
     * Every worker is a daemon thread; the process exits on SIGINT/SIGTERM.
@@ -78,17 +81,18 @@ LOG = logging.getLogger("cam-events")
 # --- camera LAPI -----------------------------------------------------------
 SUB_PATH = "/LAPI/V1.0/System/Event/Subscription"
 WS_PATH = "/LAPI/V1.0/Channel/0/Event/WsSubscription/WsSubscribers"
-WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 # --- limits ----------------------------------------------------------------
 MAX_HEADER_BYTES = 16 * 1024
 MAX_CAM_RESPONSE = 4 * 1024 * 1024
 READ_TIMEOUT_S = 15.0
+PARSE_KEEP_BYTES = 4 * 1024 * 1024     # body prefix kept in RAM for JSON parsing
 MIN_DURATION, MAX_DURATION = 30, 3600
 
 JPEG_MAGIC = b"\xff\xd8\xff"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _B64_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
+_HTTP_LINE_RE = re.compile(rb"^[A-Z]{3,7} \S+ HTTP/1\.[01]\r\n")
 
 
 def utcnow() -> datetime:
@@ -101,6 +105,13 @@ def ts_compact() -> str:
 
 def md5(s: str) -> str:
     return hashlib.md5(s.encode()).hexdigest()
+
+
+def brief(data: bytes, n: int = 200) -> str:
+    """A compact, log-safe view of the first bytes of a connection."""
+    line = data.split(b"\r\n", 1)[0][:80]
+    return (f"first-line={line!r} hex={data[:16].hex()}" if line
+            else f"hex={data[:16].hex()} (n={len(data)})")
 
 
 def _parse_digest(text: str) -> dict:
@@ -245,6 +256,17 @@ class EventStore:
         self.events = 0
         self.ws_frames = 0
 
+    # -- paths --------------------------------------------------------------
+    def raw_path(self, tag: str) -> str:
+        day = utcnow().strftime("%Y%m%d")
+        d = os.path.join(self.raw_dir, day)
+        os.makedirs(d, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", tag.strip("/"))[:40] or "push"
+        return os.path.join(d, f"{ts_compact()}_{safe}.bin")
+
+    def rel(self, path: str) -> str:
+        return os.path.relpath(path, self.root)
+
     # -- pruning ------------------------------------------------------------
     def _prune_locked(self) -> int:
         files, total = [], 0
@@ -298,15 +320,6 @@ class EventStore:
     def append_ws(self, obj: dict) -> None:
         self._append(self.ws_path, obj)
         self.ws_frames += 1
-
-    def save_raw(self, body: bytes, tag: str) -> str:
-        day = utcnow().strftime("%Y%m%d")
-        d = os.path.join(self.raw_dir, day)
-        os.makedirs(d, exist_ok=True)
-        p = os.path.join(d, f"{ts_compact()}_{tag}.bin")
-        with open(p, "wb") as fh:
-            fh.write(body)
-        return os.path.relpath(p, self.root)
 
     def save_image(self, data: bytes, fmt: str) -> str:
         day = utcnow().strftime("%Y%m%d")
@@ -366,14 +379,16 @@ def summarize(obj, limit: int = 16) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Receiver — tiny HTTP server (with raw-TCP fallback), bounded & timed out.
+# Receiver — logs every connection, streams each payload to disk (bounded RAM).
 # ---------------------------------------------------------------------------
 class Receiver(threading.Thread):
     def __init__(self, store: EventStore, bind_ip: str, port: int,
-                 max_body: int, max_conn: int, stop: threading.Event):
+                 max_body: int, max_conn: int, stream_idle: float,
+                 stop: threading.Event):
         super().__init__(name="receiver", daemon=True)
         self.store, self.bind_ip, self.port = store, bind_ip, port
         self.max_body, self.stop = max_body, stop
+        self.stream_idle = stream_idle
         self._sem = threading.BoundedSemaphore(max_conn)
         self._sock: socket.socket | None = None
         self.pushes = 0
@@ -382,7 +397,7 @@ class Receiver(threading.Thread):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((self.bind_ip, self.port))
-        s.listen(16)
+        s.listen(32)
         s.settimeout(1.0)
         self._sock = s
         LOG.info("receiver listening on %s:%d", self.bind_ip or "0.0.0.0", self.port)
@@ -394,7 +409,8 @@ class Receiver(threading.Thread):
             except OSError:
                 break
             if not self._sem.acquire(blocking=False):
-                LOG.warning("refused connection from %s (max concurrency)", addr[0])
+                LOG.warning("refused connection from %s (max concurrency)",
+                            addr[0])
                 try:
                     conn.close()
                 except OSError:
@@ -410,15 +426,23 @@ class Receiver(threading.Thread):
 
     # -- one connection -----------------------------------------------------
     def _handle(self, conn: socket.socket, addr) -> None:
+        peer = f"{addr[0]}:{addr[1]}"
+        t0 = time.monotonic()
         try:
-            conn.settimeout(READ_TIMEOUT_S)
-            head = conn.recv(MAX_HEADER_BYTES)
-            if not head:
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        try:
+            conn.settimeout(self.stream_idle)
+            first = conn.recv(65536)
+            if not first:
+                LOG.info("conn %s closed with no data", peer)
                 return
-            if re.match(rb"^[A-Z]{3,7} \S+ HTTP/1\.[01]\r\n", head):
-                self._handle_http(conn, addr, head)
+            LOG.info("conn %s opened: %s", peer, brief(first))
+            if _HTTP_LINE_RE.match(first):
+                self._handle_http(conn, peer, first)
             else:
-                self._handle_raw(conn, addr, head)
+                self._handle_stream(conn, peer, first)
         except Exception as exc:  # noqa: BLE001 - a push must never kill the loop
             LOG.warning("receiver error from %s: %s", addr[0], exc)
         finally:
@@ -427,16 +451,19 @@ class Receiver(threading.Thread):
             except OSError:
                 pass
             self._sem.release()
+            LOG.info("conn %s closed (%.1fs)", peer, time.monotonic() - t0)
 
-    def _handle_http(self, conn, addr, buf: bytes) -> None:
+    # -- HTTP request -------------------------------------------------------
+    def _handle_http(self, conn, peer: str, buf: bytes) -> None:
         end = buf.find(b"\r\n\r\n")
         while end < 0 and len(buf) < MAX_HEADER_BYTES:
             more = conn.recv(4096)
             if not more:
-                return
+                break
             buf += more
             end = buf.find(b"\r\n\r\n")
         if end < 0:
+            LOG.warning("conn %s: HTTP head incomplete (%d bytes)", peer, len(buf))
             return
         head, rest = buf[:end], buf[end + 4:]
         lines = head.split(b"\r\n")
@@ -449,52 +476,169 @@ class Receiver(threading.Thread):
                 headers[k.decode("latin1").strip().lower()] = \
                     v.decode("latin1").strip().lower()
 
-        body = b""
+        if headers.get("expect", "").startswith("100-"):
+            try:
+                conn.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+            except OSError:
+                return
+
         try:
             if "content-length" in headers:
-                need = int(headers["content-length"])
-                if need < 0 or need > self.max_body:
-                    raise ValueError(f"body too large ({need})")
-                while len(rest) < need:
-                    more = conn.recv(min(65536, need - len(rest)))
-                    if not more:
-                        break
-                    rest += more
-                body = rest[:need]
+                need = int(headers["content-length"] or "0")
+                path_raw, size, keep, sha = self._stream_exact(conn, rest, need,
+                                                               peer, path)
+                complete = size >= need
             elif "chunked" in headers.get("transfer-encoding", ""):
-                body = self._read_chunked(conn, rest)
+                path_raw, size, keep, sha = self._stream_chunked(conn, rest, peer)
+                complete = False
             else:
-                body = rest
-                while len(body) < self.max_body:
-                    more = conn.recv(65536)
-                    if not more:
-                        break
-                    body += more
+                path_raw, size, keep, sha = self._stream_raw(conn, rest, peer)
+                complete = False
         except Exception as exc:  # noqa: BLE001
-            LOG.warning("bad push from %s (%s %s): %s", addr[0], method, path, exc)
+            LOG.warning("bad push from %s (%s %s): %s", peer, method, path, exc)
             self._respond(conn, path, 400)
             return
 
+        self._emit(peer, method, path, path_raw, size, keep, sha,
+                   complete=complete)
+        self._respond(conn, path, 200)
+
+    # -- raw / streaming connection ----------------------------------------
+    def _handle_stream(self, conn, peer: str, first: bytes) -> None:
+        path_raw, size, keep, sha = self._stream_raw(conn, first, peer)
+        self._emit(peer, "RAW", "", path_raw, size, keep, sha, complete=False)
+
+    # -- stream helpers (bounded RAM: write through to disk) ---------------
+    def _stream_exact(self, conn, initial: bytes, need: int, peer: str,
+                      tag: str):
+        p = self.store.raw_path(tag)
+        keep = bytearray()
+        h = hashlib.sha256()
+        written = 0
+        with open(p, "wb") as fh:
+            if initial:
+                take = initial[:max(need, 0)]
+                fh.write(take)
+                h.update(take)
+                written += len(take)
+                keep += take[:PARSE_KEEP_BYTES]
+            while written < need and written < self.max_body:
+                try:
+                    more = conn.recv(min(65536, need - written))
+                except socket.timeout:
+                    LOG.warning("conn %s: body idle at %d/%d bytes",
+                                peer, written, need)
+                    break
+                if not more:
+                    break
+                fh.write(more)
+                h.update(more)
+                written += len(more)
+                if len(keep) < PARSE_KEEP_BYTES:
+                    keep += more[:PARSE_KEEP_BYTES - len(keep)]
+        return p, written, bytes(keep), h.hexdigest()
+
+    def _stream_chunked(self, conn, initial: bytes, peer: str):
+        p = self.store.raw_path("chunked")
+        keep = bytearray()
+        h = hashlib.sha256()
+        written = 0
+        buf = bytearray(initial)
+
+        def readline() -> bytes:
+            nonlocal buf
+            while b"\r\n" not in buf:
+                d = conn.recv(4096)
+                if not d:
+                    raise IOError("eof in chunk header")
+                buf += d
+            line, _, rest = buf.partition(b"\r\n")
+            buf.clear()
+            buf += rest
+            return bytes(line)
+
+        with open(p, "wb") as fh:
+            while written < self.max_body:
+                try:
+                    line = readline()
+                except socket.timeout:
+                    LOG.warning("conn %s: chunk header idle at %d bytes",
+                                peer, written)
+                    break
+                size = int(line.split(b";")[0] or b"0", 16)
+                if size == 0:
+                    try:
+                        readline()
+                    except (socket.timeout, IOError, OSError):
+                        pass
+                    break
+                while len(buf) < size + 2:
+                    try:
+                        d = conn.recv(min(65536, size + 2 - len(buf)))
+                    except socket.timeout:
+                        LOG.warning("conn %s: chunk body idle at %d bytes",
+                                    peer, written)
+                        break
+                    if not d:
+                        break
+                    buf += d
+                if len(buf) < size:
+                    break
+                chunk = bytes(buf[:size])
+                buf = buf[size + 2:]
+                fh.write(chunk)
+                h.update(chunk)
+                written += len(chunk)
+                if len(keep) < PARSE_KEEP_BYTES:
+                    keep += chunk[:PARSE_KEEP_BYTES - len(keep)]
+        return p, written, bytes(keep), h.hexdigest()
+
+    def _stream_raw(self, conn, initial: bytes, peer: str):
+        p = self.store.raw_path("stream")
+        keep = bytearray()
+        h = hashlib.sha256()
+        written = 0
+        with open(p, "wb") as fh:
+            for chunk in (initial,):
+                if chunk:
+                    fh.write(chunk)
+                    h.update(chunk)
+                    written += len(chunk)
+                    keep += chunk[:PARSE_KEEP_BYTES]
+            while written < self.max_body:
+                try:
+                    more = conn.recv(65536)
+                except socket.timeout:
+                    LOG.info("conn %s: stream idle at %d bytes", peer, written)
+                    break
+                if not more:
+                    break
+                fh.write(more)
+                h.update(more)
+                written += len(more)
+                if len(keep) < PARSE_KEEP_BYTES:
+                    keep += more[:PARSE_KEEP_BYTES - len(keep)]
+        return p, written, bytes(keep), h.hexdigest()
+
+    # -- record + respond ---------------------------------------------------
+    def _emit(self, peer: str, method: str, path: str, raw_path: str,
+              size: int, keep: bytes, sha: str, complete: bool) -> None:
         self.pushes += 1
         self.store.prune()
-        record = {
+        record: dict = {
             "ts": utcnow().isoformat(),
-            "client": f"{addr[0]}:{addr[1]}",
+            "client": peer,
             "method": method,
             "path": path,
-            "bytes": len(body),
-            "sha256": hashlib.sha256(body).hexdigest()[:16] if body else None,
+            "bytes": size,
+            "sha256": sha[:16] if size else None,
+            "complete": complete,
+            "raw": self.store.rel(raw_path),
         }
-        if body:
-            tag = re.sub(r"[^A-Za-z0-9]+", "_", path.strip("/"))[:40] or "push"
-            try:
-                record["raw"] = self.store.save_raw(body, tag)
-            except OSError as exc:
-                LOG.warning("save raw failed: %s", exc)
         obj = None
-        if body:
+        if keep:
             try:
-                obj = json.loads(body)
+                obj = json.loads(keep)
             except (ValueError, TypeError):
                 obj = None
         if isinstance(obj, (dict, list)):
@@ -511,65 +655,9 @@ class Receiver(threading.Thread):
                     except OSError as exc:
                         LOG.warning("save image failed: %s", exc)
         self.store.append_event(record)
-        LOG.info("push #%d %s %s (%d bytes) from %s",
-                 self.pushes, method, path, len(body), addr[0])
-        self._respond(conn, path, 200)
-
-    def _read_chunked(self, conn, buf: bytes) -> bytes:
-        body = bytearray()
-
-        def readline() -> bytes:
-            nonlocal buf
-            while b"\r\n" not in buf:
-                more = conn.recv(4096)
-                if not more:
-                    raise IOError("eof in chunk header")
-                buf += more
-            line, _, buf = buf.partition(b"\r\n")
-            return line
-
-        while True:
-            size = int(readline().split(b";")[0] or b"0", 16)
-            if size == 0:
-                readline()
-                break
-            while len(buf) < size + 2:
-                more = conn.recv(4096)
-                if not more:
-                    raise IOError("eof in chunk body")
-                buf += more
-            body += buf[:size]
-            buf = buf[size + 2:]
-            if len(body) > self.max_body:
-                raise ValueError("chunked body too large")
-        return bytes(body)
-
-    def _handle_raw(self, conn, addr, first: bytes) -> None:
-        body = bytearray(first)
-        while len(body) < self.max_body:
-            try:
-                more = conn.recv(65536)
-            except socket.timeout:
-                break
-            if not more:
-                break
-            body += more
-        self.pushes += 1
-        self.store.prune()
-        record = {
-            "ts": utcnow().isoformat(),
-            "client": f"{addr[0]}:{addr[1]}",
-            "method": "RAW",
-            "path": "",
-            "bytes": len(body),
-            "sha256": hashlib.sha256(bytes(body)).hexdigest()[:16],
-        }
-        try:
-            record["raw"] = self.store.save_raw(bytes(body), "raw")
-        except OSError:
-            pass
-        self.store.append_event(record)
-        LOG.info("raw push #%d (%d bytes) from %s", self.pushes, len(body), addr[0])
+        LOG.info("push #%d %s %s (%d bytes, complete=%s) from %s",
+                 self.pushes, method, path or "(raw)", size, complete,
+                 peer.split(":")[0])
 
     @staticmethod
     def _respond(conn, path: str, code: int = 200) -> None:
@@ -598,13 +686,12 @@ class Receiver(threading.Thread):
 # ---------------------------------------------------------------------------
 class SubscriptionManager(threading.Thread):
     def __init__(self, cam: CameraHTTP, advertise_ip: str, listen_port: int,
-                 duration: int, store: EventStore, state_path: str,
-                 stop: threading.Event):
+                 duration: int, state_path: str, stop: threading.Event):
         super().__init__(name="subscription", daemon=True)
         self.cam = cam
         self.advertise_ip, self.listen_port = advertise_ip, listen_port
         self.duration = max(MIN_DURATION, min(MAX_DURATION, duration))
-        self.store, self.state_path, self.stop = store, state_path, stop
+        self.state_path, self.stop = state_path, stop
         self.sub_id: int | None = None
         self.fail = 0
 
@@ -915,7 +1002,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"subscription seconds, clamped [{MIN_DURATION},{MAX_DURATION}]")
     p.add_argument("--out", default=None,
                    help="output dir (default: <repo>/media/cam_events)")
-    p.add_argument("--max-conn", type=int, default=4)
+    p.add_argument("--max-conn", type=int, default=16,
+                   help="max concurrent camera connections (default 16)")
+    p.add_argument("--stream-idle-s", type=float, default=20.0,
+                   help="close a connection after this many idle seconds")
     p.add_argument("--max-body-mb", type=int, default=32)
     p.add_argument("--max-total-mb", type=int, default=512)
     p.add_argument("--no-ws", action="store_true",
@@ -961,6 +1051,7 @@ def main(argv=None) -> int:
             "advertise_ip": advertise_ip, "listen": f"{args.listen_ip}:{args.listen_port}",
             "duration": max(MIN_DURATION, min(MAX_DURATION, args.duration)),
             "out": out_dir, "env_file": env_path,
+            "max_conn": args.max_conn, "stream_idle_s": args.stream_idle_s,
             "ws": not args.no_ws,
         }, indent=2))
         return 0
@@ -975,9 +1066,11 @@ def main(argv=None) -> int:
         return 2
 
     setup_logging(out_dir)
-    LOG.info("starting: cam=%s:%d advertise=%s:%d duration=%ds out=%s ws=%s",
+    LOG.info("starting: cam=%s:%d advertise=%s:%d duration=%ds out=%s ws=%s "
+             "max_conn=%d stream_idle=%.0fs",
              args.cam_ip, args.cam_port, advertise_ip, args.listen_port,
-             args.duration, out_dir, not args.no_ws)
+             args.duration, out_dir, not args.no_ws, args.max_conn,
+             args.stream_idle_s)
 
     store = EventStore(out_dir, args.max_body_mb, args.max_total_mb)
     stop = threading.Event()
@@ -992,9 +1085,10 @@ def main(argv=None) -> int:
 
     state_path = os.path.join(out_dir, "subscription.json")
     receiver = Receiver(store, args.listen_ip, args.listen_port,
-                        args.max_body_mb * 1024 * 1024, args.max_conn, stop)
+                        args.max_body_mb * 1024 * 1024, args.max_conn,
+                        args.stream_idle_s, stop)
     manager = SubscriptionManager(cam, advertise_ip, args.listen_port,
-                                  args.duration, store, state_path, stop)
+                                  args.duration, state_path, stop)
     ws = None if args.no_ws else WSStatusClient(
         args.cam_ip, args.cam_port, user, password, args.ws_type, store, stop)
 

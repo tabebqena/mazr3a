@@ -5,14 +5,15 @@ WHY
 ---
 `model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1/` is a *HuggingFace
 datasets cache* (blobs/ + snapshots/ + refs/), NOT an image folder: the JPEGs live inside
-Parquet shards (`data/{train,validation,test}/*.parquet`) and the boxes live in the
-per-source JSONL manifests (`manifests/<source>/*.jsonl`). Ultralytics cannot train on
-that layout, so this tool streams the shards and writes a normal YOLO dataset:
+Parquet shards (`data/{train,validation,test}/*.parquet`) and the boxes live with them.
+Ultralytics cannot train on that layout, so this tool streams the shards and writes a normal
+YOLO dataset:
 
     <out>/train/{images,labels}/      <- from the corpus "train" split
     <out>/val/{images,labels}/        <- from the corpus "validation" split
     <out>/test/{images,labels}/       <- from the corpus "test" split (held out)
     <out>/data.yaml                   <- nc=3, names fire/other/smoke
+    <out>/manifest.csv                <- per-image provenance (stem, source, license, GT)
     <out>/prep_report.txt             <- per-split/per-source/class counts + licenses
     <out>_colab.zip                   <- optional single archive for Colab (--zip)
 
@@ -37,8 +38,11 @@ SPLIT / LEAKAGE POLICY
 The corpus ships its own leak-free `split_group` (a clip/sequence/event id). We copy the
 splits AS-IS: train -> train, validation -> val, test -> test. `--limit N` samples WHOLE
 `split_group`s (never partial), so frames of one clip never straddle a split boundary.
-The `test` split is exported but must stay held out (register it as a new suite, do not
-train on it).
+
+`--sample-mode image` samples individual rows (sha256) instead - use it ONLY to build an
+EVALUATION sample (it can split one clip across the sample, which is irrelevant when you
+are not training and the source split is already held out). The default `group` mode is the
+one you must use for any TRAINING set.
 
 DEPENDENCY
 ----------
@@ -51,30 +55,37 @@ USAGE
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
         --out model-training/fireviewer_v1_yolo --zip
 
-    # Quick smoke test: 300 imgs per split, train+val only:
+    # Quick evaluation sample: 400 imgs from the held-out validation split, proportional
+    # across sources (per-image sampling -> exactly 400):
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
-        --out /tmp/fv_smoke --limit 300 --splits train,validation
+        --out model-training/fireviewer_assess --splits validation \
+        --limit 400 --sample-mode image
+    .venv/bin/python dev_scripts/test_fire_model.py models/fire/best.pt \
+        model-training/fireviewer_assess/data.yaml --conf 0.5
 
-    # A smaller, fire-balanced training pool: cap each split at 8,000 imgs, drop GPL-3.0
+    # A smaller, fire-balanced TRAINING pool: cap each split at 8,000 imgs, drop GPL-3.0
     # (alarmod), keep only the surveillance/smoke-heavy sources:
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
         --out model-training/fireviewer_subset --limit 8000 \
         --exclude-sources alarmod
 """
 import argparse
+import csv
 import glob
 import json
 import os
 import random
 import sys
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter
 
 NAMES = ["fire", "other", "smoke"]
 CLASS_BY_NAME = {"flame_visible": 0, "smoke_visible": 2}
 # corpus split dir -> output split dir (YOLO key is 'val', not 'validation')
 SPLIT_MAP = {"train": "train", "validation": "val", "test": "test"}
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+MANIFEST_COLS = ["split", "stem", "source_name", "license", "width", "height",
+                 "negative", "n_fire", "n_smoke", "n_boxes", "split_group"]
 
 
 def die(msg):
@@ -115,7 +126,15 @@ def split_parquet(snap, corpus_split):
     return sorted(glob.glob(os.path.join(d, "*.parquet")))
 
 
-def choose_groups(pq, files, limit, seed, include=None, exclude=None):
+def passes_source_filter(src, include, exclude):
+    if include and src not in include:
+        return False
+    if exclude and src in exclude:
+        return False
+    return True
+
+
+def choose_groups(pq, files, limit, seed, include, exclude):
     """Pick whole split_group ids until >= limit rows are covered. None => keep all.
 
     Source filtering happens BEFORE sampling, so `--sources pyro-sdis --limit N` selects
@@ -128,14 +147,10 @@ def choose_groups(pq, files, limit, seed, include=None, exclude=None):
     sizes = Counter()
     for f in files:
         tbl = pq.ParquetFile(f).read(columns=["split_group", "source_name"])
-        groups = tbl.column("split_group").to_pylist()
-        srcs = tbl.column("source_name").to_pylist()
-        for g, src in zip(groups, srcs):
-            if include and src not in include:
-                continue
-            if exclude and src in exclude:
-                continue
-            sizes[g] += 1
+        for g, src in zip(tbl.column("split_group").to_pylist(),
+                          tbl.column("source_name").to_pylist()):
+            if passes_source_filter(src, include, exclude):
+                sizes[g] += 1
     groups = sorted(sizes)
     random.Random(seed).shuffle(groups)
     keep, n = set(), 0
@@ -145,6 +160,26 @@ def choose_groups(pq, files, limit, seed, include=None, exclude=None):
         keep.add(g)
         n += sizes[g]
     return keep
+
+
+def choose_images(pq, files, limit, seed, include, exclude):
+    """Pick `limit` individual sha256 rows (per-image sampling) -> None => keep all.
+
+    For EVALUATION samples only (see the module docstring): ignores split_group, so a
+    clip can be split across the sample. Never use for a training set.
+    """
+    if not limit:
+        return None
+    stems = []
+    for f in files:
+        tbl = pq.ParquetFile(f).read(columns=["sha256", "source_name"])
+        for stem, src in zip(tbl.column("sha256").to_pylist(),
+                             tbl.column("source_name").to_pylist()):
+            if stem and passes_source_filter(src, include, exclude):
+                stems.append(stem)
+    if len(stems) <= limit:
+        return set(stems)
+    return set(random.Random(seed).sample(stems, limit))
 
 
 def norm_boxes(ann_json, width, height):
@@ -187,28 +222,32 @@ def norm_boxes(ann_json, width, height):
     return rows
 
 
-def write_split(pq, files, split_name, out_split, limit, seed, include, exclude, stats):
+def write_split(pq, files, split_name, out_split, limit, seed, sample_mode,
+                include, exclude, stats, mf_rows):
     img_dir = os.path.join(out_split, "images")
     lbl_dir = os.path.join(out_split, "labels")
     os.makedirs(img_dir, exist_ok=True)
     os.makedirs(lbl_dir, exist_ok=True)
-    keep = choose_groups(pq, files, limit, seed, include, exclude)
+    if sample_mode == "image":
+        keep_stems = choose_images(pq, files, limit, seed, include, exclude)
+        keep_groups = None
+    else:
+        keep_stems = None
+        keep_groups = choose_groups(pq, files, limit, seed, include, exclude)
     n_img = n_neg = 0
     boxes_here = Counter()
-    int_keys = sys.intern("split_group")
     for f in files:
         pf = pq.ParquetFile(f)
         cols = ["image", "sha256", "width", "height", "negative",
                 "annotations_json", "source_name", "split_group", "license"]
         for batch in pf.iter_batches(batch_size=256, columns=cols):
             for row in batch.to_pylist():
-                key = row.get(int_keys)
-                if keep is not None and key not in keep:
+                if keep_groups is not None and row.get("split_group") not in keep_groups:
+                    continue
+                if keep_stems is not None and row.get("sha256") not in keep_stems:
                     continue
                 src = row.get("source_name")
-                if include and src not in include:
-                    continue
-                if exclude and src in exclude:
+                if not passes_source_filter(src, include, exclude):
                     continue
                 blob = row.get("image") or {}
                 b = blob.get("bytes") if isinstance(blob, dict) else None
@@ -220,6 +259,8 @@ def write_split(pq, files, split_name, out_split, limit, seed, include, exclude,
                 with open(os.path.join(img_dir, stem + ".jpg"), "wb") as fh:
                     fh.write(b)
                 boxes = norm_boxes(row.get("annotations_json"), row.get("width"), row.get("height"))
+                n_fire = sum(1 for c, *_ in boxes if c == 0)
+                n_smoke = sum(1 for c, *_ in boxes if c == 2)
                 if boxes:
                     with open(os.path.join(lbl_dir, stem + ".txt"), "w", encoding="utf-8") as fh:
                         for c, cx, cy, w, h in boxes:
@@ -232,13 +273,17 @@ def write_split(pq, files, split_name, out_split, limit, seed, include, exclude,
                 n_img += 1
                 stats["sources"][src] += 1
                 stats["licenses"][row.get("license") or "-"] += 1
+                mf_rows.append([split_name, stem, src, row.get("license") or "-",
+                                row.get("width"), row.get("height"),
+                                int(bool(row.get("negative"))), n_fire, n_smoke,
+                                len(boxes), row.get("split_group")])
     stats["per_split"][split_name] = (n_img, n_neg, dict(boxes_here))
     print("  [%s] images=%d  background=%d  boxes=%s"
           % (split_name, n_img, n_neg,
              ", ".join("%s=%d" % (k, v) for k, v in sorted(boxes_here.items())) or "-"))
 
 
-def write_data_yaml(out, splits, sources=None, limit=0, seed=0):
+def write_data_yaml(out, splits, sources=None, limit=0, seed=0, sample_mode="group"):
     path = os.path.join(out, "data.yaml")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("# FireViewer Fire and Smoke Detection Corpus v1 -> YOLO export\n")
@@ -246,12 +291,20 @@ def write_data_yaml(out, splits, sources=None, limit=0, seed=0):
         if sources:
             fh.write("# sources included: %s\n" % ", ".join(sorted(sources)))
         if limit:
-            fh.write("# per-split cap %d imgs (WHOLE split_groups, seed %d)\n" % (limit, seed))
+            fh.write("# per-split cap %d imgs (whole split_groups, seed %d)\n" % (limit, seed)
+                     if sample_mode == "group" else
+                     "# per-split cap %d imgs (per-image sample, seed %d)\n" % (limit, seed))
         fh.write("# class contract: fire=0 / other=1 / smoke=2 (matches models/fire/best.pt)\n")
         fh.write("path: %s\n" % out.replace("\\", "/"))
-        for sp in ("train", "val", "test"):
-            if sp in splits:
-                fh.write("%s: %s/images\n" % (sp, sp))
+        present = [sp for sp in ("train", "val", "test") if sp in splits]
+        if not present:
+            present = ["val"]
+        # ultralytics check_det_dataset() REQUIRES both 'train' and 'val' keys even when
+        # only one split was exported; point the missing ones at the split we do have.
+        fh.write("train: %s/images\n" % ("train" if "train" in present else present[0]))
+        fh.write("val: %s/images\n" % ("val" if "val" in present else present[0]))
+        if "test" in present:
+            fh.write("test: test/images\n")
         fh.write("nc: %d\n" % len(NAMES))
         fh.write("names:\n")
         for i, n in enumerate(NAMES):
@@ -269,9 +322,13 @@ def main():
     ap.add_argument("--splits", default="train,validation,test",
                     help="comma list of corpus splits to export (train,validation,test)")
     ap.add_argument("--limit", type=int, default=0,
-                    help="soft max images PER SPLIT (0=all); samples WHOLE split_groups "
-                         "so a split of a few huge sequential clips can overshoot")
-    ap.add_argument("--seed", type=int, default=0, help="seed for --limit group sampling")
+                    help="soft max images PER SPLIT (0=all). In group mode whole split_groups "
+                         "are kept, so a split of a few huge sequential clips can overshoot; "
+                         "in image mode exactly the first --limit matching rows are taken")
+    ap.add_argument("--sample-mode", choices=("group", "image"), default="group",
+                    help="group=whole split_groups (TRAINING-safe, default); "
+                         "image=random individual rows (EVALUATION samples only)")
+    ap.add_argument("--seed", type=int, default=0, help="seed for --limit sampling")
     ap.add_argument("--sources", default=None,
                     help="comma list of source_name to INCLUDE (default: all)")
     ap.add_argument("--exclude-sources", default=None,
@@ -304,13 +361,15 @@ def main():
     print("snapshot:", snap)
     print("out     :", out)
     if args.limit:
-        print("limit   : %d images/split (whole split_groups, seed %d)" % (args.limit, args.seed))
-    if exclude or include:
+        print("limit   : %d images/split (%s sampling, seed %d)"
+              % (args.limit, args.sample_mode, args.seed))
+    if include or exclude:
         print("sources : include=%s exclude=%s" % (sorted(include) if include else "all",
-                                                    sorted(exclude) if exclude else "-"))
+                                                   sorted(exclude) if exclude else "-"))
 
     stats = {"boxes": Counter(), "sources": Counter(), "licenses": Counter(),
              "per_split": {}, "skipped_no_image": 0}
+    mf_rows = []
     done = []
     for corpus_split in want:
         spl = SPLIT_MAP[corpus_split]
@@ -320,10 +379,16 @@ def main():
             continue
         print("  [%s] %d parquet shard(s) <- data/%s" % (spl, len(files), corpus_split))
         write_split(pq, files, spl, os.path.join(out, spl), args.limit, args.seed,
-                    include, exclude, stats)
+                    args.sample_mode, include, exclude, stats, mf_rows)
         done.append(spl)
 
-    yaml_path = write_data_yaml(out, set(done), include, args.limit, args.seed)
+    yaml_path = write_data_yaml(out, set(done), include, args.limit, args.seed, args.sample_mode)
+
+    mf_path = os.path.join(out, "manifest.csv")
+    with open(mf_path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(MANIFEST_COLS)
+        w.writerows(mf_rows)
 
     rep = []
     rep.append("FireViewer corpus v1 -> YOLO export")
@@ -331,7 +396,7 @@ def main():
     rep.append("corpus   : %s" % corpus)
     rep.append("snapshot : %s" % snap)
     rep.append("splits   : %s" % ", ".join(done))
-    rep.append("limit    : %s" % (args.limit or "none (all)"))
+    rep.append("limit    : %s (%s sampling)" % (args.limit or "none (all)", args.sample_mode))
     rep.append("")
     total = 0
     for spl in ("train", "val", "test"):
@@ -351,7 +416,8 @@ def main():
     if stats["skipped_no_image"]:
         rep.append("skipped (no image bytes): %d" % stats["skipped_no_image"])
     rep.append("")
-    rep.append("data.yaml -> %s" % yaml_path)
+    rep.append("data.yaml   -> %s" % yaml_path)
+    rep.append("manifest.csv-> %s" % mf_path)
     rep.append("HELD OUT: the 'test' split must NOT be trained on - register it as a new "
                "eval suite (dev_scripts/compare_fire_models.py SUITES).")
     text = "\n".join(rep)

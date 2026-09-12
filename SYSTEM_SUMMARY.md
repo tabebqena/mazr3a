@@ -13,7 +13,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v38` |
+| Summary version | `v39` |
 | Last updated | 2026-09-12 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.5` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
@@ -252,7 +252,7 @@ a maximum, so a container using less is unaffected. Host: 8 cores, ~7.5 GiB.
 | [`container_logs.py`](scripts/container_logs.py) | `logs` service | Read-only Docker-logs sidecar API |
 | [`diagnose_detection.py`](scripts/diagnose_detection.py) | manual (host) | Read-only detection diagnosis from `/api/stats|events|config` + `frigate.log` |
 | [`verify_remote.py`](scripts/verify_remote.py) | post-deploy / manual | Confirms effective `objects.track` per camera from `/api/config` |
-| [`cam_event_listener.py`](scripts/cam_event_listener.py) | manual (host, **temporary** — cam01 testing) | cam01 (UNV) alarm/event listener. Creates **ONE** HTTP `System/Event/Subscription` and keeps it alive (persisted ID, DELETE on exit, bounded backoff), receives the pushed alarm data on a LAN port and stores it (verbatim raw + `events.ndjson` + decoded base64 pictures), and — unless `--no-ws` — mirrors the WebSocket status subscription (`WsSubscription`, `WsCreate Type 8`) into `ws_events.ndjson`. Output is size-capped; bounded concurrency + per-socket timeouts; **stdlib only**. Run/stop recipe in the file docstring; see [`plans/cam01-websocket-exploration.md`](plans/cam01-websocket-exploration.md) |
+| [`cam_event_listener.py`](scripts/cam_event_listener.py) | manual (host, **temporary** — cam01 testing; **stopped + data cleaned 2026-09-12**) | cam01 (UNV) alarm/event listener. Creates **ONE** HTTP `System/Event/Subscription` and keeps it alive (persisted ID, DELETE on exit, bounded backoff), receives the pushed alarm data on a LAN port and stores it (verbatim raw + `events.ndjson` + decoded base64 pictures), and — unless `--no-ws` — mirrors the WebSocket status subscription (`WsSubscription`, `WsCreate Type 8`) into `ws_events.ndjson`. Output is size-capped; bounded concurrency + per-socket timeouts; **stdlib only**. It also captures the camera's `System/Event/Notification/Structure` pushes: per **person line crossing** a 1920×1080 JPEG + person box (`0..10000` normalized) + the crossing-rule geometry (output review, counts, schema: §14 of [`plans/cam01-websocket-exploration.md`](plans/cam01-websocket-exploration.md); follow-up in [`TODO.md`](TODO.md)). Run/stop recipe in the file docstring |
 | [`crontab.sample`](scripts/crontab.sample) | template | `dr` crontab lines |
 | [`crontab.root.sample`](scripts/crontab.root.sample) | template | root crontab line (heartbeat) |
 
@@ -397,7 +397,7 @@ All persistent data lives under the deploy root; a **single cleaner** (root cron
 | `1883` | mqtt | MQTT broker (LAN) |
 | `8080` | portal | Internal host port — fronted by the Cloudflare Tunnel |
 | `8090` | logs | Internal compose network only (not published) |
-| `50235` | host (`cam_event_listener.py`, **temporary**) | LAN only — receiver for cam01 alarm pushes (unpublished; **not** a compose service) |
+| `50235` | host (`cam_event_listener.py`, **temporary**; **free since 2026-09-12** — listener stopped, capture data cleaned) | LAN only — receiver for cam01 alarm pushes (unpublished; **not** a compose service) |
 
 **Public access:** the whole host sits behind a **Cloudflare Tunnel + Access** on
 `live.mazr3a.garden`; the tunnel maps the portal root → `host:8080` under the

@@ -33,6 +33,17 @@ and inference_speed stays under the ~100 ms frame budget. If it does not, revert
 the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
 -->
 
+- **cam01 line-crossing alarm WITH image — revise & decide.** Per **person line crossing**
+  the camera publishes a 396 B `LineDetectorCrossed` alarm **and** a separate
+  `System/Event/Notification/Structure` body (~303–351 KB) carrying a **1920×1080 JPEG**,
+  the person box (`Position`, `0..10000` normalized), the crossing rule geometry
+  (`RuleInfo`: `RuleType 1`, 2 endpoints) and the device id — captured live on 2026-09-12
+  (47 crossings / 49 person entries; evidence + schema in
+  [`plans/cam01-websocket-exploration.md`](plans/cam01-websocket-exploration.md) §14).
+  **Revise** it: is it worth consuming (bridge to MQTT `frigate/cameras/cam01/events` /
+  the portal as a second, camera-side person signal, e.g. cross-check for firewatch
+  false positives), and how — per-crossing image storage, retention, dedup against
+  Frigate events? Needs its own plan before any implementation.
 - **cam01 signal-surface exploration — revisit & harvest.** Two completed recon docs hold
   capabilities we have not used: [`plans/cam01-websocket-exploration.md`](plans/cam01-websocket-exploration.md)
   (camera WS `WsSubscription` status/snapshot push, the `UpServer` dock WS client, and

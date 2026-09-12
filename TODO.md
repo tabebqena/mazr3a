@@ -33,6 +33,21 @@ and inference_speed stays under the ~100 ms frame budget. If it does not, revert
 the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
 -->
 
+- **cam01 signal-surface exploration — revisit & harvest.** Two completed recon docs hold
+  capabilities we have not used: [`plans/cam01-websocket-exploration.md`](plans/cam01-websocket-exploration.md)
+  (camera WS `WsSubscription` status/snapshot push, the `UpServer` dock WS client, and
+  ONVIF **PullPoint** as a standardised event fallback) and
+  [`plans/snmp-camera-recon.md`](plans/snmp-camera-recon.md) (SNMPv3 health/inventory —
+  "up but silent" + reboot detection; traps proven unusable on this firmware).
+  Re-read both and pick what actually pays off. Candidate first steps: **(a)** consume the
+  already-working HTTP `Event/Subscription` push (motion `MotionAlarmOn`, no image) with
+  [`scripts/cam_event_listener.py`](scripts/cam_event_listener.py) and bridge it to MQTT
+  `frigate/cameras/cam01/events` for the portal; **(b)** ONVIF `PullMessages` health/event
+  poll (outbound-only, no inbound host port); **(c)** camera-health poller
+  (`sysUpTime` + eth0 egress rate) beside `machine-monitor.py`. Each needs its own plan and,
+  where it writes camera config, explicit permission. **Do the housekeeping first:** cam01
+  still has the temporary **SNMP / WebSockets / UpServer** test settings enabled.
+
 ## scenereader — cross-camera episode narrator (in progress)
 
 Replaces `scenewatch`, which was stopped for over-subscribing the CPU, filling RAM,

@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# .rooignore - keep the AI indexer / embedder OFF the huge + binary trees.
+#
+# WHY: Roo indexes the workspace with ollama embeddings (nomic-embed-text). That
+# walk over model-training/ (41 GB) plus the model weight files is what pinned a
+# CPU core at ~81 % and pushed the package to 75 C with fans at 4.5 k RPM.
+#
+# This is an EDITOR/AI scope only. Git tracking is unchanged and deliberate:
+# models/fire/best.xml|best.bin|best.pt|labelmap.txt and models/coco/ ride the
+# deploy via `git pull` (see .gitignore + dev_scripts/deploy_all.sh).
+#
+# The models/*.md provenance docs (README.md, VERSIONS.md) are intentionally NOT
+# ignored, so the AI can still read model provenance.
+# ---------------------------------------------------------------------------
+
+# Large local dataset / training trees (git-ignored, never shipped)
+model-training/
+fire-model-training/
+
+# Generated model archives + fetched scene models
+models/scene/
+models/fire/versions/
+
+# Opaque weight binaries (never useful to embed as text)
+*.onnx
+*.pt
+*.bin
+
+# Clip exports / media staging (huge, host-side artifacts)
+firewatch_clips/
+firewatch-fire-clips/
+cam-clips/
+camera-clips/
+media/
+
+# Training/eval output + caches
+runs/
+__pycache__/
+*.pyc
+.venv*

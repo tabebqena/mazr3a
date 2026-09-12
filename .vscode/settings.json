@@ -1,0 +1,77 @@
+{
+  // ---------------------------------------------------------------------------
+  // Scope the IDE (and Pylance) OFF the large model weights + dataset trees.
+  //
+  // WHY: this workspace holds model-training/ = 41 GB (git-ignored) plus tracked
+  // weight files (models/coco/*.onnx 11-43 MB, models/fire/best.bin 19 MB,
+  // best.pt 20 MB). VS Code's file watcher / ripsgrep / Pylance walked all of it,
+  // which kept ~1.5 CPU cores busy (25-36 % renderers, 26 % gpu-process) and made
+  // the git extension re-run `git add .` at 100 % CPU on saves.
+  //
+  // NOTE: models/ is DELIBERATELY tracked in git for the deploy
+  // (`git pull` ships the ACTIVE fire + frigate COCO models - see .gitignore).
+  // These settings change only what the EDITOR indexes/watches; git tracking and
+  // the deploy path are untouched. Do not "fix" this with `git rm --cached`.
+  // ---------------------------------------------------------------------------
+
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/__pycache__/**": true,
+    "**/node_modules/**": true,
+    "**/models/**": true,
+    "**/*.onnx": true,
+    "**/*.pt": true,
+    "**/*.bin": true,
+    "**/model-training/**": true,
+    "**/fire-model-training/**": true,
+    "**/firewatch_clips/**": true,
+    "**/firewatch-fire-clips/**": true,
+    "**/cam-clips/**": true,
+    "**/camera-clips/**": true,
+    "**/media/**": true,
+    "**/runs/**": true,
+    "**/.venv*/**": true
+  },
+
+  "search.exclude": {
+    "**/.git": true,
+    "**/__pycache__/**": true,
+    "**/node_modules/**": true,
+    "**/models/**": true,
+    "**/*.onnx": true,
+    "**/*.pt": true,
+    "**/*.bin": true,
+    "**/model-training/**": true,
+    "**/fire-model-training/**": true,
+    "**/firewatch_clips/**": true,
+    "**/firewatch-fire-clips/**": true,
+    "**/cam-clips/**": true,
+    "**/camera-clips/**": true,
+    "**/media/**": true,
+    "**/runs/**": true,
+    "**/.venv*/**": true
+  },
+
+  // Hide the opaque 41 GB dataset tree from the Explorer tree walk only.
+  // (models/ is left visible so the tracked README/VERSIONS docs stay reachable.)
+  "files.exclude": {
+    "**/model-training": true,
+    "**/fire-model-training": true,
+    "**/__pycache__": true
+  },
+
+  // Pylance indexes the whole workspace by default; keep it out of the big trees.
+  "python.analysis.exclude": [
+    "**/node_modules/**",
+    "**/__pycache__/**",
+    "**/.venv*/**",
+    "**/model-training/**",
+    "**/fire-model-training/**",
+    "**/models/**"
+  ],
+
+  "files.associations": {
+    "*.rooignore": "ignore"
+  }
+}

@@ -28,6 +28,13 @@ frigate.log
 # The versions/ archive stays git-ignored and never ships to the host.
 models/fire/versions/
 
+# Local finetuned CANDIDATE that is not verified / not provenanced (appeared as
+# untracked `??` in git status). Keep it out of `git add .`. Only VERIFIED
+# releases ride models/fire/best.* - see models/fire/VERSIONS.md.
+# NOTE: do NOT ignore the ACTIVE set or the models/ tree - the git deploy
+# (dev_scripts/deploy_all.sh) ships them via `git pull`; see the comment above.
+models/fire/best_v5_finetuned_not_verified.pt
+
 # Frigate COCO detector model (person/car/animal) is TRACKED in git at
 # models/coco/ (2026-09-06): yolo11n.onnx ACTIVE + yolov8s.onnx alternative +
 # labelmap.txt ride the git deploy; frigate loads them from /models/coco via the

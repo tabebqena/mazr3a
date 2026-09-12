@@ -40,13 +40,21 @@ the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
   [`plans/snmp-camera-recon.md`](plans/snmp-camera-recon.md) (SNMPv3 health/inventory —
   "up but silent" + reboot detection; traps proven unusable on this firmware).
   Re-read both and pick what actually pays off. Candidate first steps: **(a)** consume the
-  already-working HTTP `Event/Subscription` push (motion `MotionAlarmOn`, no image) with
+  already-working HTTP `Event/Subscription` push with
   [`scripts/cam_event_listener.py`](scripts/cam_event_listener.py) and bridge it to MQTT
   `frigate/cameras/cam01/events` for the portal; **(b)** ONVIF `PullMessages` health/event
   poll (outbound-only, no inbound host port); **(c)** camera-health poller
   (`sysUpTime` + eth0 egress rate) beside `machine-monitor.py`. Each needs its own plan and,
   where it writes camera config, explicit permission. **Do the housekeeping first:** cam01
   still has the temporary **SNMP / WebSockets / UpServer** test settings enabled.
+  - *Listener output reviewed (2026-09-12, live ~10 h run; §14 of the cam01 plan):*
+    the push is **richer than "motion only"** — besides an image-free motion `On/Off`
+    stream (~226/h), every **person line crossing** arrives as a 396 B
+    `LineDetectorCrossed` alarm **plus** a `System/Event/Notification/Structure`
+    body carrying a **1920×1080 JPEG**, the person box (`0..10000` coords), the line
+    rule geometry and the device id (47 crossings that day, 49 person entries;
+    2 re-sent alarms). That is the payload **(a)** would bridge; the WS mirror is
+    status-only. Listener still running (pid `1520455`, port 50235) and still temporary.
 
 ## scenereader — cross-camera episode narrator (in progress)
 

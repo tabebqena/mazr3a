@@ -427,7 +427,16 @@ class Receiver(threading.Thread):
                 except OSError:
                     pass
                 continue
-            threading.Thread(target=self._handle, args=(conn, addr),
+            if not callable(getattr(self, "_serve_conn", None)):
+                LOG.error("handler method shadowed (%r) - cannot serve \
+connections; refusing", getattr(self, "_serve_conn", None))
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                self._sem.release()
+                continue
+            threading.Thread(target=self._serve_conn, args=(conn, addr),
                              name="rx", daemon=True).start()
         try:
             s.close()
@@ -436,7 +445,13 @@ class Receiver(threading.Thread):
         LOG.info("receiver stopped (%d pushes)", self.pushes)
 
     # -- one connection -----------------------------------------------------
-    def _handle(self, conn: socket.socket, addr) -> None:
+    def _serve_conn(self, conn: socket.socket, addr) -> None:
+        # NOTE: do NOT name this `_handle`.  Python 3.13+ sets an INSTANCE
+        # attribute `Thread._handle` (a `_thread._ThreadHandle`); a subclass
+        # method of that name is shadowed, so `target=self._handle` would pass
+        # a non-callable ThreadHandle and every handler thread dies with
+        # "TypeError: '_thread._ThreadHandle' object is not callable" (logging
+        # nothing and leaking a concurrency permit).
         peer = f"{addr[0]}:{addr[1]}"
         t0 = time.monotonic()
         try:

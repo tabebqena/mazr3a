@@ -83,6 +83,7 @@ C_CONFIG = code([
     "NAME        = 'v6-fireviewer'\n",
     "LOG_DRIVE   = RUNS + '/' + NAME + '/train.log'\n",
     "PIDFILE     = '/content/train.pid'\n",
+    "NAMES       = {0: 'fire', 1: 'other', 2: 'smoke'}   # class contract: every cell needs it\n",
     "\n",
     "# --- dataset build ---\n",
     "DEDUP_TRAIN   = True    # move near-duplicate TRAIN frames out (val is never touched)\n",
@@ -142,7 +143,9 @@ C_LOGGING = code([
     "    tee.write('\\n' + '=' * 72 + '\\n[%s] started %s\\n' % (stage, time.strftime('%Y-%m-%d %H:%M:%S'))\n",
     "              + '=' * 72 + '\\n')\n",
     "    try:\n",
-    "        with contextlib.redirect_stdout(tee):\n",
+    "        # stderr too: a traceback is printed by IPython to stderr, so without this the\n",
+    "        # Drive log would show 'started'/'finished' and NOTHING in between on a crash.\n",
+    "        with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):\n",
     "            yield path\n",
     "    finally:\n",
     "        tee.write('[%s] finished %s\\n' % (stage, time.strftime('%H:%M:%S')))\n",
@@ -223,10 +226,27 @@ C_DEDUP = code([
     "# The corpus is already image-unique and cross-source deduped, but its video sources are\n",
     "# sampled per frame (pyro-sdis ~907 imgs/clip, boreal ~1420), so within-clip near-dups\n",
     "# dominate. Comparisons are bounded by the corpus' own split_group (one clip per group).\n",
-    "import collections, csv, hashlib, os, shutil\n",
+    "#\n",
+    "# Progress   : a line every PROGRESS_EVERY images (and every 200 groups); each line is also\n",
+    "#              appended to the Drive log, so keep the interval modest.\n",
+    "# Live status: <LOGS>/07_dedup.status.txt, rewritten atomically every STATUS_EVERY_S, so the\n",
+    "#              run can be watched from Drive without this notebook's stdout.\n",
+    "# Robustness : an unreadable image (truncated / 0-byte = the full-disk signature) is\n",
+    "#              quarantined instead of killing the run, and ANY exception is printed into\n",
+    "#              this cell's stdout - i.e. into the Drive log. (The first version silently\n",
+    "#              died here: a traceback goes to stderr, which the log did not capture.)\n",
+    "import collections, csv, hashlib, os, shutil, time, traceback\n",
     "from PIL import Image\n",
     "\n",
+    "PROGRESS_EVERY = 1000    # images between progress lines\n",
+    "STATUS_EVERY_S = 20      # min seconds between status-file rewrites\n",
+    "SKIP_BROKEN    = True    # False -> abort on the first unreadable image\n",
+    "BROKEN_OUT     = '/content/fv_broken'\n",
+    "\n",
     "with drive_log('07_dedup'):\n",
+    "    t0 = time.time()\n",
+    "    STATUS_FILE = LOGS + '/07_dedup.status.txt'\n",
+    "\n",
     "    def _dhash(path):\n",
     "        im = Image.open(path).convert('L').resize((9, 8), Image.LANCZOS)\n",
     "        px = list(im.getdata())\n",
@@ -236,44 +256,115 @@ C_DEDUP = code([
     "                bits = (bits << 1) | (1 if px[r * 9 + c] < px[r * 9 + c + 1] else 0)\n",
     "        return bits\n",
     "\n",
+    "    st = {'t': 0.0}\n",
+    "\n",
+    "    def _status(state, **kw):\n",
+    "        tmp = STATUS_FILE + '.tmp'\n",
+    "        with open(tmp, 'w') as fh:\n",
+    "            for k, v in dict(stage='07_dedup', state=state, **kw).items():\n",
+    "                fh.write('%s: %s\\n' % (k, v))\n",
+    "        os.replace(tmp, STATUS_FILE)     # atomic: a reader never sees a half file\n",
+    "\n",
     "    if not DEDUP_TRAIN:\n",
     "        print('DEDUP_TRAIN=False -> skipped (val is never deduped regardless)')\n",
     "    else:\n",
     "        os.makedirs(DUPS + '/images', exist_ok=True)\n",
     "        os.makedirs(DUPS + '/labels', exist_ok=True)\n",
+    "\n",
     "        groups = collections.defaultdict(list)\n",
     "        with open(YOLO_DS + '/manifest.csv') as fh:\n",
     "            for r in csv.DictReader(fh):\n",
     "                if r['split'] == 'train':\n",
     "                    groups[r['split_group']].append(r['stem'])\n",
-    "        kept_total = moved_total = 0\n",
-    "        for gi, (grp, stems) in enumerate(groups.items(), 1):\n",
-    "            kept, md5s = [], set()\n",
-    "            for stem in stems:\n",
-    "                img = YOLO_DS + '/train/images/' + stem + '.jpg'\n",
-    "                if not os.path.exists(img):\n",
-    "                    continue\n",
-    "                h = _dhash(img)\n",
-    "                m = hashlib.md5(open(img, 'rb').read()).hexdigest()\n",
-    "                dup = (m in md5s) or any(bin(kh ^ h).count('1') <= DEDUP_HAMMING for kh, _ in kept)\n",
-    "                if dup:\n",
-    "                    shutil.move(img, DUPS + '/images/' + stem + '.jpg')\n",
-    "                    lp = YOLO_DS + '/train/labels/' + stem + '.txt'\n",
-    "                    if os.path.exists(lp):\n",
-    "                        shutil.move(lp, DUPS + '/labels/' + stem + '.txt')\n",
-    "                    moved_total += 1\n",
-    "                else:\n",
-    "                    md5s.add(m)\n",
-    "                    kept.append((h, stem))\n",
-    "            kept_total += len(kept)\n",
-    "            if gi % 200 == 0:\n",
-    "                print('  groups %d/%d | kept %d | moved %d'\n",
-    "                      % (gi, len(groups), kept_total, moved_total))\n",
-    "        tot = kept_total + moved_total\n",
-    "        msg = 'train kept %d/%d (%.1f%%) | near-dups moved: %d -> %s'\n",
-    "        print(msg % (kept_total, tot, 100.0 * kept_total / tot if tot else 0.0,\n",
-    "                     moved_total, DUPS))\n",
+    "        total = sum(len(v) for v in groups.values())\n",
+    "        print('groups=%d  manifest images=%d  hamming<=%d  progress every %d imgs'\n",
+    "              % (len(groups), total, DEDUP_HAMMING, PROGRESS_EVERY))\n",
+    "        print('full log    -> %s' % LOG_DRIVE)\n",
+    "        print('live status -> %s' % STATUS_FILE)\n",
+    "\n",
+    "        done = kept_total = moved_total = broken = missing = 0\n",
+    "        keep_md5 = set()\n",
+    "        ok, err, gi = True, '', 0\n",
+    "        _status('running', done=0, total=total, kept=0, moved=0, broken=0,\n",
+    "                elapsed_s=0, eta_s='?', group='0/%d' % len(groups))\n",
+    "\n",
+    "        try:\n",
+    "            for gi, (grp, stems) in enumerate(groups.items(), 1):\n",
+    "                kept = []                        # [(dhash, stem), ...] within this clip\n",
+    "                for stem in stems:\n",
+    "                    img = YOLO_DS + '/train/images/' + stem + '.jpg'\n",
+    "                    done += 1\n",
+    "                    if not os.path.exists(img):\n",
+    "                        missing += 1\n",
+    "                        continue\n",
+    "                    try:\n",
+    "                        h = _dhash(img)\n",
+    "                    except Exception as e:\n",
+    "                        broken += 1\n",
+    "                        if not SKIP_BROKEN:\n",
+    "                            raise\n",
+    "                        os.makedirs(BROKEN_OUT + '/images', exist_ok=True)\n",
+    "                        print('  ! unreadable %s (%s) -> %s'\n",
+    "                              % (stem[:16], type(e).__name__, BROKEN_OUT), flush=True)\n",
+    "                        try:\n",
+    "                            shutil.move(img, BROKEN_OUT + '/images/' + stem + '.jpg')\n",
+    "                        except OSError:\n",
+    "                            pass\n",
+    "                        continue\n",
+    "\n",
+    "                    m = hashlib.md5(open(img, 'rb').read()).hexdigest()\n",
+    "                    dup = (m in keep_md5) or any(\n",
+    "                        bin(kh ^ h).count('1') <= DEDUP_HAMMING for kh, _ in kept)\n",
+    "                    if dup:\n",
+    "                        shutil.move(img, DUPS + '/images/' + stem + '.jpg')\n",
+    "                        lp = YOLO_DS + '/train/labels/' + stem + '.txt'\n",
+    "                        if os.path.exists(lp):\n",
+    "                            shutil.move(lp, DUPS + '/labels/' + stem + '.txt')\n",
+    "                        moved_total += 1\n",
+    "                    else:\n",
+    "                        keep_md5.add(m)\n",
+    "                        kept.append((h, stem))\n",
+    "                        kept_total += 1\n",
+    "\n",
+    "                    if done % PROGRESS_EVERY == 0:\n",
+    "                        el = time.time() - t0\n",
+    "                        rate = done / el if el else 0.0\n",
+    "                        eta = (total - done) / rate if rate else 0\n",
+    "                        msg = ('  %6d/%d %5.1f%% | kept %d moved %d broken %d'\n",
+    "                               ' | %.0f img/s | ETA %dm%02ds | group %d/%d')\n",
+    "                        print(msg % (done, total,\n",
+    "                                     100.0 * done / total if total else 100.0,\n",
+    "                                     kept_total, moved_total, broken, rate,\n",
+    "                                     int(eta) // 60, int(eta) % 60, gi, len(groups)),\n",
+    "                              flush=True)\n",
+    "                        if time.time() - st['t'] >= STATUS_EVERY_S:\n",
+    "                            st['t'] = time.time()\n",
+    "                            _status('running', done=done, total=total, kept=kept_total,\n",
+    "                                    moved=moved_total, broken=broken, elapsed_s=int(el),\n",
+    "                                    eta_s=int(eta), group='%d/%d' % (gi, len(groups)))\n",
+    "\n",
+    "                if gi % 200 == 0:                # visible even for tiny groups\n",
+    "                    el = time.time() - t0\n",
+    "                    print('  ... %d/%d groups | kept %d moved %d broken %d | %.1f min'\n",
+    "                          % (gi, len(groups), kept_total, moved_total, broken, el / 60.0),\n",
+    "                          flush=True)\n",
+    "        except Exception:\n",
+    "            ok = False\n",
+    "            err = traceback.format_exc()\n",
+    "            print('[07_dedup] FAILED after %d/%d images (group %d/%d)'\n",
+    "                  % (done, total, gi, len(groups)), flush=True)\n",
+    "            print(err, flush=True)               # printed -> lands in the Drive log\n",
+    "\n",
+    "        el = time.time() - t0\n",
+    "        _status('ok' if ok else 'failed', done=done, total=total, kept=kept_total,\n",
+    "                moved=moved_total, broken=broken, missing=missing, elapsed_s=int(el),\n",
+    "                error=(err.strip().splitlines()[-1] if err else ''))\n",
+    "\n",
+    "        print()\n",
+    "        print('train kept %d | near-dups moved %d | unreadable %d | missing %d | %.1f min'\n",
+    "              % (kept_total, moved_total, broken, missing, el / 60.0))\n",
     "        print('val untouched:', len(os.listdir(YOLO_DS + '/val/images')), 'images')\n",
+    "        print('status -> %s' % STATUS_FILE)\n",
 ])
 
 C_BALANCE = code([
@@ -410,8 +501,8 @@ C_BALANCE = code([
 C_VERIFY = code([
     "# Cell 9 - verify the corpus structure after dedup + balance (read-only, ~10-30 s)\n",
     "import collections, csv, os, random, shutil as _shutil\n",
+    "from PIL import Image\n",
     "\n",
-    "NAMES = {0: 'fire', 1: 'other', 2: 'smoke'}\n",
     "EXT = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')\n",
     "warn, fail = [], []\n",
     "\n",
@@ -548,6 +639,29 @@ C_VERIFY = code([
     "    else:\n",
     "        print('\\n(residual check skipped: run Cell 7 first - _dhash not defined)')\n",
     "\n",
+    "    # image sanity: a full Colab disk can leave 0-byte / truncated JPEGs behind, which\n",
+    "    # YOLO would happily count as samples while PIL/training chokes on them later.\n",
+    "    zero = 0\n",
+    "    for _sp in ('train', 'val'):\n",
+    "        _idir = os.path.join(YOLO_DS, _sp, 'images')\n",
+    "        for _f in os.listdir(_idir):\n",
+    "            if os.path.getsize(os.path.join(_idir, _f)) == 0:\n",
+    "                zero += 1\n",
+    "    random.seed(1)\n",
+    "    broken = 0\n",
+    "    for _f in random.sample(sorted(os.listdir(idir)), min(300, len(files))):\n",
+    "        try:\n",
+    "            with Image.open(os.path.join(idir, _f)) as _im:\n",
+    "                _im.verify()\n",
+    "        except Exception:\n",
+    "            broken += 1\n",
+    "    print()\n",
+    "    print('image sanity : 0-byte=%d  unreadable=%d (of %d sampled)'\n",
+    "          % (zero, broken, min(300, len(files))))\n",
+    "    if zero or broken:\n",
+    "        fail.append('image sanity: %d 0-byte, %d unreadable - check disk then re-run Cells 5-6'\n",
+    "                    % (zero, broken))\n",
+    "\n",
     "    print()\n",
     "    print(open(os.path.join(YOLO_DS, 'data.yaml')).read().strip())\n",
     "    dups = len(os.listdir(DUPS + '/images')) if os.path.isdir(DUPS + '/images') else 0\n",
@@ -600,6 +714,9 @@ C_LAUNCH = code([
     "# Cell 12 - LAUNCH training DETACHED (closing VS Code will NOT stop it)\n",
     "import os, subprocess, sys\n",
     "\n",
+    "trainer = UPLOAD + '/scripts/colab_train_v6.py'   # defined here too: Cell 11 is optional\n",
+    "assert os.path.exists(trainer), 'trainer missing from the bundle - see Cell 4'\n",
+    "\n",
     "# refuse to start a second trainer on the same GPU (two would OOM)\n",
     "if os.path.exists(PIDFILE):\n",
     "    _old = int(open(PIDFILE).read().strip() or 0)\n",
@@ -635,14 +752,30 @@ C_STATUS = code([
     "\n",
     "with drive_log('13_status'):\n",
     "    pid = int(open(PIDFILE).read().strip() or 0) if os.path.exists(PIDFILE) else None\n",
-    "    alive = False\n",
-    "    if pid:\n",
+    "\n",
+    "    def proc_state(p):\n",
+    "        # os.kill(pid, 0) succeeds for a ZOMBIE too, which would fake 'RUNNING'; read\n",
+    "        # /proc/<pid>/stat instead so a dead trainer is reported as dead.\n",
+    "        if not p:\n",
+    "            return 'no pid file'\n",
     "        try:\n",
-    "            os.kill(pid, 0)\n",
-    "            alive = True\n",
-    "        except OSError:\n",
-    "            alive = False\n",
-    "    print('trainer pid %s -> %s' % (pid, 'RUNNING' if alive else 'not running'))\n",
+    "            with open('/proc/%d/stat' % p) as fh:\n",
+    "                fields = fh.read().split()\n",
+    "            state = fields[2]\n",
+    "        except (FileNotFoundError, IndexError):\n",
+    "            return 'not running (no such process)'\n",
+    "        if state == 'Z':\n",
+    "            return 'ZOMBIE (exited - read the log tail below)'\n",
+    "        return {'R': 'RUNNING', 'S': 'RUNNING (sleeping)', 'D': 'RUNNING (disk-sleep)',\n",
+    "                'T': 'stopped'}.get(state, state)\n",
+    "\n",
+    "    print('trainer pid %s -> %s' % (pid, proc_state(pid)))\n",
+    "    log_age = '%.0fs' % (time.time() - os.path.getmtime(LOG_LOCAL)) if os.path.exists(LOG_LOCAL) else 'n/a'\n",
+    "    log_size = os.path.getsize(LOG_LOCAL) if os.path.exists(LOG_LOCAL) else 0\n",
+    "    print('local log : %s (%d B, written %s ago)' % (LOG_LOCAL, log_size, log_age))\n",
+    "    run_local = os.path.join(LOCAL_RUNS, NAME)\n",
+    "    print('local run : %s%s' % (run_local, '' if os.path.isdir(run_local)\n",
+    "          else '  (not created yet - training writes it after loading the model)'))\n",
     "\n",
     "    def describe(label, d):\n",
     "        print('\\n[%s] %s' % (label, d))\n",
@@ -787,6 +920,53 @@ def _demagic(cells):
     return cells
 
 
+def _check_cross_cell_names(cells):
+    """Refuse a notebook where a cell READS a name no EARLIER cell defines.
+
+    Per-cell ``compile()`` only proves syntax, so it cannot catch this: `NAMES` was defined
+    in the verify cell (Cell 9) but the balancer (Cell 8) used it, which blew up at runtime
+    with NameError. This walks each cell's AST, accumulates the names every cell binds at
+    module level (assignments, imports, def/class, args, except/with/for targets) and flags
+    any read that no earlier cell bound - exactly the class of notebook-only bug that
+    testing a single cell in isolation can never see.
+    """
+    import ast
+    import builtins
+
+    known = set(dir(builtins))
+    problems = []
+    for i, c in enumerate(cells, 1):
+        if c["cell_type"] != "code":
+            continue
+        src = "".join(c["source"])
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue                                    # reported by the caller's compile pass
+        stores, loads = set(), set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                (stores if isinstance(node.ctx, ast.Store) else loads).add(node.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    stores.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                stores.add(node.name)
+            elif isinstance(node, ast.arg):
+                stores.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                stores.add(node.name)
+            elif isinstance(node, ast.Global):
+                stores.update(node.names)
+        missing = sorted(n for n in loads if n not in known and n not in stores)
+        if missing:
+            problems.append((i, missing))
+        known |= stores
+    if problems:
+        raise SystemExit("refusing to write: a cell reads names no earlier cell defines "
+                         "(cell, names): %r" % (problems[:3],))
+
+
 def _check_no_magics(cells):
     """Refuse to write a notebook whose code cells could be mis-read as magics."""
     bad = [(i, ln.strip()[:60])
@@ -803,6 +983,7 @@ def build(out=DEFAULT_OUT):
                       C_DEDUP, C_BALANCE, C_VERIFY, C_NEGATIVES, C_TRAINER_CHECK, C_LAUNCH,
                       C_STATUS, C_RESUME, C_COLLECT, C_NEXT])
     _check_no_magics(cells)
+    _check_cross_cell_names(cells)
     nb = {
         "cells": cells,
         "metadata": {

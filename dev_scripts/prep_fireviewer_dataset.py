@@ -271,6 +271,8 @@ def write_split(pq, files, split_name, out_split, limit, seed, sample_mode,
                     open(os.path.join(lbl_dir, stem + ".txt"), "w").close()
                     n_neg += 1
                 n_img += 1
+                if n_img % 2000 == 0:
+                    print("    ... %d images written" % n_img, flush=True)
                 stats["sources"][src] += 1
                 stats["licenses"][row.get("license") or "-"] += 1
                 mf_rows.append([split_name, stem, src, row.get("license") or "-",

@@ -912,7 +912,9 @@ class WSStatusClient(threading.Thread):
 
     def _session(self) -> None:
         sock = socket.create_connection((self.host, self.port), timeout=10)
-        sock.settimeout(30)
+        # Short recv timeout so a SIGTERM stops the WS loop promptly (keeps the
+        # shutdown/restart window small; see the receiver-first join in main).
+        sock.settimeout(2.0)
         key = base64.b64encode(os.urandom(16)).decode()
         sock.sendall(
             (f"GET {WS_PATH} HTTP/1.1\r\nHost: {self.host}\r\n"
@@ -1141,8 +1143,8 @@ def main(argv=None) -> int:
     lock_path = os.path.join(out_dir, "listener.lock")
     lock = _acquire_lock(lock_path)
     if lock is None:
-        LOG.error("another listener is already running (lock %s) - exiting",
-                  lock_path)
+        LOG.error("another listener is already running or still shutting down "
+                  "(lock %s) - exiting", lock_path)
         return 4
     pid_path = args.pidfile or os.path.join(out_dir, "listener.pid")
     _write_pidfile(pid_path)
@@ -1190,12 +1192,16 @@ def main(argv=None) -> int:
                 store.prune()
     finally:
         stop.set()
-        for t in (receiver, manager, ws):
+        # Join the receiver FIRST: that closes :<listen-port>.  Release the lock
+        # as soon as the port is free (not after the slower WS/subscription
+        # threads join), so a restart does not collide with our own shutdown.
+        receiver.join(timeout=5)
+        _release_lock(lock_path, pid_path)
+        for t in (manager, ws):
             if t is not None:
-                t.join(timeout=10)
+                t.join(timeout=5)
         LOG.info("stopped cleanly (pushes=%d ws_frames=%d)",
                  receiver.pushes, store.ws_frames)
-        _release_lock(lock_path, pid_path)
     return 0
 
 

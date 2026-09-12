@@ -2,8 +2,11 @@
 """build_colab_fireviewer_nb.py - generate the FireViewer v6 Colab bootstrap notebook.
 
 Prepares the dataset ON the Colab machine so that nothing large is uploaded: the corpus is
-pulled from HuggingFace at datacenter speed and converted in place, while only a ~90 MB
+pulled from HuggingFace at datacenter speed and converted in place, while only a ~83 MB
 bundle (our domain negatives + the v4 checkpoint + this converter) is uploaded.
+
+The bundle is expected on Drive at:
+    /content/drive/MyDrive/colab-data/v6-training/colab_upload.zip
 
 Flow of the generated notebook:
   1. install deps (ultralytics, pyarrow, huggingface_hub)
@@ -49,7 +52,8 @@ C_TITLE = md([
     "(`models/fire/best.pt`).\n",
     "\n",
     "**Before you start:** upload `colab_upload.zip` (built locally by\n",
-    "`dev_scripts/pack_colab_upload.sh`, ~90 MB) to `MyDrive/mazr3a/`.\n",
+    "`dev_scripts/pack_colab_upload.sh`, ~83 MB) to\n",
+    "`MyDrive/colab-data/v6-training/`.\n",
     "\n",
     "Crash-resilient: the run dir is on Drive, so a disconnect is recoverable.\n",
     "The corpus `test` split is intentionally not downloaded — judge the checkpoint locally.\n",
@@ -67,12 +71,21 @@ C_SETUP = code([
 
 C_CONFIG = code([
     "# Cell 2 - config (edit if needed)\n",
-    "DRIVE_DIR = '/content/drive/MyDrive/mazr3a'\n",
-    "HF_REPO   = 'fireviewer/fire-smoke-detection-corpus-v1'\n",
-    "CACHE     = '/content/fvcache'     # parquet download (temporary, deleted in Cell 6)\n",
-    "YOLO_DS   = '/content/fv_yolo'     # converted YOLO dataset (train/ + val/)\n",
-    "UPLOAD    = '/content/upload'      # unpacked colab_upload.zip\n",
-    "RUNS      = DRIVE_DIR + '/runs'    # RUN OUTPUTS ON DRIVE -> survive a reset\n",
+    "DRIVE_DIR  = '/content/drive/MyDrive/colab-data/v6-training'\n",
+    "HF_REPO    = 'fireviewer/fire-smoke-detection-corpus-v1'\n",
+    "CACHE      = '/content/fvcache'    # parquet download (temporary, deleted in Cell 7)\n",
+    "YOLO_DS    = '/content/fv_yolo'    # converted YOLO dataset (train/ + val/)\n",
+    "UPLOAD     = '/content/upload'     # unpacked colab_upload.zip\n",
+    "UPLOAD_ZIP = DRIVE_DIR + '/colab_upload.zip'\n",
+    "RUNS       = DRIVE_DIR + '/runs'   # RUN OUTPUTS ON DRIVE -> survive a reset\n",
+    "\n",
+    "# --- training mix ---\n",
+    "# ADD_NEGATIVES=True injects our 841 local frames (cam dog/warm-object FPs + generic\n",
+    "# background) into TRAIN. At 841 / 60,981 = 1.4 % they are far too diluted to fix the\n",
+    "# cam01 dog FP on their own - this run is mainly about GENERALISATION on the corpus.\n",
+    "# They are cheap and target the one documented production failure, so True is a fine\n",
+    "# default; set False for a clean corpus-only attribution run and compare (plan §14).\n",
+    "ADD_NEGATIVES = True\n",
     "\n",
     "# --- training hyperparameters ---\n",
     "EPOCHS   = 15     # ~61k train images/epoch; raise only if time allows\n",
@@ -92,10 +105,9 @@ C_MOUNT = code([
     "os.makedirs(RUNS, exist_ok=True)\n",
     "\n",
     "if not os.path.isdir(UPLOAD) or not glob.glob(UPLOAD + '/*'):\n",
-    "    bundle = DRIVE_DIR + '/colab_upload.zip'\n",
-    "    if os.path.exists(bundle):\n",
+    "    if os.path.exists(UPLOAD_ZIP):\n",
     "        os.makedirs(UPLOAD, exist_ok=True)\n",
-    "        with zipfile.ZipFile(bundle) as z:\n",
+    "        with zipfile.ZipFile(UPLOAD_ZIP) as z:\n",
     "            z.extractall(UPLOAD)\n",
     "    else:\n",
     "        from google.colab import files\n",
@@ -144,16 +156,19 @@ C_NEGATIVES = code([
     "neg = UPLOAD + '/negatives'\n",
     "ti, tl = YOLO_DS + '/train/images', YOLO_DS + '/train/labels'\n",
     "added = 0\n",
-    "for f in sorted(glob.glob(neg + '/*')):\n",
-    "    if os.path.splitext(f)[1].lower() not in ('.jpg', '.jpeg', '.png'):\n",
-    "        continue\n",
-    "    base = os.path.basename(f)\n",
-    "    if not os.path.exists(os.path.join(ti, base)):\n",
-    "        shutil.copy2(f, os.path.join(ti, base))\n",
-    "    open(os.path.join(tl, os.path.splitext(base)[0] + '.txt'), 'w').close()\n",
-    "    added += 1\n",
-    "print('negatives added to TRAIN:', added)\n",
-    "print('audit set (our real fires, HELD OUT):', UPLOAD + '/audit',\n",
+    "if ADD_NEGATIVES:\n",
+    "    for f in sorted(glob.glob(neg + '/*')):\n",
+    "        if os.path.splitext(f)[1].lower() not in ('.jpg', '.jpeg', '.png'):\n",
+    "            continue\n",
+    "        base = os.path.basename(f)\n",
+    "        if not os.path.exists(os.path.join(ti, base)):\n",
+    "            shutil.copy2(f, os.path.join(ti, base))\n",
+    "        open(os.path.join(tl, os.path.splitext(base)[0] + '.txt'), 'w').close()\n",
+    "        added += 1\n",
+    "    print('negatives added to TRAIN:', added)\n",
+    "else:\n",
+    "    print('ADD_NEGATIVES=False -> corpus-only run (no local negatives injected)')\n",
+    "print('audit set (our real fires, HELD OUT, never trained):', UPLOAD + '/audit',\n",
     "      len(glob.glob(UPLOAD + '/audit/*')), 'imgs')\n",
 ])
 

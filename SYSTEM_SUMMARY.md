@@ -13,10 +13,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v37` |
+| Summary version | `v38` |
 | Last updated | 2026-09-12 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.11.0` (see [`portal/app.py`](portal/app.py:42)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.11.5` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable on Android (per-request manifest + fingerprinted icons, **no CACHING service worker by design**; the only SW is a notification-only `/sw.js` with NO fetch/cache handler — see [`plans/portal-notifications.md`](plans/portal-notifications.md)). Needs a Cloudflare Access **Bypass** for `/manifest.webmanifest` + `/static/icons/*` (else WebAPK minting fails and the icon is only a browser shortcut) — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 | Portal notifications | Server-side notification feed (`portal/notifstore.py`, `media/portal/notifications.db`) filled from NEW Firewatch fire alerts + admin system messages; a **Notifications tab** with an unread nav badge, and — since the SPA **requires** the browser Notification permission to run — a how-to-allow gate when it is blocked. See [`plans/portal-notifications.md`](plans/portal-notifications.md) |
 
@@ -112,6 +112,9 @@ with `docker compose up -d` / `docker compose down`.
 | Dev files | [`firewatch/firewatch.py`](firewatch/firewatch.py) (watcher), [`firewatch/requirements.txt`](firewatch/requirements.txt), shared [`scripts/telegram_notify.py`](scripts/telegram_notify.py), model [`models/fire/`](models/fire/) |
 | Config | [`config/firewatch.conf`](config/firewatch.conf) (`/config/firewatch.conf`), [`config/telegram.conf`](config/telegram.conf) (git-ignored) |
 | Evidence store | `./media` (`<STORE_DIR>/<cam>/*.jpg` + `<STORE_DIR>/firewatch.db`) |
+| Store health guard | The DB is opened through a **write probe** at startup (`_store_preflight` → `BEGIN IMMEDIATE`/`ROLLBACK`): a WAL DB *opens* read-only without an error, so "cannot write" used to be invisible until every detection was silently dropped. A wedged store is now logged as ONE loud, actionable ERROR naming the exact host fix. |
+| Store ownership | `firewatch.db` + its `-wal`/`-shm` sidecars must be writable by **uid 1000** (the container user). SQLite's WAL sidecars carry the ownership of the process that CREATED them, and ANY host-side open of the live DB — including a read-only `mode=ro` one such as an ad-hoc `sqlite3` query as `ai` — creates them under that host user and then wedges every later write (`attempt to write a readonly database`): the Telegram alert still goes out, but the frame never reaches the portal. firewatch **self-heals an EMPTY foreign `-wal`/`-shm`** (a reader-created WAL is always 0 bytes) and NEVER touches a non-empty one. Read the DB with `docker exec firewatch …`, never from the host — see [`.roo/rules/firewatch-store-ownership.md`](.roo/rules/firewatch-store-ownership.md) and [`plans/firewatch-store-readonly-recovery.md`](plans/firewatch-store-readonly-recovery.md). |
+| Store recovery | [`scripts/backfill_firewatch_store.py`](scripts/backfill_firewatch_store.py) re-registers evidence JPEGs that have NO `frames` row (frames lost while the store was unwritable) so the missed alerts appear in the portal again — dry-run by default, `--commit` to write, `--alert-times` to restore `alerted=1` from the container log. |
 | Volumes (ro) | `./firewatch:/firewatch` · `./scripts:/scripts` · `./config:/config` · `./models:/models` · `./media:/media/firewatch` (rw) |
 | Ports | none (outbound only) |
 | Notes | Code/config edits need only `docker compose restart firewatch`. Active model = fire v4 (YOLO26-S). |
@@ -238,6 +241,7 @@ a maximum, so a container using less is unaffected. Host: 8 cores, ~7.5 GiB.
 |---|---|---|
 | [`heartbeat_cleanup.py`](scripts/heartbeat_cleanup.py) | root cron (15 min) | **Unified disk heartbeat** — per-store compliance + global-cap escalation across `config/stores/*.conf`. Modes: `--check`, `--dry-run` |
 | [`cleanup_firewatch_store.py`](scripts/cleanup_firewatch_store.py) | in-container worker | firewatch DB-aware evidence cleanup (invoked by the heartbeat's `TYPE=docker-exec` store) |
+| [`backfill_firewatch_store.py`](scripts/backfill_firewatch_store.py) | in-container worker (manual) | **Recovery**: registers evidence JPEGs that have no `frames` row (frames lost while the evidence DB was unwritable) so the missed fire alerts reappear in the portal Fire tab. Append-only, **dry-run by default**; `--commit`, `--no-model`, `--alert-times FILE` (raw `docker logs firewatch` output restores `alerted=1`). Run: `docker exec -i firewatch python /scripts/backfill_firewatch_store.py` |
 | [`cleanup_media.sh`](scripts/cleanup_media.sh) | — | **SUPERSEDED** (replaced by the heartbeat) |
 | [`collect_sensors.py`](scripts/collect_sensors.py) | library | lm-sensors reading helpers + Intel iGPU usage/temp/freq readers |
 | [`machine-monitor.py`](scripts/machine-monitor.py) | `dr` cron (1 min) | CPU-temp watchdog (CRITICAL + WARM tiers) → Telegram; also reports live iGPU usage/temp (best-effort) |
@@ -313,6 +317,7 @@ sudo apt install -y git python3
 | Read access to `/var/run/docker.sock` | `logs` sidecar (runs as root in-container) |
 | Cloudflare Tunnel (`cloudflared`) | Maps `live.mazr3a.garden` → `host:8080` (portal) under an Access policy |
 | Cloudflare Access **Bypass** on `live.mazr3a.garden` for `/manifest.webmanifest`, `/static/icons/*`, `/apple-touch-icon.png` and `/favicon.ico` (**only** these) | **Required for PWA install.** Google's WebAPK minting servers fetch the manifest + icons unauthenticated; without the bypass Access 302s them, minting fails, and the home-screen icon silently degrades to a browser shortcut (opens in a Chrome tab). `/` and `/api/*` must stay Access-protected — verified still 302 on 2026-09-11. See [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
+| `media/firewatch.db` (+ `-wal`/`-shm`) owned by **uid 1000**, group `dr`, mode `664` | firewatch writes the evidence DB as uid 1000, and SQLite's WAL sidecars are writable only by their creator's uid. A `-wal`/`-shm` created by ANY other user (a host-side `sqlite3`/`mode=ro` read of the live DB) makes every store write fail with `SQLITE_READONLY`: Telegram alerts then still fire while NOTHING reaches the portal. Repair: `sudo chown 1000:1000 media/firewatch.db media/firewatch.db-wal media/firewatch.db-shm` (or delete an **empty** `-wal`/`-shm` and restart firewatch). firewatch also self-heals the empty case — see [`.roo/rules/firewatch-store-ownership.md`](.roo/rules/firewatch-store-ownership.md) |
 | SSH `ssh.mazr3a.garden` | Deploy + remote diagnosis. **Never use `sshpass`** — use the SSH_ASKPASS pattern ([`.roo/rules/ssh-password.md`](.roo/rules/ssh-password.md)) |
 | `git` remote `origin` = `https://github.com/tabebqena/mazr3a` (branch `master`) | Git-based deploy source |
 

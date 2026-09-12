@@ -478,6 +478,9 @@ def run_once(cfg, model, dry=False):
 # ---------------------------------------------------------------------------
 _STORE_CONN = None
 _STORE_LAST_PRUNE = 0.0
+# One loud, actionable "store is unwritable" ERROR per process run (not per
+# marked frame) - see _warn_store_unwritable / _heal_store_sidecars below.
+_STORE_WARNED = [False]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -515,20 +518,130 @@ def _store_db_path(cfg):
     return os.path.join(store_dir, _get(cfg, "STORE_DB", "firewatch.db"))
 
 
-def _store_conn(cfg):
-    """Return the cached WAL-mode evidence connection (schema + guarded migration)."""
+# --- WAL-sidecar ownership guard -------------------------------------------
+# SQLite's `-wal`/`-shm` sidecars carry the ownership of the process that
+# CREATED them, and ANY host-side open of the live DB - including a read-only
+# `mode=ro` one - creates them owned by that host user. This container (uid
+# 1000) then cannot write them, so every store write fails with SQLITE_READONLY
+# ("attempt to write a readonly database") while Telegram alerts keep going
+# out: the alert reaches the user but nothing reaches the portal. See
+# plans/firewatch-store-readonly-recovery.md.
+def _sidecar_paths(db_path):
+    """The `-wal`/`-shm` sidecar paths of the evidence DB."""
+    return db_path + "-wal", db_path + "-shm"
+
+
+def _is_readonly_error(exc):
+    """True for SQLITE_READONLY / 'attempt to write a readonly database'."""
+    return "readonly" in str(exc).lower()
+
+
+def _sidecars_foreign(db_path):
+    """True when an existing -wal/-shm is NOT writable by this process."""
+    for path in _sidecar_paths(db_path):
+        if os.path.exists(path) and not os.access(path, os.W_OK):
+            return True
+    return False
+
+
+def _heal_store_sidecars(db_path):
+    """Remove a STALE, EMPTY -wal/-shm pair so SQLite recreates them as ours.
+
+    A READER can never append to the WAL, so a reader-created `-wal` is always
+    0 bytes: unlinking both sidecars is lossless and lets SQLite recreate them
+    owned by THIS process (uid 1000), which heals the store with no operator
+    action. A NON-empty `-wal` holds committed frames - it is never touched
+    (only reported) so no evidence can be destroyed here.
+
+    Returns True when the sidecars were removed (the caller may retry the open).
+    """
+    wal, shm = _sidecar_paths(db_path)
+    try:
+        if os.path.getsize(wal) > 0:
+            LOG(f"store heal: skipped - {os.path.basename(wal)} is not empty "
+                "(holds un-checkpointed frames); fix the ownership on the host")
+            return False
+    except OSError:
+        pass  # no -wal at all: nothing to protect
+    removed = []
+    for path in (wal, shm):
+        try:
+            os.unlink(path)
+            removed.append(os.path.basename(path))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            LOG(f"store heal: cannot remove {path}: {exc}")
+            return False
+    if removed:
+        LOG("store heal: removed stale " + ", ".join(removed) +
+            f" (SQLite recreates them owned by uid {os.getuid()})")
+    return True
+
+
+def _store_write_probe(conn):
+    """True when SQLite can really WRITE (WAL sidecars writable by us).
+
+    `BEGIN IMMEDIATE` takes the write lock and touches `-wal`/`-shm` without
+    changing any row (`ROLLBACK`); a foreign-owned sidecar raises
+    SQLITE_READONLY. The probe is required because SQLite opens a WAL DB
+    read-only WITHOUT error, so a plain connect + SELECT looks perfectly
+    healthy while every later INSERT fails.
+    """
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ROLLBACK")
+        return True
+    except sqlite3.Error:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        return False
+
+
+def _warn_store_unwritable(db_path, exc):
+    """One loud, actionable ERROR per run when the evidence store is wedged."""
+    if _STORE_WARNED[0]:
+        return
+    _STORE_WARNED[0] = True
+    LOG("ERROR: evidence store NOT writable - fire detections will NOT reach "
+        "the portal (Telegram alerts still go out).")
+    if exc:
+        LOG(f"ERROR: {exc}")
+    LOG(f"ERROR: {db_path} (and its -wal/-shm sidecars) must be writable by "
+        f"uid {os.getuid()} (the firewatch container user). A host-side open of "
+        "the live DB - even read-only - recreates -wal/-shm owned by that host "
+        "user and wedges writes.")
+    LOG(f"ERROR: fix on the host:  sudo chown 1000:1000 {db_path} "
+        f"{db_path}-wal {db_path}-shm   (or: rm an EMPTY -wal/-shm, then "
+        "restart firewatch). Read the DB with `docker exec firewatch ...`, "
+        "never from the host.")
+
+
+def _store_conn(cfg, allow_heal=True):
+    """Return the cached WAL-mode evidence connection (schema + guarded migration).
+
+    The connection is cached only AFTER a real write probe succeeded, so a
+    store wedged by foreign-owned WAL sidecars is DETECTED - and healed when
+    that is safe (empty sidecars) - instead of failing silently on every store.
+    """
     global _STORE_CONN
     if _STORE_CONN is not None:
         try:
             _STORE_CONN.execute("SELECT 1").fetchone()
         except sqlite3.Error:
             _STORE_CONN = None
-    if _STORE_CONN is None:
-        db_path = _store_db_path(cfg)
-        if db_path is None:
-            return None
-        store_dir = os.path.dirname(db_path) or "."
-        os.makedirs(store_dir, exist_ok=True)
+    if _STORE_CONN is not None:
+        return _STORE_CONN
+
+    db_path = _store_db_path(cfg)
+    if db_path is None:
+        return None
+    store_dir = os.path.dirname(db_path) or "."
+    os.makedirs(store_dir, exist_ok=True)
+    conn, exc, ok = None, None, False
+    try:
         conn = sqlite3.connect(db_path, timeout=5.0)
         conn.execute("PRAGMA busy_timeout=5000")   # spec 13.E / review 4.1
         conn.execute("PRAGMA journal_mode=WAL")
@@ -546,8 +659,52 @@ def _store_conn(cfg):
                 conn.execute(ddl)
             except sqlite3.Error:
                 pass  # column already present
+        ok = _store_write_probe(conn)
+    except sqlite3.Error as err:
+        exc = err
+    if conn is not None and ok:
         _STORE_CONN = conn
-    return _STORE_CONN
+        return _STORE_CONN
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    # Read-only shows up either as a raised error (DDL / INSERT) or ONLY as a
+    # failed write probe (a WAL DB opens read-only without complaint), so the
+    # sidecar ownership is the authoritative signal.
+    if _sidecars_foreign(db_path) or _is_readonly_error(exc):
+        if allow_heal and _heal_store_sidecars(db_path):
+            return _store_conn(cfg, allow_heal=False)
+        _warn_store_unwritable(db_path, exc)
+        return None
+    if exc is not None:
+        LOG(f"store: cannot open {db_path}: {exc}")
+    else:
+        LOG(f"store: cannot write {db_path} (locked?) - will retry at the next "
+            "stored frame")
+    return None
+
+
+def _store_preflight(cfg):
+    """Check (and try to heal) the evidence store BEFORE the first fire.
+
+    Logged once at startup so a wedged store is obvious immediately instead of
+    only after the first missed detections. Alerting is never affected.
+    """
+    if not _getb(cfg, "STORE_ENABLED", True):
+        LOG("store: disabled (STORE_ENABLED=false) - alerts are send-only")
+        return
+    db_path = _store_db_path(cfg)
+    if db_path is None:
+        LOG("store: disabled - no STORE_DIR configured (alerts are send-only)")
+        return
+    if _sidecars_foreign(db_path):
+        LOG("store: -wal/-shm found owned by another user - attempting heal")
+    if _store_conn(cfg) is None:
+        _warn_store_unwritable(db_path, None)
+    else:
+        LOG(f"store OK: {db_path} (writable by uid {os.getuid()})")
 
 
 def _prune_store(cfg, conn):
@@ -630,6 +787,15 @@ def store_fire_frame(cfg, cam, jpeg_bytes, dets, alerted=False):
     except Exception as exc:  # noqa: BLE001 - evidence store must never kill loop
         global _STORE_CONN
         _STORE_CONN = None
+        db_path = _store_db_path(cfg)
+        if db_path and (_is_readonly_error(exc) or _sidecars_foreign(db_path)):
+            # Self-heal now (EMPTY foreign sidecars only) so the NEXT marked
+            # frame stores, and warn loudly because THIS frame could not be.
+            if _sidecars_foreign(db_path) and _heal_store_sidecars(db_path):
+                LOG(f"{cam}: store recovered - stale foreign -wal/-shm removed; "
+                    "the next stored frame will reach the portal")
+            else:
+                _warn_store_unwritable(db_path, exc)
         LOG(f"{cam}: store FAILED: {exc}")
 
 
@@ -794,6 +960,7 @@ def run_legacy(cfg, model):
              for c in cameras}
     LOG(f"legacy started: {len(cameras)} cameras every {interval}s, "
         f"min_hits={min_hits}/{window}, cooldown={cooldown:g}s, smoke={track_smoke}")
+    _store_preflight(cfg)
     last_hb = time.monotonic()
     sweep = 0
     while True:
@@ -1029,6 +1196,7 @@ def run_forever(cfg, model):
         f"min_hits {s.min_hits}/{s.window}, cooldown {s.cooldown:g}s / "
         f"noalert {s.cooldown_noalert:g}s, baseline {s.baseline_every:g}s, "
         f"heartbeat {s.heartbeat_s:g}s")
+    _store_preflight(cfg)
 
     next_sweep = time.monotonic()
     last_hb = time.monotonic()

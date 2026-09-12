@@ -27,6 +27,7 @@ firewatch change and no schema migration:
 import os
 import sqlite3
 import struct
+from urllib.parse import quote
 
 
 # --- derived (read-only) motion / hits inference ---------------------------
@@ -58,8 +59,17 @@ def _num(value):
 
 
 def open_db(path):
-    """Open the evidence DB read-only. Returns a connection or raises."""
-    conn = sqlite3.connect(path, timeout=10)
+    """Open the evidence DB strictly read-only. Returns a connection or raises.
+
+    `mode=ro` + `PRAGMA query_only` guarantee the portal never writes a row.
+    NOTE: opening a WAL DB read-only can still CREATE the `-wal`/`-shm` sidecars
+    (a reader needs them) owned by the OPENING user - root here - and the
+    firewatch writer (uid 1000) then cannot write them. That is exactly the
+    silent evidence-loss bug fixed in firewatch (write probe + self-heal of an
+    EMPTY foreign `-wal`/`-shm`), see plans/firewatch-store-readonly-recovery.md.
+    """
+    conn = sqlite3.connect("file:{}?mode=ro".format(quote(path, safe="/")),
+                           uri=True, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=10000")
     # Safety: this module must never write to the firewatch DB.

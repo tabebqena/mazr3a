@@ -7,10 +7,8 @@ cleanup wiring, ports/networking and deploy workflow.
 
 ## Non-negotiable
 
-**Any change that adds, removes or modifies a service — including its config,
-ports, mounts, cron entries or host requirements — MUST update
-[`SYSTEM_SUMMARY.md`](../../SYSTEM_SUMMARY.md) in the SAME commit.** Do not
-defer it to a later task.
+SYSTEM_SUMMARY.md is a top-level overview, not a changelog. Update it in the same commit ONLY when a change alters the structure of the system (services, images, ports, mounts, volumes, cron entries, host requirements, config inventory, store profiles, deploy steps). Keep cells to one or two lines; per-change detail, dated notes and incident history belong in the relevant plans/*.md doc and the code. Bump the summary version / Last updated; bump APP_VERSION for portal changes.
+
 
 ## What to update when you touch a service
 

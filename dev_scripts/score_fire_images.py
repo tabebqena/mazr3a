@@ -16,6 +16,14 @@ for visual review.
 
 Execution is logged STEP BY STEP with timings and progress/ETA.
 
+RESUME (continue from the last point)
+-------------------------------------
+Every score is APPENDED to `<out>/fire_scores.csv` and flushed as it is computed.
+Re-running the SAME command with the same `--out` reads that CSV back and **skips
+the already-scored images**, continuing where it stopped (a long run can be
+Ctrl-C'd and restarted at any time). Use `--no-resume` to ignore/overwrite a
+previous CSV and start fresh; the final pass rewrites the CSV sorted by score.
+
 HIERARCHIES
 -----------
 Any nesting is supported. `--per-dir N` samples N images from EACH directory that
@@ -43,6 +51,8 @@ Usage:
         --per-dir 0 --sample 0 --skip-dirs valid,preview --out fire-model-training/scores_x \
         --copy-hits fire-model-training/hits_x --min-score 0.35
 
+    # interrupted? just run the exact same command again to continue
+
 Read-only against the images; writes only under --out / --copy-hits.
 """
 import argparse
@@ -59,6 +69,7 @@ from PIL import Image
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 THRESHOLDS = [0.90, 0.80, 0.70, 0.60, 0.50, 0.40, 0.35, 0.30, 0.20]
 AUTO_SKIP = ("test", "tests", "testing")
+FIELDS = ["path", "file", "group", "fire", "smoke"]
 
 _T0 = time.time()
 
@@ -217,6 +228,35 @@ def gather(roots, per_dir, sample, seed, skip):
     return items
 
 
+def load_done(csv_path):
+    """Already-scored rows from a previous run, keyed by absolute path."""
+    done = {}
+    if not os.path.isfile(csv_path):
+        return done
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                path = (row.get("path") or "").strip()
+                if not path:
+                    continue
+                try:
+                    fire = float(row.get("fire") or 0.0)
+                    smoke = float(row.get("smoke") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                done[os.path.abspath(path)] = {
+                    "path": path,
+                    "file": row.get("file") or os.path.basename(path),
+                    "group": row.get("group") or "",
+                    "fire": fire,
+                    "smoke": smoke,
+                }
+    except (OSError, csv.Error) as exc:
+        step("  ! could not read previous CSV (%s) - starting fresh" % exc)
+        return {}
+    return done
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -236,6 +276,8 @@ def main():
                          "skipped automatically")
     ap.add_argument("--no-skip-test", dest="no_skip_test", action="store_true",
                     help="do NOT auto-skip test/tests/testing directories")
+    ap.add_argument("--no-resume", dest="no_resume", action="store_true",
+                    help="ignore an existing <out>/fire_scores.csv and start over")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="fire-model-training/fire_scores",
                     help="output dir for the CSV + summary [fire-model-training/fire_scores]")
@@ -249,8 +291,9 @@ def main():
 
     step("start")
     step("roots=%s" % ", ".join(args.images))
-    step("options: per_dir=%s sample=%s min_score=%s seed=%s top=%s"
-         % (args.per_dir, args.sample, args.min_score, args.seed, args.top))
+    step("options: per_dir=%s sample=%s min_score=%s seed=%s top=%s resume=%s"
+         % (args.per_dir, args.sample, args.min_score, args.seed, args.top,
+            not args.no_resume))
     step("skip-dirs given: %s" % (args.skip_dirs or "-",))
     step("no-skip-test=%s" % args.no_skip_test)
 
@@ -266,49 +309,94 @@ def main():
         sys.exit("no images found under %s (check --skip-dirs: %s)"
                  % (", ".join(args.images), sorted(skip)))
 
-    step("loading fire model from %s ..." % args.model_dir)
-    model = load_fire_model(args.model_dir)
-    step("model ready: classes=%s input=%dx%d" % (model.labels, model.width,
-                                                  model.height))
-
-    total = len(files)
-    step("scoring %d image(s) (progress every 100) ..." % total)
+    # ---- resume: adopt everything already scored ---------------------------
+    csv_path = os.path.join(args.out, "fire_scores.csv") if args.out else None
     rows = []
+    done = {}
+    if csv_path:
+        os.makedirs(args.out, exist_ok=True)
+        if args.no_resume and os.path.isfile(csv_path):
+            step("--no-resume: discarding previous %s" % csv_path)
+            os.remove(csv_path)
+        elif not args.no_resume:
+            done = load_done(csv_path)
+            if done:
+                step("RESUME: %d image(s) already scored in %s - skipping them"
+                     % (len(done), csv_path))
+    if done:
+        rows = list(done.values())
+    todo = [f for f in files if os.path.abspath(f[0]) not in done]
+    step("to score this run: %d of %d image(s)" % (len(todo), len(files)))
+
+    if not todo:
+        step("nothing left to score - building outputs from the existing CSV")
+    model = None
+    if todo:
+        step("loading fire model from %s ..." % args.model_dir)
+        model = load_fire_model(args.model_dir)
+        step("model ready: classes=%s input=%dx%d" % (model.labels, model.width,
+                                                      model.height))
+
+    # ---- incremental append writer (flushed per row => crash-safe) ----------
+    fh = None
+    writer = None
+    if csv_path:
+        fresh = not os.path.isfile(csv_path)
+        fh = open(csv_path, "a", newline="", encoding="utf-8")
+        writer = csv.DictWriter(fh, fieldnames=FIELDS)
+        if fresh:
+            writer.writeheader()
+            fh.flush()
+        step("checkpoint file: %s (append mode%s)"
+             % (csv_path, "" if fresh else ", header present"))
+
+    total = len(todo)
+    step("scoring ... (progress every 100)")
     t_score = time.time()
-    for n, (path, group) in enumerate(files, 1):
-        try:
-            pil = Image.open(path).convert("RGB")
-        except Exception as exc:  # noqa: BLE001 - keep scanning
-            step("  ! skip %s (%s)" % (path, exc))
-            continue
-        fire, smoke = raw_class_max(model, pil)
-        rows.append({"path": path, "file": os.path.basename(path),
-                     "group": group, "fire": fire, "smoke": smoke})
-        if n % 100 == 0 or n == total:
-            done = len(rows)
-            rate = done / max(1e-6, time.time() - t_score)
-            eta = fmt_eta((total - n) / rate) if rate else "-"
-            hits = sum(1 for r in rows if r["fire"] >= args.min_score)
-            step("  scored %d/%d (%.0f%%) - hits >= %.2f: %d - %.1f img/s - ETA %s"
-                 % (n, total, 100.0 * n / total, args.min_score, hits, rate, eta))
-    step("scoring finished: %d image(s) in %.1fs" % (len(rows),
-                                                     time.time() - t_score))
+    interrupted = False
+    try:
+        for n, (path, group) in enumerate(todo, 1):
+            try:
+                pil = Image.open(path).convert("RGB")
+            except Exception as exc:  # noqa: BLE001 - keep scanning
+                step("  ! skip %s (%s)" % (path, exc))
+                continue
+            fire, smoke = raw_class_max(model, pil)
+            row = {"path": path, "file": os.path.basename(path),
+                   "group": group, "fire": fire, "smoke": smoke}
+            rows.append(row)
+            if writer is not None and fh is not None:
+                writer.writerow(row)
+                fh.flush()          # persist immediately -> resumable
+            if n % 100 == 0 or n == total:
+                rate = n / max(1e-6, time.time() - t_score)
+                eta = fmt_eta((total - n) / rate) if rate else "-"
+                hits = sum(1 for r in rows if r["fire"] >= args.min_score)
+                step("  scored %d/%d (%.0f%%) - hits >= %.2f: %d - %.1f img/s - ETA %s"
+                     % (n, total, 100.0 * n / total, args.min_score, hits, rate, eta))
+    except KeyboardInterrupt:
+        interrupted = True
+        step("INTERRUPTED - %d row(s) safely on disk; re-run the SAME command to "
+             "continue" % len(rows))
+    finally:
+        if fh is not None:
+            fh.close()
+    step("scoring finished: %d attempted this session, %d row(s) known, %.1fs"
+         % (len(todo), len(rows), time.time() - t_score))
 
     step("sorting by fire score (descending) ...")
     rows.sort(key=lambda r: r["fire"], reverse=True)
-    fires = np.array([r["fire"] for r in rows], dtype=np.float32)
+    fires = np.array([r["fire"] for r in rows], dtype=np.float32) if rows \
+        else np.zeros(1, dtype=np.float32)
 
-    # ---- outputs ------------------------------------------------------------
-    csv_path = None
-    if args.out:
-        step("writing per-image CSV -> %s/fire_scores.csv" % args.out)
-        os.makedirs(args.out, exist_ok=True)
-        csv_path = os.path.join(args.out, "fire_scores.csv")
-        with open(csv_path, "w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=["path", "file", "group", "fire", "smoke"])
+    # ---- final sorted CSV (overwrites the append log) ----------------------
+    if csv_path:
+        step("writing final sorted CSV -> %s" % csv_path)
+        with open(csv_path, "w", newline="", encoding="utf-8") as out:
+            w = csv.DictWriter(out, fieldnames=FIELDS)
             w.writeheader()
             w.writerows(rows)
-        step("wrote %d row(s) to %s" % (len(rows), csv_path))
+        step("wrote %d row(s)" % len(rows))
 
     if args.copy_hits:
         step("copying hits (fire >= %.2f) -> %s ..." % (args.min_score, args.copy_hits))
@@ -319,6 +407,10 @@ def main():
                 shutil.copy2(r["path"], os.path.join(args.copy_hits, r["file"]))
                 copied += 1
         step("copied %d hit(s)" % copied)
+
+    if not rows:
+        step("no rows to summarise - exiting")
+        return 0
 
     step("building summary ...")
     lines = ["Fire model scoring - %s" % ", ".join(args.images),
@@ -340,12 +432,13 @@ def main():
     print("\n" + report)
     if csv_path:
         step("writing SUMMARY.txt -> %s" % args.out)
-        with open(os.path.join(args.out, "SUMMARY.txt"), "w", encoding="utf-8") as fh:
-            fh.write(report + "\n")
+        with open(os.path.join(args.out, "SUMMARY.txt"), "w", encoding="utf-8") as out:
+            out.write(report + "\n")
     step("done: %d scored, %d >= %.2f, max fire %.4f (total %.1fs)"
-         % (len(rows),
-            int((fires >= args.min_score).sum()), args.min_score,
+         % (len(rows), int((fires >= args.min_score).sum()), args.min_score,
             float(fires.max()), time.time() - _T0))
+    if interrupted:
+        step("resume: re-run the same command to continue the remaining images")
     return 0
 
 

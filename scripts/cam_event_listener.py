@@ -48,7 +48,10 @@ RUN  (ON THE HOST, from the deploy dir, e.g. /home/dr/frigate)
         --cam-ip 192.168.1.200 --advertise-ip 192.168.1.5 \
         --listen-port 50235 --out media/cam_events \
         >> media/cam_events/nohup.log 2>&1 &
-    echo $! > media/cam_events/listener.pid
+    # NOTE: the script writes its OWN pid file (media/cam_events/listener.pid).
+    # Do NOT `echo $!` -- `setsid` forks, so $! is setsid's pid, not python's.
+    # A single-instance lock (listener.lock) refuses a second copy, and a bind
+    # failure is FATAL (so a port collision is visible, not silent).
 
 STOP
     kill "$(cat media/cam_events/listener.pid)"   # SIGTERM -> DELETE + clean exit
@@ -62,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import logging
@@ -393,13 +397,20 @@ class Receiver(threading.Thread):
         self._sock: socket.socket | None = None
         self.pushes = 0
 
-    def run(self) -> None:
+    def bind(self) -> None:
+        """Bind NOW (in the main thread) so a bind failure is fatal + visible."""
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((self.bind_ip, self.port))
         s.listen(32)
         s.settimeout(1.0)
         self._sock = s
+
+    def run(self) -> None:
+        s = self._sock
+        if s is None:
+            LOG.error("receiver not bound - thread exiting")
+            return
         LOG.info("receiver listening on %s:%d", self.bind_ip or "0.0.0.0", self.port)
         while not self.stop.is_set():
             try:
@@ -785,10 +796,13 @@ class SubscriptionManager(threading.Thread):
         except OSError as exc:
             LOG.warning("keepalive transport error: %s", exc)
             return False
-        if " 200" in code and lapi_ok(text):
+        resp = lapi_json(text).get("Response", {})
+        rc = resp.get("ResponseCode")
+        if " 200" in code and (rc is None or rc == 0):
             LOG.info("keepalive ok (id=%s)", self.sub_id)
             return True
-        LOG.warning("keepalive rejected: %s", code)
+        LOG.warning("keepalive rejected: %s rc=%s body=%s", code, rc,
+                    text.split("\r\n\r\n", 1)[-1][:160].replace("\n", " "))
         return False
 
     def delete(self, log: bool) -> None:
@@ -1002,6 +1016,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"subscription seconds, clamped [{MIN_DURATION},{MAX_DURATION}]")
     p.add_argument("--out", default=None,
                    help="output dir (default: <repo>/media/cam_events)")
+    p.add_argument("--pidfile", default=None,
+                   help="default: <out>/listener.pid (written by the script)")
     p.add_argument("--max-conn", type=int, default=16,
                    help="max concurrent camera connections (default 16)")
     p.add_argument("--stream-idle-s", type=float, default=20.0,
@@ -1027,6 +1043,39 @@ def setup_logging(out_dir: str) -> None:
     sh.setFormatter(fmt)
     LOG.addHandler(fh)
     LOG.addHandler(sh)
+
+
+def _acquire_lock(path: str):
+    """Single-instance lock; returns the open file handle, or None if held."""
+    try:
+        fh = open(path, "w")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.write(f"{os.getpid()}\n")
+    fh.flush()
+    return fh
+
+
+def _write_pidfile(path: str) -> None:
+    """Write OUR pid (not the shell's $! -- that is setsid's when setsid forks)."""
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"{os.getpid()}\n")
+    except OSError as exc:
+        LOG.warning("could not write pid file %s: %s", path, exc)
+
+
+def _release_lock(lock_path: str, pid_path: str) -> None:
+    for p in (pid_path, lock_path):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def main(argv=None) -> int:
@@ -1073,6 +1122,16 @@ def main(argv=None) -> int:
              args.stream_idle_s)
 
     store = EventStore(out_dir, args.max_body_mb, args.max_total_mb)
+
+    lock_path = os.path.join(out_dir, "listener.lock")
+    lock = _acquire_lock(lock_path)
+    if lock is None:
+        LOG.error("another listener is already running (lock %s) - exiting",
+                  lock_path)
+        return 4
+    pid_path = args.pidfile or os.path.join(out_dir, "listener.pid")
+    _write_pidfile(pid_path)
+
     stop = threading.Event()
     cam = CameraHTTP(args.cam_ip, args.cam_port, user, password)
 
@@ -1087,6 +1146,13 @@ def main(argv=None) -> int:
     receiver = Receiver(store, args.listen_ip, args.listen_port,
                         args.max_body_mb * 1024 * 1024, args.max_conn,
                         args.stream_idle_s, stop)
+    try:
+        receiver.bind()
+    except OSError as exc:
+        LOG.error("cannot bind %s:%d: %s (another listener running?)",
+                  args.listen_ip, args.listen_port, exc)
+        _release_lock(lock_path, pid_path)
+        return 3
     manager = SubscriptionManager(cam, advertise_ip, args.listen_port,
                                   args.duration, state_path, stop)
     ws = None if args.no_ws else WSStatusClient(
@@ -1114,6 +1180,7 @@ def main(argv=None) -> int:
                 t.join(timeout=10)
         LOG.info("stopped cleanly (pushes=%d ws_frames=%d)",
                  receiver.pushes, store.ws_frames)
+        _release_lock(lock_path, pid_path)
     return 0
 
 

@@ -81,8 +81,11 @@ def copy_if_missing(src, dst):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ready", required=True, help="ready_fire_smoke_dataset export root")
-    ap.add_argument("--negatives", default="fire-model-training/default-other",
-                    help="curated background dir (default-other); pass '' or --no-negatives to skip")
+    ap.add_argument("--negatives", action="append", default=None,
+                    help="curated background dir; REPEATABLE to mix several "
+                         "(default: fire-model-training/default-other). Each is "
+                         "walked RECURSIVELY and added to train as empty labels. "
+                         "Use --no-negatives to skip.")
     ap.add_argument("--out", default="fire-model-training/large_finetune")
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=0)
@@ -160,21 +163,40 @@ def main():
             open(lbl, "w", encoding="utf-8").close()
         n_bg += 1
 
-    # 5. Add curated negatives to train as background (empty .txt)
+    # 5. Add curated negatives to train as background (empty .txt).
+    #    Several dirs may be given (--negatives is repeatable) and each is walked
+    #    RECURSIVELY, so nested negative collections need no staging copy.
     n_neg = 0
-    neg_src = None if args.no_negatives else args.negatives
-    if neg_src:
-        neg_src = os.path.abspath(neg_src)
-        if not os.path.isdir(neg_src):
-            raise SystemExit(f"--negatives dir not found: {neg_src} (pass --no-negatives to skip)")
-        for f in sorted(os.listdir(neg_src)):
-            if os.path.splitext(f)[1].lower() not in IMG_EXTS:
-                continue
-            copy_if_missing(os.path.join(neg_src, f), os.path.join(train_img, f))
-            lbl = os.path.join(train_lbl, os.path.splitext(f)[0] + ".txt")
-            if not os.path.exists(lbl):
-                open(lbl, "w", encoding="utf-8").close()
-            n_neg += 1
+    neg_report = []
+    if not args.no_negatives:
+        neg_dirs = args.negatives or ["fire-model-training/default-other"]
+        for raw in neg_dirs:
+            neg_src = os.path.abspath(raw)
+            if not os.path.isdir(neg_src):
+                raise SystemExit(
+                    f"--negatives dir not found: {neg_src} (pass --no-negatives to skip)")
+            n_src = 0
+            for dirpath, _dirs, names in os.walk(neg_src):
+                for f in sorted(names):
+                    if os.path.splitext(f)[1].lower() not in IMG_EXTS:
+                        continue
+                    dst = os.path.join(train_img, f)
+                    if os.path.exists(dst):        # basename clash across sources
+                        stem, ext = os.path.splitext(f)
+                        k = 1
+                        while os.path.exists(os.path.join(
+                                train_img, f"{stem}__neg{k}{ext}")):
+                            k += 1
+                        dst = os.path.join(train_img, f"{stem}__neg{k}{ext}")
+                    copy_if_missing(os.path.join(dirpath, f), dst)
+                    lbl = os.path.join(
+                        train_lbl,
+                        os.path.splitext(os.path.basename(dst))[0] + ".txt")
+                    if not os.path.exists(lbl):
+                        open(lbl, "w", encoding="utf-8").close()
+                    n_src += 1
+            n_neg += n_src
+            neg_report.append((raw, n_src))
 
     # 6. Copy val images+labels
     n_val = 0
@@ -213,8 +235,11 @@ def main():
     report.append(f"Large fire/smoke fine-tune prep ({os.path.basename(out)})")
     report.append("=" * 60)
     report.append(f"source ready      : {ready} (train split)")
-    report.append(f"source negatives  : {neg_src or '(none)'} "
-                  f"({'skipped' if args.no_negatives else ''})")
+    report.append(f"source negatives  : "
+                  f"{'(none - skipped)' if args.no_negatives else ''}")
+    for raw_src, count in neg_report:
+        report.append(f"    - {raw_src} : {count} img(s)")
+    report.append(f"negatives added   : {n_neg}")
     report.append(f"seed / val-frac   : {args.seed} / {args.val_frac}")
     report.append("")
     report.append(f"ready total imgs   : {len(imgs)}")

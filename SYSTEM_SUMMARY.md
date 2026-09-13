@@ -12,8 +12,8 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v40` |
-| Last updated | 2026-09-12 |
+| Summary version | `v41` |
+| Last updated | 2026-09-13 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.5` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
@@ -110,6 +110,7 @@ with `docker compose up -d` / `docker compose down`.
 | Evidence store | `./media` (`<STORE_DIR>/<cam>/*.jpg` + `<STORE_DIR>/firewatch.db`) |
 | Store ownership | `firewatch.db` + its `-wal`/`-shm` sidecars must be writable by **uid 1000** (the container user). NEVER open the live DB from the host (not even `mode=ro`) — a foreign WAL sidecar wedges every write while alerts still fire. Read it via `docker exec firewatch …`. See [`.roo/rules/firewatch-store-ownership.md`](.roo/rules/firewatch-store-ownership.md) and [`plans/firewatch-store-readonly-recovery.md`](plans/firewatch-store-readonly-recovery.md). |
 | Store recovery | [`scripts/backfill_firewatch_store.py`](scripts/backfill_firewatch_store.py) re-registers evidence JPEGs with no `frames` row so missed alerts reappear in the portal (dry-run by default, `--commit` to write). |
+| Store export | [`dev_scripts/pull_firewatch_evidence.sh`](dev_scripts/pull_firewatch_evidence.sh) downloads every evidence JPEG (DB-referenced **and** orphans) + a consistent DB snapshot + metadata CSVs into `./firewatch-evidence/` (git-ignored local mirror; the DB is read **inside** the container only). |
 | Volumes (ro) | `./firewatch:/firewatch` · `./scripts:/scripts` · `./config:/config` · `./models:/models` · `./media:/media/firewatch` (rw) |
 | Ports | none (outbound only) |
 | Notes | Code/config edits need only `docker compose restart firewatch`. Active model = fire v4 (YOLO26-S). |
@@ -403,6 +404,7 @@ Developer scripts of note (local, not deployed):
 |---|---|
 | [`dev_scripts/deploy_all.sh`](dev_scripts/deploy_all.sh) | SSH to host, `git pull --ff-only`, `docker compose up -d --build` + restart ALL services, verify |
 | [`dev_scripts/run_ssh.sh`](dev_scripts/run_ssh.sh) | Run ONE read-only remote command (SSH_ASKPASS, no `sshpass`) |
+| [`dev_scripts/pull_firewatch_evidence.sh`](dev_scripts/pull_firewatch_evidence.sh) | Download the firewatch evidence store (evidence JPEGs + orphan JPEGs + DB snapshot + manifest/frames/detections CSVs) to `./firewatch-evidence/`; md5-verified, container-only DB access |
 | [`dev_scripts/prep_fire_model.sh`](dev_scripts/prep_fire_model.sh) | `best.pt` → OpenVINO IR (`models/fire/`) |
 | [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) | **ADD-ONLY** fetch of the small GGUF + mmproj into `models/scene/smolvlm2-500m/` (`--bin --llamacpp-tag <tag>` also fetches llama.cpp). Never touches the retained IR. |
 | [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) | Fetch the **RETAINED** OpenVINO VLM (Qwen2-VL-2B int4) into `models/scene/`; refuses to clobber without `--force` |

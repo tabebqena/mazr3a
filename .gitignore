@@ -117,6 +117,13 @@ firewatch-fire-clips/
 cam-clips/
 camera-clips/
 
+# Firewatch EVIDENCE export (every evidence JPEG the store holds - DB-referenced
+# AND the orphans with no `frames` row - plus manifest/frames/detections CSVs and
+# a consistent firewatch.db snapshot). Media artifact, not source; the local
+# mirror of the container store, pulled by
+# dev_scripts/pull_firewatch_evidence.sh. See plans/firewatch-evidence-export.md.
+firewatch-evidence/
+
 # ------------------------------------------------------------------
 # Local working docs (not versioned): all plan files (plans/), the master
 # prompt (prompt.txt) and Colab notebooks (notebooks/, regenerable from

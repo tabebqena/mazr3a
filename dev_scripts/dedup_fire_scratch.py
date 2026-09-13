@@ -45,6 +45,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
@@ -366,6 +367,57 @@ def save_index(path, rows, split_filter, run_name):
                                  "pos": 1 if r["cls"] else 0}) + "\n")
 
 
+def balance_background(rows, max_bg_share):
+    """Cap the background fraction of KEPT train images (fire vs not-fire balance).
+
+    Returns the number of kept background train images moved out (reason 'balance-bg-cap').
+    Solves ``bg_new / n_new <= max_bg_share`` for the minimum number to remove:
+        remove = ceil((n_bg - max_bg_share * n) / (1 - max_bg_share)).
+    Background = an image with no positive box (empty label); in a fire-only run that
+    includes pure background AND smoke-only images.
+    """
+    train = [r for r in rows if r["split"] == "train" and r["kept"]]
+    n = len(train)
+    if n == 0:
+        return 0
+    n_bg = sum(1 for r in train if not r["cls"])
+    share = n_bg / n
+    if share <= max_bg_share:
+        return 0
+    excess = math.ceil((n_bg - max_bg_share * n) / (1.0 - max_bg_share))
+    removed = 0
+    for r in rows:
+        if r["split"] != "train" or not r["kept"] or r["cls"]:
+            continue
+        if removed >= excess:
+            break
+        r["kept"] = False
+        r["reason"] = "balance-bg-cap"
+        removed += 1
+    return removed
+
+
+def write_bg_extra(rows, bg_extra_dir):
+    """Copy background images moved out by the cap so they stay reversible (not deleted)."""
+    if not bg_extra_dir:
+        return 0
+    n = 0
+    for r in rows:
+        if r["reason"] != "balance-bg-cap":
+            continue
+        os.makedirs(os.path.join(bg_extra_dir, "images"), exist_ok=True)
+        os.makedirs(os.path.join(bg_extra_dir, "labels"), exist_ok=True)
+        ext = os.path.splitext(r["img"])[1].lower()
+        shutil.copy2(r["img"], os.path.join(bg_extra_dir, "images", r["stem"] + ext))
+        lbl = os.path.join(bg_extra_dir, "labels", r["stem"] + ".txt")
+        if os.path.isfile(r["lbl"]):
+            shutil.copy2(r["lbl"], lbl)
+        else:
+            open(lbl, "w", encoding="utf-8").close()
+        n += 1
+    return n
+
+
 def write_clean(rows, out, pool):
     for split in ("train", "val", "test"):
         os.makedirs(os.path.join(out, split, "images"), exist_ok=True)
@@ -403,6 +455,13 @@ def main():
     ap.add_argument("--prev-test-index", default=None,
                     help="dir of *.jsonl fingerprints of EVERY previously-held-out test/val image")
     ap.add_argument("--run-name", default="scratch", help="tag stored in the index files")
+    ap.add_argument("--max-bg-share", type=float, default=0.60,
+                    help="cap the background (non-fire) fraction of TRAIN images [0.60]. "
+                         "Higher = more negatives / fewer false positives; lower = more fire "
+                         "samples / better recall.")
+    ap.add_argument("--bg-extra", default=None,
+                    help="dir that receives background images moved out by the cap "
+                         "(default: <out>_bg_extra; reversible, nothing is deleted)")
     ap.add_argument("--no-test-self", action="store_true")
     ap.add_argument("--no-val-self", action="store_true")
     ap.add_argument("--no-train-self", action="store_true")
@@ -451,6 +510,13 @@ def main():
         cur_val = FixedPool.from_rows([r for r in rows if r["split"] == "val" and r["kept"]])
         counts["train-vs-val"] = mark_vs_pool(rows, "train", cur_val, "train-vs-val", args.hamming)
 
+    # fire vs not-fire balance (runs LAST, after every dedup pass has settled the set)
+    counts["balance-bg-cap"] = balance_background(rows, args.max_bg_share)
+    bg_extra = args.bg_extra or (out + "_bg_extra")
+    if counts["balance-bg-cap"]:
+        n_extra = write_bg_extra(rows, bg_extra)
+        print("background cap: moved %d -> %s" % (n_extra, bg_extra), flush=True)
+
     kept_rows = write_clean(rows, out, pool)
 
     # data.yaml for the clean pool (val fallback to test when val is empty)
@@ -490,6 +556,17 @@ def main():
         n = by_split[split]
         k = sum(1 for r in rows if r["split"] == split and r["kept"])
         rep.append("%-5s kept %d / %d (removed %d)" % (split, k, n, n - k))
+    kept_train = [r for r in rows if r["split"] == "train" and r["kept"]]
+    n_tr = len(kept_train)
+    n_bg = sum(1 for r in kept_train if not r["cls"])
+    rep.append("")
+    rep.append("train class balance (fire vs not-fire):")
+    rep.append("  fire-positive = %d (%.0f%%)" % (n_tr - n_bg, 100 * (n_tr - n_bg) / max(1, n_tr)))
+    rep.append("  background    = %d (%.0f%%)   cap = %.0f%%"
+               % (n_bg, 100 * n_bg / max(1, n_tr), 100 * args.max_bg_share))
+    if n_tr and (n_tr - n_bg) / n_tr < 0.10:
+        rep.append("  WARNING: fire-positive share is under 10%% - recall will likely suffer; "
+                   "lower --max-bg-share or add more fire sources.")
     rep.append("")
     rep.append("removals by pass:")
     for k, v in counts.items():

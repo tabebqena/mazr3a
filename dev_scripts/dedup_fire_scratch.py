@@ -10,8 +10,10 @@ Reads the merged pool written by dev_scripts/prep_fire_scratch_dataset.py
     3. train self        (group|global) - a train image near-dup of an earlier KEPT train image is removed
     4. test vs prev-train/prev-test  - never score an image that was already trained on / already scored
     5. val  vs prev-train/prev-test  - same for early-stop honesty
-    6. train vs prev-train/prev-test - never re-memorise a previously trained image, and never
-                                       leak a previously held-out test image into training
+    6. train vs prev-train/prev-test - never re-memorise a previously trained POSITIVE image, and
+                                       never leak a previously held-out test image into training.
+                                       Background-only use is NOT a blocker: pixels trained as
+                                       background stay re-usable as a positive class later.
     7. train vs test     (global)  - honest final score (test never leaks into train)
     8. train vs val      (global)  - honest early-stop
 
@@ -220,12 +222,23 @@ def load_pool(pool):
                 continue
             stem = os.path.splitext(name)[0]
             m = manifest.get(stem, {})
+            cls = set()
+            lp = os.path.join(lbldir, stem + ".txt")
+            if os.path.isfile(lp):
+                for line in open(lp, encoding="utf-8"):
+                    parts = line.split()
+                    if parts:
+                        try:
+                            cls.add(int(float(parts[0])))
+                        except ValueError:
+                            pass
             rows.append({
                 "split": split,
                 "stem": stem,
                 "group": m.get("split_group") or stem,
                 "img": os.path.join(imdir, name),
-                "lbl": os.path.join(lbldir, stem + ".txt"),
+                "lbl": lp,
+                "cls": cls,
                 "md5": None, "dhash": None,
                 "kept": True, "reason": "",
             })
@@ -304,10 +317,16 @@ def mark_vs_pool(rows, split, pool, reason, limit):
     return removed
 
 
-def load_index(index_dir):
+def load_index(index_dir, positives_only=False):
     """FixedPool from every *.jsonl in index_dir, or None if the dir is empty/missing.
 
-    Each line: {"md5": "...", "d": <int>, "stem": "...", "run": "..."}
+    ``positives_only=True`` keeps ONLY images that were trained as a POSITIVE class
+    (at least one box); background-only usage is ignored so a later run can still train
+    those same pixels as a real class (e.g. train smoke after a fire-only run - the
+    smoke boxes that were dropped to background must stay re-usable).
+
+    Each line: {"md5": "...", "d": <int>, "stem": "...", "run": "...",
+                "classes": [..], "pos": 0|1}
     """
     if not index_dir or not os.path.isdir(index_dir):
         return None
@@ -324,6 +343,8 @@ def load_index(index_dir):
                     o = json.loads(line)
                 except ValueError:
                     continue
+                if positives_only and o.get("pos") == 0:
+                    continue
                 if o.get("md5"):
                     md5s.add(o["md5"])
                 if o.get("d") is not None:
@@ -334,14 +355,15 @@ def load_index(index_dir):
 
 
 def save_index(path, rows, split_filter, run_name):
-    """Write one JSONL file {md5,d,stem,run} for kept rows of the given splits."""
+    """Write one JSONL file {md5,d,stem,run,classes,pos} for kept rows of the given splits."""
     os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         for r in rows:
             if r["split"] not in split_filter or not r["kept"]:
                 continue
-            fh.write(json.dumps({"md5": r["md5"], "d": r["dhash"],
-                                 "stem": r["stem"], "run": run_name}) + "\n")
+            fh.write(json.dumps({"md5": r["md5"], "d": r["dhash"], "stem": r["stem"],
+                                 "run": run_name, "classes": sorted(r["cls"]),
+                                 "pos": 1 if r["cls"] else 0}) + "\n")
 
 
 def write_clean(rows, out, pool):
@@ -411,8 +433,8 @@ def main():
         counts["train-self"] = self_dedup(rows, "train", args.hamming,
                                           args.train_scope == "group")
 
-    prev_train = load_index(args.prev_train_index)
-    prev_test = load_index(args.prev_test_index)
+    prev_train = load_index(args.prev_train_index, positives_only=True)
+    prev_test = load_index(args.prev_test_index, positives_only=False)
     if prev_train:
         counts["test-vs-prev-train"] = mark_vs_pool(rows, "test", prev_train, "test-vs-prev-train", args.hamming)
         counts["val-vs-prev-train"] = mark_vs_pool(rows, "val", prev_train, "val-vs-prev-train", args.hamming)

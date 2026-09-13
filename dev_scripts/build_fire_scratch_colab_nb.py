@@ -177,6 +177,11 @@ C_CONFIG = code([
     "LR0         = 0.01  # standard YOLO scratch LR (fine-tunes use 0.001)\n",
     "PATIENCE    = 20    # early stop on the held-out val split\n",
     "SAVE_PERIOD = 1     # checkpoint every epoch -> survives a recycle\n",
+    "\n",
+    "# --- per-cell prerequisite guard (every cell verifies the cells it depends on ran) ---\n",
+    "def need(ok, what):\n",
+    "    if not ok:\n",
+    "        raise SystemExit('PREREQUISITE MISSING - ' + what)\n",
 ])
 
 C_LOGGING = code([
@@ -233,6 +238,7 @@ C_LOGGING = code([
 C_BUNDLE = code([
     "# Cell 4 - unpack the (small) upload bundle from Drive (self-healing)\n",
     "import glob, os, shutil, zipfile\n",
+    "need(os.path.exists('/content/drive/MyDrive'), 'run Cell 3 (mount Drive) first')\n",
     "\n",
     "REQUIRED = ['scripts/prep_fire_scratch_dataset.py', 'scripts/prep_fireviewer_dataset.py',\n",
     "            'scripts/dedup_fire_scratch.py', 'scripts/colab_train_scratch.py']\n",
@@ -265,6 +271,7 @@ C_SOURCES = code([
     "# Cell 5 - build the RAW merged pool: download external sources -> remap classes -> merge\n",
     "# IDEMPOTENT: re-running after a reset is a no-op if RAW/data.yaml already exists.\n",
     "import json, os, subprocess, sys\n",
+    "need(os.path.exists(UPLOAD + '/scripts/prep_fire_scratch_dataset.py'), 'run Cell 4 (unpack bundle) first')\n",
     "\n",
     "with drive_log('05_sources'):\n",
     "    cfg = {'classes': CLASSES, 'class_map': CLASS_MAP, 'sources': SOURCES}\n",
@@ -284,6 +291,8 @@ C_DEDUP = code([
     "# Cell 6 - the dedup passes (self + vs previous runs' lightweight fingerprints)\n",
     "# See dev_scripts/dedup_fire_scratch.py for the exact order and reasons.\n",
     "import os, subprocess, sys\n",
+    "need(os.path.exists(RAW + '/data.yaml'), 'run Cell 5 (build raw pool) first')\n",
+    "need(os.path.exists(UPLOAD + '/scripts/dedup_fire_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
     "\n",
     "with drive_log('06_dedup'):\n",
     "    os.makedirs(FPS_TRAIN, exist_ok=True)\n",
@@ -308,6 +317,7 @@ C_DEDUP = code([
 C_VERIFY = code([
     "# Cell 7 - verify the CLEAN pool (read-only): splits, class coverage, integrity\n",
     "import collections, os\n",
+    "need(os.path.exists(CLEAN + '/data.yaml'), 'run Cell 6 (dedup) first')\n",
     "\n",
     "EXT = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')\n",
     "with drive_log('07_verify'):\n",
@@ -355,7 +365,8 @@ C_VERIFY = code([
 
 C_TRAINER_CHECK = code([
     "# Cell 8 - sanity-check the detached trainer that ships in the bundle\n",
-    "import subprocess, sys\n",
+    "import os, subprocess, sys\n",
+    "need(os.path.exists(UPLOAD + '/scripts/colab_train_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
     "trainer = UPLOAD + '/scripts/colab_train_scratch.py'\n",
     "print(subprocess.run([sys.executable, trainer, '--help'],\n",
     "                     capture_output=True, text=True).stdout[:900])\n",
@@ -364,6 +375,8 @@ C_TRAINER_CHECK = code([
 C_LAUNCH = code([
     "# Cell 9 - LAUNCH training DETACHED (closing VS Code will NOT stop it)\n",
     "import os, subprocess, sys\n",
+    "need(os.path.exists(CLEAN + '/data.yaml'), 'run Cell 6 (dedup) first')\n",
+    "need(os.path.exists(UPLOAD + '/scripts/colab_train_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
     "\n",
     "trainer = UPLOAD + '/scripts/colab_train_scratch.py'   # defined here too: Cell 8 is optional\n",
     "assert os.path.exists(trainer), 'trainer missing from the bundle - see Cell 4'\n",
@@ -505,6 +518,7 @@ C_WAIT = code([
 C_RESUME = code([
     "# Cell 12 - RESUME an interrupted run (detached too). Refuses if the run FINISHED.\n",
     "import os, shutil, subprocess, sys, torch\n",
+    "need(os.path.exists(UPLOAD + '/scripts/colab_train_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
     "\n",
     "trainer = UPLOAD + '/scripts/colab_train_scratch.py'\n",
     "run_local, run_drive = os.path.join(LOCAL_RUNS, NAME), os.path.join(RUNS, NAME)\n",
@@ -537,6 +551,7 @@ C_RESUME = code([
 C_COLLECT = code([
     "# Cell 13 - COLLECT + EVALUATE on the held-out test split + compare vs previous best\n",
     "import hashlib, json, os, shutil, time\n",
+    "need(os.path.exists(CLEAN + '/data.yaml'), 'run Cell 6 (dedup) first')\n",
     "from ultralytics import YOLO\n",
     "\n",
     "# 1) locate the best checkpoint (local first, then Drive)\n",

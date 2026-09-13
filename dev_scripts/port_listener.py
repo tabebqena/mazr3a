@@ -22,6 +22,8 @@ Storage under --outdir:
                    seq, ts, proto, src, bytes, b64 (payload, base64),
                    text (if printable) + syslog fields when detected
     capture.log    human-readable "<ts> <proto> <src> <len>B <preview>"
+    connections.log  every TCP open/close incl. bytes received — distinguishes
+                   "no client ever connected" from "client connected, sent nothing"
 
 Usage:
     python3 port_listener.py [--bind 0.0.0.0] [--port 514]
@@ -122,15 +124,26 @@ class Store:
                             encoding="utf-8", buffering=1)
         self.log_fh = open(os.path.join(outdir, "capture.log"), "a",
                            encoding="utf-8", buffering=1)
+        # connection log: records opens/closes even when ZERO bytes arrive,
+        # which is how you tell "no client connected" from "client connected
+        # but sent nothing".
+        self.conn_fh = open(os.path.join(outdir, "connections.log"), "a",
+                            encoding="utf-8", buffering=1)
         self.count = 0
         self.bytes_total = 0
 
     def close(self):
-        for fh in (self.raw_fh, self.json_fh, self.log_fh):
+        for fh in (self.raw_fh, self.json_fh, self.log_fh, self.conn_fh):
             try:
                 fh.close()
             except OSError:
                 pass
+
+    def note(self, text: str) -> None:
+        msg = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {text}"
+        self.conn_fh.write(msg + "\n")
+        if not self.quiet:
+            print("# " + msg)
 
     def add(self, proto: str, ip: str, port: int, payload: bytes) -> None:
         self.count += 1
@@ -247,7 +260,7 @@ def main() -> int:
     print(f"# general port listener on {args.bind}:{port} proto={args.proto} "
           f"outdir={args.outdir} window={'inf' if deadline is None else str(args.seconds)+'s'}")
 
-    conns: dict[socket.socket, tuple[str, int]] = {}
+    conns: dict[socket.socket, list[Any]] = {}  # sock -> [ip, port, bytes_rx]
     try:
         while not _stop:
             if deadline and time.time() > deadline:
@@ -267,25 +280,31 @@ def main() -> int:
                     try:
                         conn, addr = sock.accept()
                     except OSError as exc:
-                        print(f"# accept skipped: {exc}")
+                        store.note(f"tcp accept skipped: {exc}")
                         continue
                     conn.setblocking(False)
-                    conns[conn] = (addr[0], addr[1])
+                    conns[conn] = [addr[0], addr[1], 0]  # ip, port, bytes_rx
                     sel.register(conn, selectors.EVENT_READ, "conn")
-                    print(f"# tcp connect {addr[0]}:{addr[1]}")
+                    store.note(f"tcp open {addr[0]}:{addr[1]}")
                 elif kind == "conn":
                     try:
                         chunk = sock.recv(65535)
                     except OSError:
                         chunk = b""
+                    info = conns.get(sock)
                     if not chunk:
-                        ip, pt = conns.pop(sock, ("?", 0))
-                        sel.unregister(sock)
+                        ip, pt, n = info if info else ("?", 0, 0)
+                        conns.pop(sock, None)
+                        try:
+                            sel.unregister(sock)
+                        except (KeyError, ValueError):
+                            pass
                         sock.close()
-                        print(f"# tcp close {ip}:{pt}")
+                        store.note(f"tcp close {ip}:{pt} rx={n}B")
                         continue
-                    ip, pt = conns.get(sock, ("?", 0))
-                    store.add("tcp", ip, pt, chunk)
+                    if info:
+                        info[2] += len(chunk)
+                        store.add("tcp", info[0], info[1], chunk)
     finally:
         for c in list(conns):
             try:

@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 
 import requests
 import urllib3
@@ -71,6 +72,20 @@ def put_xml(sess, u: str, body: str, dry: bool) -> str:
     return f"http={r.status_code}\n{r.text}"
 
 
+def fd_enabled(sess, base: str, ch: int) -> tuple[int, str]:
+    r = sess.get(f"{base}/ISAPI/Smart/FaceDetect/{ch}", timeout=20)
+    on = r.text.split("<enabled>", 1)[1].split("<", 1)[0] if "<enabled>" in r.text else "?"
+    return r.status_code, on
+
+
+def fd_set(sess, base: str, ch: int, enabled: str, sensitivity: int = 3,
+           highlight: str = "false") -> int:
+    body = facedetect_xml(ch, enabled, sensitivity, highlight)
+    r = sess.put(f"{base}/ISAPI/Smart/FaceDetect/{ch}", data=body.encode("utf-8"),
+                 headers={"Content-Type": "application/xml"}, timeout=25)
+    return r.status_code
+
+
 def logserver_xml(enabled: str, ip: str, port: int, interval: int, fmt: str) -> str:
     return (f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f'<LogServer version="1.0" xmlns="{NS}">'
@@ -95,7 +110,8 @@ def facedetect_xml(ch: int, enabled: str, sensitivity: int, highlight: str) -> s
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("ls-get", "ls-set", "fd-get", "fd-set"))
+    ap.add_argument("cmd", choices=("ls-get", "ls-set", "fd-get", "fd-set",
+                                    "fd-sweep", "fd-monitor"))
     ap.add_argument("--host", default=os.environ.get("ISAPI_HOST", "192.168.1.4"))
     ap.add_argument("--user", default=os.environ.get("ISAPI_USER", "admin"))
     ap.add_argument("--pass", dest="pwd", default=os.environ.get("ISAPI_PASS", ""))
@@ -111,6 +127,12 @@ def main() -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--sensitivity", type=int, default=3)
     ap.add_argument("--highlight", default="false")
+    ap.add_argument("--channels", default="1,2,3,4,5,6,7,8,9,10",
+                    help="channel list for fd-sweep / fd-monitor")
+    ap.add_argument("--interval-sec", type=int, default=30)
+    ap.add_argument("--seconds", type=int, default=120)
+    ap.add_argument("--restore-channel", type=int, default=None,
+                    help="fd-sweep: leave this channel enabled at the end")
     args = ap.parse_args()
 
     if not args.pwd:
@@ -141,6 +163,36 @@ def main() -> int:
             if "<enabled>" in r.text:
                 on = r.text.split("<enabled>", 1)[1].split("<", 1)[0]
             print(f"ch{c:<3} http={r.status_code} enabled={on}")
+        return 0
+
+    if args.cmd == "fd-sweep":
+        # Probe EACH channel individually by freeing the single slot first.
+        chans = [int(x) for x in args.channels.split(",") if x.strip()]
+        slot = None
+        for c in chans:
+            if slot is not None:
+                fd_set(sess, base, slot, "false")
+            code = fd_set(sess, base, c, "true")
+            _, on = fd_enabled(sess, base, c)
+            print(f"ch{c:<3} put={code} read={on}")
+            slot = c if on == "true" else None
+        if args.restore_channel:
+            if slot is not None and slot != args.restore_channel:
+                fd_set(sess, base, slot, "false")
+            fd_set(sess, base, args.restore_channel, "true")
+            _, on = fd_enabled(sess, base, args.restore_channel)
+            print(f"# restored ch{args.restore_channel}={on}")
+        return 0
+
+    if args.cmd == "fd-monitor":
+        chans = [int(x) for x in args.channels.split(",") if x.strip()]
+        end = time.time() + args.seconds
+        while True:
+            cells = [f"ch{c}={fd_enabled(sess, base, c)[1]}" for c in chans]
+            print(time.strftime("%H:%M:%S"), " ".join(cells), flush=True)
+            if time.time() >= end:
+                break
+            time.sleep(args.interval_sec)
         return 0
 
     # fd-set

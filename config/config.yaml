@@ -267,11 +267,11 @@ record:
   # `events.pre_capture: 3`).
   alerts:
     retain:
-      days: 7
+      days: 14
     pre_capture: 3
   detections:
     retain:
-      days: 7
+      days: 14
     pre_capture: 3
 
 # Snapshots are generated from the detect stream and stay enabled.
@@ -496,12 +496,15 @@ cameras:
         horse:
           min_score: 0.5
           threshold: 0.65
-    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
-    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
-    # tracked (live boxes, MQTT events, portal) but are never written to disk
-    # as clips. This overrides the global record block, which otherwise records
-    # every tracked object. See plans/animal-motion-detection.md.
-    record:
+    # DETECT BUT DO NOT RECORD (2026-09-13, corrected) - farm animals.
+    # record.alerts/detections has NO `labels` in this Frigate build (rejected
+    # -> safe mode). The labels that become alerts/detections - and therefore
+    # the only recordings RETAINED, because record/cleanup.py keeps a clip only
+    # when it overlaps a review segment - are set in `review`. Listing only
+    # person/car keeps cow/sheep/horse tracked (live boxes, events, MQTT) while
+    # NEVER writing their clips. detections.labels MUST be non-empty: an empty
+    # list means "all labels". See plans/animal-motion-detection.md.
+    review:
       alerts:
         labels:
           - person
@@ -556,12 +559,15 @@ cameras:
         horse:
           min_score: 0.5
           threshold: 0.65
-    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
-    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
-    # tracked (live boxes, MQTT events, portal) but are never written to disk
-    # as clips. This overrides the global record block, which otherwise records
-    # every tracked object. See plans/animal-motion-detection.md.
-    record:
+    # DETECT BUT DO NOT RECORD (2026-09-13, corrected) - farm animals.
+    # record.alerts/detections has NO `labels` in this Frigate build (rejected
+    # -> safe mode). The labels that become alerts/detections - and therefore
+    # the only recordings RETAINED, because record/cleanup.py keeps a clip only
+    # when it overlaps a review segment - are set in `review`. Listing only
+    # person/car keeps cow/sheep/horse tracked (live boxes, events, MQTT) while
+    # NEVER writing their clips. detections.labels MUST be non-empty: an empty
+    # list means "all labels". See plans/animal-motion-detection.md.
+    review:
       alerts:
         labels:
           - person
@@ -617,12 +623,15 @@ cameras:
         horse:
           min_score: 0.5
           threshold: 0.65
-    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
-    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
-    # tracked (live boxes, MQTT events, portal) but are never written to disk
-    # as clips. This overrides the global record block, which otherwise records
-    # every tracked object. See plans/animal-motion-detection.md.
-    record:
+    # DETECT BUT DO NOT RECORD (2026-09-13, corrected) - farm animals.
+    # record.alerts/detections has NO `labels` in this Frigate build (rejected
+    # -> safe mode). The labels that become alerts/detections - and therefore
+    # the only recordings RETAINED, because record/cleanup.py keeps a clip only
+    # when it overlaps a review segment - are set in `review`. Listing only
+    # person/car keeps cow/sheep/horse tracked (live boxes, events, MQTT) while
+    # NEVER writing their clips. detections.labels MUST be non-empty: an empty
+    # list means "all labels". See plans/animal-motion-detection.md.
+    review:
       alerts:
         labels:
           - person
@@ -674,12 +683,15 @@ cameras:
         horse:
           min_score: 0.5
           threshold: 0.65
-    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
-    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
-    # tracked (live boxes, MQTT events, portal) but are never written to disk
-    # as clips. This overrides the global record block, which otherwise records
-    # every tracked object. See plans/animal-motion-detection.md.
-    record:
+    # DETECT BUT DO NOT RECORD (2026-09-13, corrected) - farm animals.
+    # record.alerts/detections has NO `labels` in this Frigate build (rejected
+    # -> safe mode). The labels that become alerts/detections - and therefore
+    # the only recordings RETAINED, because record/cleanup.py keeps a clip only
+    # when it overlaps a review segment - are set in `review`. Listing only
+    # person/car keeps cow/sheep/horse tracked (live boxes, events, MQTT) while
+    # NEVER writing their clips. detections.labels MUST be non-empty: an empty
+    # list means "all labels". See plans/animal-motion-detection.md.
+    review:
       alerts:
         labels:
           - person

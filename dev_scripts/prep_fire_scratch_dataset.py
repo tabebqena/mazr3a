@@ -108,7 +108,18 @@ def read_yaml_names(data_yaml):
                 idx[int(mm.group(1))] = mm.group(2).strip().strip("'\"")
         if idx:
             return [idx[i] for i in sorted(idx)]
-    # list form: "names: ['fire', 'smoke']" (YOLO files use single quotes, not valid JSON)
+    # block-sequence form (Roboflow style):
+    #   names:
+    #   - Fire
+    #   - default
+    #   - smoke
+    m = re.search(r"(?:^|\n)\s*names\s*:\s*\n((?:[ \t]*-[ \t]*[^\n]+(?:\n|$))+)", text)
+    if m:
+        vals = [ln.strip().lstrip("-").strip().strip("'\"") for ln in m.group(1).splitlines()]
+        vals = [v for v in vals if v]
+        if vals:
+            return vals
+    # inline list form: "names: ['fire', 'smoke']" (YOLO files use single quotes, not valid JSON)
     m = re.search(r"(?:^|\n)\s*names\s*:\s*(\[[^\]]*\])", text)
     if m:
         inner = m.group(1)[1:-1]           # strip the surrounding [ ]
@@ -204,8 +215,13 @@ def source_records(src_root):
     return records
 
 
-def remap_boxes(lbl_path, src_names, class_map, classes, drop_counter, src_id):
-    """Return list of (target_class, x, y, w, h) rows after remap/drop."""
+def remap_boxes(lbl_path, src_names, class_map, index_map, classes, drop_counter, src_id):
+    """Return list of (target_class, x, y, w, h) rows after remap/drop.
+
+    ``index_map`` (optional) maps a SOURCE CLASS INDEX -> target class name and takes
+    precedence over name-based ``class_map``; use it for sources whose data.yaml names are
+    missing/broken (e.g. D-Fire's 0=smoke/1=fire, ready_fire_smoke's ['0','1','2']).
+    """
     target_index = {name: i for i, name in enumerate(classes)}
     rows = []
     if not lbl_path or not os.path.isfile(lbl_path):
@@ -220,20 +236,23 @@ def remap_boxes(lbl_path, src_names, class_map, classes, drop_counter, src_id):
                 vals = parts[1:]
             except ValueError:
                 continue
-            sname = src_names[si] if 0 <= si < len(src_names) else ""
-            if sname in class_map:
-                tname = class_map[sname]
-            elif sname in target_index:
-                tname = sname
+            if index_map and si in index_map:
+                tname = index_map[si]        # may be None to drop the box
             else:
-                tname = None
-                if sname:
-                    drop_counter[(src_id, sname)] += 1
+                sname = src_names[si] if 0 <= si < len(src_names) else ""
+                if sname in class_map:
+                    tname = class_map[sname]
+                elif sname in target_index:
+                    tname = sname
+                else:
+                    tname = None
+                    if sname:
+                        drop_counter[(src_id, sname)] += 1
             if tname is None:
                 continue
             if tname not in target_index:
-                die("class_map maps %r -> %r which is not in --classes %s"
-                    % (sname, tname, classes))
+                die("map maps %r -> %r which is not in --classes %s"
+                    % (si, tname, classes))
             rows.append((target_index[tname],) + tuple(vals))
     return rows
 
@@ -312,6 +331,7 @@ def merge_source(src, src_root, src_names, src_manifest, out, classes, cfg_map,
     role = src.get("role", "train")
     class_map = dict(cfg_map)
     class_map.update(src.get("class_map") or {})
+    index_map = {int(k): v for k, v in (src.get("index_map") or {}).items()}
     mf_rows = []
     out_img = {s: os.path.join(out, s, "images") for s in ("train", "val", "test")}
     out_lbl = {s: os.path.join(out, s, "labels") for s in ("train", "val", "test")}
@@ -330,7 +350,8 @@ def merge_source(src, src_root, src_names, src_manifest, out, classes, cfg_map,
         if role == "negatives":
             rows = []
         else:
-            rows = remap_boxes(lbl, src_names, class_map, classes, drop_counter, src_id)
+            rows = remap_boxes(lbl, src_names, class_map, index_map, classes,
+                               drop_counter, src_id)
 
         new_stem = "%s__%s" % (src_id, stem)
         dst_img = os.path.join(out_img[tgt], new_stem + os.path.splitext(img)[1].lower())

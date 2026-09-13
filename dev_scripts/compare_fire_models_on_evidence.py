@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""compare_fire_models_on_evidence.py - V4 vs V6 on the pulled firewatch evidence.
+"""compare_fire_models_on_evidence.py - score ANY fire models on the labelled evidence.
 
 WHAT IT COMPARES
 ----------------
@@ -47,8 +47,10 @@ Usage:
 Options:
   --evidence DIR      pulled collection            [./firewatch-evidence]
   --pos-subdir NAME   positives subdir            [true-positives]
-  --models N=P ...    models to compare           [v4=models/fire/best.pt,
+  --models N=P ...    models to compare, in order [v4=models/fire/best.pt,
                                                    newest versions/v6-*/model.pt]
+                      Any checkpoint whose classes include one named "fire" works
+                      (its index is treated as fire; non-3-class layouts are noted).
   --conf-floor F      predict floor (box recall)  [0.02 - low on purpose, so the
                       threshold sweep can see sub-threshold boxes]
   --fire-thresh F     alert/evidence bar          [0.50]
@@ -193,10 +195,16 @@ def run_model(tag, path, pos, neg, args, out_dir):
     from ultralytics import YOLO
     model = YOLO(path)
     names = model.names
-    order = {names.get(0), names.get(1), names.get(2)}
-    if order != {"fire", "other", "smoke"}:
-        sys.exit("model %s has unexpected class names: %s" % (tag, names))
-    print("  %-4s %s  (classes 0=%s 1=%s 2=%s)" % (tag, path, names[0], names[1], names[2]))
+    fire_idx = next((i for i, n in names.items() if str(n).strip().lower() == "fire"), None)
+    smoke_idx = next((i for i, n in names.items() if str(n).strip().lower() == "smoke"), None)
+    if fire_idx is None:
+        sys.exit("model %s has NO 'fire' class: %s" % (tag, names))
+    print("  %-6s %s" % (tag, path))
+    if {names.get(0), names.get(1), names.get(2)} != {"fire", "other", "smoke"}:
+        print("         NOTE: non-production layout %s -> class %d is treated as fire"
+              % (names, fire_idx))
+    else:
+        print("         classes 0=%s 1=%s 2=%s" % (names[0], names[1], names[2]))
 
     ann_dir = None
     if args.annotate:
@@ -220,10 +228,10 @@ def run_model(tag, path, pos, neg, args, out_dir):
                                    r.boxes.xyxy.tolist()):
                 ci = int(cls)
                 boxes.append((ci, float(cf), [float(v) for v in xy]))
-                if ci == 0:
+                if ci == fire_idx:
                     n_fire += 1
                     mx_fire = max(mx_fire, float(cf))
-                elif ci == 2:
+                elif smoke_idx is not None and ci == smoke_idx:
                     n_smoke += 1
                     mx_smoke = max(mx_smoke, float(cf))
                 else:
@@ -393,7 +401,8 @@ def at_fp_budget(table, budget):
 
 def build_report(models, metrics, trans, sanity, sweep, info, args, paths):
     L = []
-    L.append("# V4 vs V6 on the firewatch evidence collection")
+    L.append("# %s on the firewatch evidence collection"
+             % " vs ".join(t.upper() for t, _ in models))
     L.append("")
     L.append("**Generated:** %s UTC · **inference**: imgsz=%d device=%s conf-floor=%.2f"
              % (utc_stamp(), args.imgsz, args.device, args.conf_floor))
@@ -437,7 +446,8 @@ def build_report(models, metrics, trans, sanity, sweep, info, args, paths):
                  % (tag, p.get("mean", 0), p.get("median", 0), p.get("min", 0),
                     n.get("mean", 0), n.get("median", 0), n.get("max", 0)))
     L.append("")
-    L.append("## 3. V4 -> V6 per-image flips at the %.2f bar" % args.fire_thresh)
+    L.append("## 3. Per-image flips at the %.2f bar (%s -> %s)"
+             % (args.fire_thresh, models[0][0].upper(), models[1][0].upper()))
     L.append("")
     L.append("| group | count |")
     L.append("|---|---|")

@@ -471,12 +471,45 @@ cameras:
         - path: 
             rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
           roles: [detect]
-    # Farm view (cows/sheep normally present): ignore all animal detections,
-    # track only person and car. This overrides the global objects.track list.
+    # Farm view (cows/sheep normally present). Track the COCO farm animals so
+    # they are LABELLED correctly instead of surfacing as `person`, and raise
+    # the per-camera person thresholds so a mis-scored animal is far less
+    # likely to create a person event. Per-camera lists OVERRIDE the global
+    # objects.track / objects.filters. See plans/animal-motion-detection.md.
     objects:
       track:
         - person
         - car
+        - cow
+        - sheep
+        - horse
+      filters:
+        person:
+          min_score: 0.6
+          threshold: 0.75
+        cow:
+          min_score: 0.5
+          threshold: 0.65
+        sheep:
+          min_score: 0.5
+          threshold: 0.65
+        horse:
+          min_score: 0.5
+          threshold: 0.65
+    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
+    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
+    # tracked (live boxes, MQTT events, portal) but are never written to disk
+    # as clips. This overrides the global record block, which otherwise records
+    # every tracked object. See plans/animal-motion-detection.md.
+    record:
+      alerts:
+        labels:
+          - person
+          - car
+      detections:
+        labels:
+          - person
+          - car
     # ------------------------------------------------------------------
     # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
     # synced here verbatim from the host config. Motion inside the polygon is
@@ -498,12 +531,45 @@ cameras:
         - path: 
             rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
           roles: [detect]
-    # Farm view (cows/sheep normally present): ignore all animal detections,
-    # track only person and car. This overrides the global objects.track list.
+    # Farm view (cows/sheep normally present). Track the COCO farm animals so
+    # they are LABELLED correctly instead of surfacing as `person`, and raise
+    # the per-camera person thresholds so a mis-scored animal is far less
+    # likely to create a person event. Per-camera lists OVERRIDE the global
+    # objects.track / objects.filters. See plans/animal-motion-detection.md.
     objects:
       track:
         - person
         - car
+        - cow
+        - sheep
+        - horse
+      filters:
+        person:
+          min_score: 0.6
+          threshold: 0.75
+        cow:
+          min_score: 0.5
+          threshold: 0.65
+        sheep:
+          min_score: 0.5
+          threshold: 0.65
+        horse:
+          min_score: 0.5
+          threshold: 0.65
+    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
+    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
+    # tracked (live boxes, MQTT events, portal) but are never written to disk
+    # as clips. This overrides the global record block, which otherwise records
+    # every tracked object. See plans/animal-motion-detection.md.
+    record:
+      alerts:
+        labels:
+          - person
+          - car
+      detections:
+        labels:
+          - person
+          - car
     # ------------------------------------------------------------------
     # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
     # synced here verbatim from the host config. Motion inside the polygon is
@@ -512,7 +578,7 @@ cameras:
     # detect frame. Revisit if you miss detections.
     # ------------------------------------------------------------------
     motion:
-      mask: 
+      mask:
         0.002,0.194,0.406,0.112,0.552,0.092,0.687,0.038,0.774,0.024,0.883,0.032,0.991,0.044,0.996,0.004,0.003,0
     detect:
       enabled: true
@@ -526,12 +592,45 @@ cameras:
         - path: 
             rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
           roles: [detect]
-    # Farm view (cows/sheep normally present): ignore all animal detections,
-    # track only person and car. This overrides the global objects.track list.
+    # Farm view (cows/sheep normally present). Track the COCO farm animals so
+    # they are LABELLED correctly instead of surfacing as `person`, and raise
+    # the per-camera person thresholds so a mis-scored animal is far less
+    # likely to create a person event. Per-camera lists OVERRIDE the global
+    # objects.track / objects.filters. See plans/animal-motion-detection.md.
     objects:
       track:
         - person
         - car
+        - cow
+        - sheep
+        - horse
+      filters:
+        person:
+          min_score: 0.6
+          threshold: 0.75
+        cow:
+          min_score: 0.5
+          threshold: 0.65
+        sheep:
+          min_score: 0.5
+          threshold: 0.65
+        horse:
+          min_score: 0.5
+          threshold: 0.65
+    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
+    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
+    # tracked (live boxes, MQTT events, portal) but are never written to disk
+    # as clips. This overrides the global record block, which otherwise records
+    # every tracked object. See plans/animal-motion-detection.md.
+    record:
+      alerts:
+        labels:
+          - person
+          - car
+      detections:
+        labels:
+          - person
+          - car
     detect:
       enabled: true
       width: 640
@@ -550,12 +649,45 @@ cameras:
         - path: 
             rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
           roles: [detect]
-    # Farm view (cows/sheep normally present): ignore all animal detections,
-    # track only person and car. This overrides the global objects.track list.
+    # Farm view (cows/sheep normally present). Track the COCO farm animals so
+    # they are LABELLED correctly instead of surfacing as `person`, and raise
+    # the per-camera person thresholds so a mis-scored animal is far less
+    # likely to create a person event. Per-camera lists OVERRIDE the global
+    # objects.track / objects.filters. See plans/animal-motion-detection.md.
     objects:
       track:
         - person
         - car
+        - cow
+        - sheep
+        - horse
+      filters:
+        person:
+          min_score: 0.6
+          threshold: 0.75
+        cow:
+          min_score: 0.5
+          threshold: 0.65
+        sheep:
+          min_score: 0.5
+          threshold: 0.65
+        horse:
+          min_score: 0.5
+          threshold: 0.65
+    # DETECT BUT DO NOT RECORD (2026-09-13): only person/car are retained as
+    # alerts + recordings on this farm-view camera. cows/sheep/horses are still
+    # tracked (live boxes, MQTT events, portal) but are never written to disk
+    # as clips. This overrides the global record block, which otherwise records
+    # every tracked object. See plans/animal-motion-detection.md.
+    record:
+      alerts:
+        labels:
+          - person
+          - car
+      detections:
+        labels:
+          - person
+          - car
     # ------------------------------------------------------------------
     # MOTION MASK (2026-09-09): always-busy region drawn in the Frigate UI and
     # synced here verbatim from the host config. Motion inside the polygon is
@@ -564,7 +696,7 @@ cameras:
     # detect frame. Revisit if you miss detections.
     # ------------------------------------------------------------------
     motion:
-      mask: 
+      mask:
         0.883,0.012,0.835,0.293,0.577,0.253,0.287,0.15,0.175,0.142,0.063,0.124,0,0.126,0,0
     detect:
       enabled: true

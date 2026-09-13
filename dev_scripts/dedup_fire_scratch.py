@@ -5,8 +5,8 @@ Reads the merged pool written by dev_scripts/prep_fire_scratch_dataset.py
 (train/val/test + manifest.csv) and writes a CLEAN copy, dropping images in this FIXED order:
 
   Intra-run (every run, the user's four honest-validation requirements):
-    1. test self         (global)  - a test image near-dup of an earlier KEPT test image is removed
-    2. val self          (global)  - same for val
+    1. test self         (group)  - a test image near-dup of an earlier KEPT image OF THE SAME CLIP is removed
+    2. val self          (group)  - same for val
     3. train self        (group|global) - a train image near-dup of an earlier KEPT train image is removed
     4. test vs prev-train/prev-test  - never score an image that was already trained on / already scored
     5. val  vs prev-train/prev-test  - same for early-stop honesty
@@ -484,10 +484,12 @@ def main():
     fingerprint(rows, args.skip_broken, args.broken_out)
 
     counts = {}
+    # test/val self-dedup is GROUP-scoped (within a clip) like train: video-frame corpora
+    # collapse to ~1 image per clip under GLOBAL scope, which would starve early stopping.
     if not args.no_test_self:
-        counts["test-self"] = self_dedup(rows, "test", args.hamming, False)
+        counts["test-self"] = self_dedup(rows, "test", args.hamming, True)
     if not args.no_val_self:
-        counts["val-self"] = self_dedup(rows, "val", args.hamming, False)
+        counts["val-self"] = self_dedup(rows, "val", args.hamming, True)
     if not args.no_train_self:
         counts["train-self"] = self_dedup(rows, "train", args.hamming,
                                           args.train_scope == "group")

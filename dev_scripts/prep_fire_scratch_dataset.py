@@ -61,7 +61,7 @@ import zipfile
 from collections import Counter
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-SPLIT_MAP = {"train": "train", "valid": "val", "validation": "val", "test": "test"}
+SPLIT_MAP = {"train": "train", "valid": "val", "val": "val", "validation": "val", "test": "test"}
 MANIFEST_COLS = ["split", "stem", "source_id", "source_name", "split_group",
                  "n_boxes", "class_ids"]
 
@@ -186,7 +186,7 @@ def source_records(src_root):
     images/ + labels/ layout. Labels default to a MISSING path (background) when absent.
     """
     records = []
-    split_dirs = [sp for sp in ("train", "valid", "test")
+    split_dirs = [sp for sp in ("train", "valid", "val", "test")
                   if os.path.isdir(os.path.join(src_root, sp, "images"))]
     if split_dirs:
         for sp in split_dirs:

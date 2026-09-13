@@ -9,10 +9,12 @@
 #   scripts/prep_fireviewer_dataset.py     parquet->YOLO converter (dependency of the above)
 #   scripts/dedup_fire_scratch.py          the dedup passes + lightweight fingerprint index
 #   scripts/colab_train_scratch.py         the detached, Drive-resilient SCRATCH trainer
-#   abonia/                                Abonia fire-8 (877/47/55) - merged into TRAIN
 #   cctv_emergency/                        Simuletic CCTV Emergency (240) - merged into TRAIN
 #   domain_test/                           our own CCTV TRUE fires (HELD OUT - never trained)
 #   negatives/                             our domain hard negatives -> train as background
+#
+# Abonia fire-8 is NOT bundled: the notebook fetches it from its GitHub source
+# (Abonia1/YOLOv8-Fire-and-Smoke-Detection, datasets/fire-8) via a sparse clone.
 #
 # Usage:
 #   ./dev_scripts/pack_fire_scratch_colab.sh [output.zip]
@@ -28,7 +30,7 @@ case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/negatives" "$WORK/domain_test" "$WORK/scripts"
-mkdir -p "$WORK/abonia" "$WORK/cctv_emergency"
+mkdir -p "$WORK/cctv_emergency"
 
 # Copy images only - RECURSIVELY (some sets nest under images/camNN/) - and never the
 # annotated (overlay-burned) variants, which would teach the model the drawn boxes.
@@ -58,13 +60,6 @@ copy_imgs "$MT/our-camera-clips/fire_events_over_0_5_false_positives"  "$WORK/ne
 
 echo "collecting our-domain CCTV true fires (held-out test) -> $WORK/domain_test"
 copy_imgs "$MT/our-camera-clips/fire_events_over_0_5"                  "$WORK/domain_test"
-
-echo "bundling Abonia fire-8 (Roboflow split layout train/valid/test)"
-if [ -d "$MT/2_Abonia/abonia_repo/datasets/fire-8" ]; then
-  cp -r "$MT/2_Abonia/abonia_repo/datasets/fire-8/." "$WORK/abonia/"
-else
-  echo "  (skip, absent) $MT/2_Abonia/abonia_repo/datasets/fire-8"
-fi
 
 echo "bundling CCTV Emergency (flat images+labels YOLO layout)"
 if [ -d "$MT/4_CCTV_Emergency" ]; then

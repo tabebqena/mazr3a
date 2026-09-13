@@ -286,6 +286,10 @@ def stage_source(src, cache, scripts_dir):
                 cmd += ["--limit", str(src["limit"]),
                         "--sample-mode", src.get("sample_mode", "group")]
             run(cmd)
+        # the parquet cache is ~25 GB and redundant once the YOLO export exists
+        if src.get("free_cache", True):
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            print("  freed parquet cache ->", repo_dir, flush=True)
         return per_src, read_yaml_names(os.path.join(per_src, "data.yaml")), \
             read_manifest_map(os.path.join(per_src, "manifest.csv"))
 
@@ -309,6 +313,25 @@ def stage_source(src, cache, scripts_dir):
                        if os.path.isdir(os.path.join(root, d))]
             if len(entries) == 1 and os.path.isdir(os.path.join(entries[0], "train", "images")):
                 root = entries[0]
+        return root, read_yaml_names(os.path.join(root, "data.yaml")), {}
+
+    if typ == "github_repo":
+        # sparse clone pulls ONLY the dataset subpath (e.g. Abonia's datasets/fire-8),
+        # not the repo's 390 MB of demos/weights/runs.
+        repo = src.get("repo")                 # "owner/name"
+        branch = src.get("branch", "main")
+        subpath = src.get("subpath")           # e.g. "datasets/fire-8"
+        if not repo or not subpath:
+            die("source %r: github_repo needs 'repo' and 'subpath'" % src_id)
+        url = "https://github.com/%s.git" % repo.strip("/")
+        clone_dir = os.path.join(cache, "git_" + src_id)
+        if not os.path.isdir(os.path.join(clone_dir, ".git")):
+            run(["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse",
+                 "--branch", branch, url, clone_dir])
+            run(["git", "-C", clone_dir, "sparse-checkout", "set", subpath])
+        root = os.path.join(clone_dir, subpath.strip("/"))
+        if not os.path.isdir(root):
+            die("source %r: subpath %r not found after sparse clone" % (src_id, subpath))
         return root, read_yaml_names(os.path.join(root, "data.yaml")), {}
 
     if typ == "yolo_dir":
@@ -372,6 +395,11 @@ def merge_source(src, src_root, src_names, src_manifest, out, classes, cfg_map,
         n += 1
 
     stats["per_source"][src_id] = {"images": n, "background": n_bg}
+
+    # downloaded sources are disposable once merged; keep only the bundled yolo_dir trees
+    if src.get("type") in ("huggingface_fireviewer", "zip_url", "github_repo"):
+        shutil.rmtree(src_root, ignore_errors=True)
+        print("  freed source tree ->", src_root, flush=True)
     return mf_rows
 
 

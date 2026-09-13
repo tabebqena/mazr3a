@@ -140,15 +140,17 @@ C_CONFIG = code([
     "        'splits': 'train,validation,test',\n",
     "        'exclude_sources': ['alarmod'],   # GPL-3.0; delete this line to keep its ~9,366 flame boxes\n",
     "        'limit': 0,                       # 0 = all; e.g. 20000 for a quick experiment\n",
+    "        'free_cache': True,               # delete the ~25 GB parquet cache after conversion\n",
     "    },\n",
-    "    # 2) small sets MERGED IN (bundled by pack_fire_scratch_colab.sh):\n",
-    "    {'id': 'abonia', 'type': 'yolo_dir', 'path': UPLOAD + '/abonia', 'role': 'train',\n",
+    "    # 2) Abonia fire-8 - fetched from its GitHub source (sparse clone, only datasets/fire-8):\n",
+    "    {'id': 'abonia', 'type': 'github_repo',\n",
+    "     'repo': 'Abonia1/YOLOv8-Fire-and-Smoke-Detection', 'branch': 'main',\n",
+    "     'subpath': 'datasets/fire-8', 'role': 'train',\n",
     "     'class_map': {'Fire': 'fire', 'default': None, 'smoke': None}},   # 877/47/55 imgs, CC BY 4.0\n",
+    "    # 3) small/domain sets MERGED IN (bundled by pack_fire_scratch_colab.sh):\n",
     "    {'id': 'cctv_emergency', 'type': 'yolo_dir', 'path': UPLOAD + '/cctv_emergency', 'role': 'train',\n",
     "     'class_map': {'fire': 'fire', 'smoke': None}},                    # 240 imgs, on-domain CCTV\n",
-    "    # 3) our domain hard negatives -> train as background (never a positive):\n",
     "    {'id': 'negatives', 'type': 'yolo_dir', 'path': UPLOAD + '/negatives', 'role': 'negatives'},\n",
-    "    # 4) our CCTV true fires -> HELD-OUT test (never trained):\n",
     "    {'id': 'cctv_test', 'type': 'yolo_dir', 'path': UPLOAD + '/domain_test', 'role': 'test'},\n",
     "    # LATER / larger sets (point to the same download source you used locally - not bundled):\n",
     "    # {'id': 'dfire', 'type': 'zip_url', 'url': 'https://TODO-dfire-url', 'download': 'wget',\n",
@@ -273,6 +275,9 @@ C_SOURCES = code([
     "    subprocess.run([sys.executable, prep, '--config', cfg_path, '--out', RAW,\n",
     "                    '--cache', CACHE, '--scripts', UPLOAD + '/scripts'], check=True)\n",
     "    print(open(RAW + '/prep_report.txt', encoding='utf-8').read())\n",
+    "    import shutil as _sh\n",
+    "    _sh.rmtree(CACHE, ignore_errors=True)   # drop the downloaded source (saves ~25-31 GB)\n",
+    "    print('freed source cache ->', CACHE)\n",
 ])
 
 C_DEDUP = code([
@@ -295,6 +300,9 @@ C_DEDUP = code([
     "                    '--report', CLEAN + '_report',\n",
     "                    '--skip-broken', '--broken-out', '/content/broken'], check=True)\n",
     "    print(open(CLEAN + '_report/summary.txt', encoding='utf-8').read())\n",
+    "    import shutil as _sh\n",
+    "    _sh.rmtree(RAW, ignore_errors=True)     # clean pool is built; drop the raw pool\n",
+    "    print('freed raw pool ->', RAW)\n",
 ])
 
 C_VERIFY = code([

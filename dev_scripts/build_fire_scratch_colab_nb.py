@@ -45,7 +45,7 @@ import os
 DEFAULT_OUT = "notebooks/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.2.0"
+NOTEBOOK_VERSION = "1.3.0"
 
 
 def md(source):
@@ -137,6 +137,7 @@ C_CONFIG = code([
     "\n",
     "# --- base model (continued FINE-TUNE of run 1's winner; NOT from scratch) ---\n",
     "BASE_MODEL = DRIVE_DIR + '/' + PREV_VER + '/scratch-v1.pt'   # run 1's fire-only winner (nc=1)\n",
+    "EXPECTED_BASE_MD5 = '6e3325cca6d07dc58028218b58d3e746'  # md5 of the LOCAL v1 copy - launch aborts on mismatch\n",
     "\n",
     "# --- training sources: D-Fire only (pulled by Colab from Kaggle, not bundled) ---\n",
     "SOURCES = [\n",
@@ -403,12 +404,18 @@ C_TRAINER_CHECK = code([
 
 C_LAUNCH = code([
     "# Cell 9 - LAUNCH training DETACHED (closing VS Code will NOT stop it)\n",
-    "import os, subprocess, sys\n",
+    "import hashlib, os, subprocess, sys\n",
     "need(os.path.exists(CLEAN + '/data.yaml'), 'run Cell 6 (dedup) first')\n",
     "need(os.path.exists(UPLOAD + '/scripts/colab_train_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
     "\n",
     "trainer = UPLOAD + '/scripts/colab_train_scratch.py'   # defined here too: Cell 8 is optional\n",
     "assert os.path.exists(trainer), 'trainer missing from the bundle - see Cell 4'\n",
+    "\n",
+    "# pre-flight: verify the Drive base model is the EXACT run-1 winner (avoid fine-tuning the wrong model)\n",
+    "_base_md5 = hashlib.md5(open(BASE_MODEL, 'rb').read()).hexdigest()\n",
+    "assert _base_md5 == EXPECTED_BASE_MD5, ('BASE_MODEL md5 MISMATCH: expected %s, got %s '\n",
+    "                                        '- do NOT train on the wrong model' % (EXPECTED_BASE_MD5, _base_md5))\n",
+    "print('base model md5 OK:', _base_md5)\n",
     "\n",
     "if os.path.exists(PIDFILE):\n",
     "    _old = int(open(PIDFILE).read().strip() or 0)\n",

@@ -17,14 +17,32 @@
 # (Abonia1/YOLOv8-Fire-and-Smoke-Detection, datasets/fire-8) via a sparse clone.
 #
 # Usage:
-#   ./dev_scripts/pack_fire_scratch_colab.sh [output.zip]
-# Default output: model-training/runs/fire_scratch_colab/colab_upload.zip
+#   ./dev_scripts/pack_fire_scratch_colab.sh [output.zip] [--negatives true|false]
+#   ./dev_scripts/pack_fire_scratch_colab.sh --negatives false
+#   ./dev_scripts/pack_fire_scratch_colab.sh -o /path/out.zip --negatives false
+# Defaults: output = model-training/runs/fire_scratch_colab/colab_upload.zip, negatives = true
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MT="model-training"
-OUT="${1:-$MT/runs/fire_scratch_colab/colab_upload.zip}"
+OUT=""
+NEGATIVES=true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --negatives)
+      case "${2:-}" in
+        true|TRUE|1)   NEGATIVES=true ;;
+        false|FALSE|0) NEGATIVES=false ;;
+        *) echo "usage: --negatives true|false" >&2; exit 2 ;;
+      esac
+      shift 2
+      ;;
+    -o|--out) OUT="$2"; shift 2 ;;
+    *) OUT="$1"; shift ;;   # positional output path (backward-compatible)
+  esac
+done
+OUT="${OUT:-$MT/runs/fire_scratch_colab/colab_upload.zip}"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 
 WORK="$(mktemp -d)"
@@ -50,13 +68,17 @@ copy_imgs() {
                 ! -iname '*annotated*' -print0)
 }
 
-echo "collecting domain negatives -> $WORK/negatives"
-copy_imgs "$MT/ours/negatives/default-other"                          "$WORK/negatives"
-copy_imgs "$MT/ours/negatives/climate"                                "$WORK/negatives"
-copy_imgs "$MT/ours/negatives/dogs"                                   "$WORK/negatives"
-copy_imgs "$MT/ours/negatives/places"                                 "$WORK/negatives"
-copy_imgs "$MT/ours/cctv/dog-fp-alerts"                                 "$WORK/negatives"
-copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5_false_positives"  "$WORK/negatives"
+if [ "$NEGATIVES" = true ]; then
+  echo "collecting domain negatives -> $WORK/negatives"
+  copy_imgs "$MT/ours/negatives/default-other"                          "$WORK/negatives"
+  copy_imgs "$MT/ours/negatives/climate"                                "$WORK/negatives"
+  copy_imgs "$MT/ours/negatives/dogs"                                   "$WORK/negatives"
+  copy_imgs "$MT/ours/negatives/places"                                 "$WORK/negatives"
+  copy_imgs "$MT/ours/cctv/dog-fp-alerts"                                 "$WORK/negatives"
+  copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5_false_positives"  "$WORK/negatives"
+else
+  echo "skipping domain negatives (--negatives false)"
+fi
 
 echo "collecting our-domain CCTV true fires (held-out test) -> $WORK/domain_test"
 copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5"                  "$WORK/domain_test"

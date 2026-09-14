@@ -493,7 +493,7 @@ Firewatch evidence store ([`portal/`](portal/__init__.py)):
   notice (no spinner) and auto-recovers when it returns; an **online camera** that is just slow
   keeps auto-retrying HLS (no ~1 fps snapshot feed). An **idle time watch** stops the stream
   after a timeout configured by an admin in [`config/portal.conf`](config/portal.conf)
-  (`STREAM_IDLE_TIMEOUT_S`, default 30 s; there is **no in-UI control**); any user activity
+  (`STREAM_IDLE_TIMEOUT_S`, default 5 min; there is **no in-UI control**); any user activity
   (mouse/touch/keyboard) resets the clock, and the stream also stops if the browser tab is
   hidden. This releases the go2rtc camera pull when nobody is watching. The Live view
   **fills the screen**, remembers the last camera opened, and lets you **swipe/drag** left/right

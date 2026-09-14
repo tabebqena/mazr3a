@@ -27,7 +27,7 @@ const state = {
   // imgLive: the <img> is the poster shown while a live attempt is starting
   //          (or the frozen last frame while an online camera auto-retries).
   // mode: '' | 'mse' | 'hls' | 'offline'
-  idleSec: 30,
+  idleSec: 300,
 };
 
 const LIVE_POLL_MS = 1100;   // snapshot fallback rate (~1 fps, detect fps)
@@ -569,7 +569,7 @@ async function continueBoot() {
   state.settings = await api('/api/settings');
   // Idle stop is set by an admin in portal.conf (STREAM_IDLE_TIMEOUT_S); there is
   // no in-UI control, so every user gets the server-configured value.
-  state.idleSec = Math.max(15, parseInt(state.settings.stream_idle_timeout_s, 10) || 30);
+  state.idleSec = Math.max(15, parseInt(state.settings.stream_idle_timeout_s, 10) || 300);
   // Remembered voice-button state (localStorage), re-applied when a new live
   // stream reaches "Live" (see applyLiveSound in startPaintCheck).
   loadLiveSoundPref();
@@ -1877,14 +1877,14 @@ function renderPager(prefix, page, pages) {
      - evAll      : the filtered events (newest first) = the playlist order.
      - evSelIdx   : index into evAll of the clip in the stage (-1 = none).
      - evPlaylist : the auto-advance switch (ON -> play the next clip on 'ended').
-     - idle 60 s  : with no user interaction, turn the playlist OFF + pause and
+     - idle 300 s : with no user interaction, turn the playlist OFF + pause and
                     show the Resume overlay (never auto-play the next clip).
    Clips stream from /api/events/<id>/clip.mp4 (seekable - the portal proxy now
    forwards Range); the poster is /api/events/<id>/snapshot.jpg.
    See plans/portal-events-tab-player.md. */
 const EV_PAGE = 24;
 const EV_MAX = 5000;        // client-side cap for a single Frigate fetch
-const EV_IDLE_MS = 60000;   // idle stop: 1 minute (fixed; Live uses STREAM_IDLE_TIMEOUT_S)
+const EV_IDLE_MS = 300000;  // idle stop: 5 minutes (fixed; Live uses STREAM_IDLE_TIMEOUT_S)
 const EV_STORE = { cam: 'portal.evCam', label: 'portal.evLabel' };
 
 let evAll = [];             // current filter's full event array (newest first)
@@ -1920,7 +1920,7 @@ function syncEvFsCam() {
   if (a && b) b.value = a.value;
 }
 
-/* ---- idle stop: 60 s without USER interaction stops the playlist ----
+/* ---- idle stop: 300 s without USER interaction stops the playlist ----
    The timer is (re)armed only by real interaction (and by enabling the
    playlist / resuming), NEVER by an auto-advance - otherwise a running
    playlist would keep resetting it and the stop would never fire. */
@@ -1941,7 +1941,7 @@ function onEvIdle() {
   syncEvPlaylist();
   const v = $('#ev-video');
   if (v && !v.paused) v.pause();        // never fetch/play the next clip
-  showEvOverlay('Playlist paused after 1 minute of inactivity.');
+  showEvOverlay('Playlist paused after ' + Math.round(EV_IDLE_MS / 60000) + ' minutes of inactivity.');
 }
 function showEvOverlay(msg) {
   $('#ev-overlay-msg').textContent = msg;

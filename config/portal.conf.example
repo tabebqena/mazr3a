@@ -50,7 +50,7 @@ COOKIE_SECURE=true
 # resume overlay. This is the single source of truth for ALL users - there is
 # no in-UI control; change it here (an admin edit) and recreate/restart the
 # portal container. The stream also stops when the browser tab is hidden.
-STREAM_IDLE_TIMEOUT_S=30
+STREAM_IDLE_TIMEOUT_S=300
 
 # Landing camera when the user has no per-user default_camera. Empty =
 # first camera returned by Frigate.

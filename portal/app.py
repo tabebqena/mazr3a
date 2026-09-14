@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.5"
+APP_VERSION = "0.11.6"
 _HTMX = None
 
 
@@ -636,7 +636,7 @@ async def settings(request: Request, user: dict = Depends(current_user)):
     return {
         "username": user["username"],
         "default_camera": default_cam,
-        "stream_idle_timeout_s": pconf.geti(cfg, "STREAM_IDLE_TIMEOUT_S", 30),
+        "stream_idle_timeout_s": pconf.geti(cfg, "STREAM_IDLE_TIMEOUT_S", 300),
         "app_version": APP_VERSION,
     }
 

@@ -552,7 +552,7 @@ def main():
     evidence = os.path.abspath(args.evidence)
     if not os.path.isdir(evidence):
         sys.exit("evidence dir not found: %s" % evidence)
-    out_dir = args.out or os.path.join(root, "model-training", "firewatch_eval",
+    out_dir = args.out or os.path.join(root, "model-training", "eval", "firewatch_eval",
                                        "run-%s" % utc_stamp())
     os.makedirs(out_dir, exist_ok=True)
 

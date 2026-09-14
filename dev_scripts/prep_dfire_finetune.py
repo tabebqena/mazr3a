@@ -6,10 +6,10 @@ Phase-4 tooling for the clean evaluation / retraining workflow
 gate for D-Fire, this merges the two CLEAN, MODEL-ORDER sources into one
 self-contained train/val layout for fine-tuning models/fire/best.pt:
 
-    --dfire   fire-model-training/dedup/dfire_model_order    (D-Fire clean, model order)
+    --dfire   model-training/dedup/dfire_model_order    (D-Fire clean, model order)
               -> train: 6,869 imgs (4,643 labeled fire/smoke + 2,226 background)
               -> test : 2,164 imgs (HELD OUT - never enters this training split)
-    --abonia  fire-model-training/dedup/abonia_dedup         (Abonia clean, model order)
+    --abonia  model-training/dedup/abonia_dedup         (Abonia clean, model order)
               -> train: 182 imgs (fire 49 / other 31 / smoke 122) - folded into TRAIN only
 
 Both sources are already in the model index contract fire(0)/other(1)/smoke(2)
@@ -25,14 +25,14 @@ Class-index facts:
 
 Split policy:
   * The held-out D-Fire TEST split is NOT copied into this set - final eval uses
-    the clean D-Fire test via fire-model-training/dedup/dfire_clean_eval/data.yaml.
+    the clean D-Fire test via model-training/dedup/dfire_clean_eval/data.yaml.
   * A small VAL split (default ~5 % of LABELED images) is carved out of the
     D-Fire train, group-aware by source clip so frames of the same fire video do
     not straddle train/val. Background/empty D-Fire images and ALL Abonia images
     go to TRAIN only (empty labels = FP-reduction negatives, as in
     prep_fire_large_dataset.py).
 
-Output (default fire-model-training/dedup/dfire_finetune/):
+Output (default model-training/dedup/dfire_finetune/):
     train/images/ train/labels/   # D-Fire labeled (minus val) + D-Fire bg + Abonia
     val/images/   val/labels/     # carved labeled D-Fire (early-stopping / mAP)
     data.yaml                     # names fire/other/smoke, nc=3, abs path
@@ -41,9 +41,9 @@ Output (default fire-model-training/dedup/dfire_finetune/):
 
 Usage:
     .venv/bin/python dev_scripts/prep_dfire_finetune.py \
-        --dfire fire-model-training/dedup/dfire_model_order \
-        --abonia fire-model-training/dedup/abonia_dedup \
-        --out fire-model-training/dedup/dfire_finetune \
+        --dfire model-training/dedup/dfire_model_order \
+        --abonia model-training/dedup/abonia_dedup \
+        --out model-training/dedup/dfire_finetune \
         --val-frac 0.05 --seed 0 --zip
 """
 import argparse
@@ -144,7 +144,7 @@ def main():
     ap.add_argument("--abonia", default=None,
                     help="clean model-order Abonia root (abonia_dedup); fold its train "
                          "into TRAIN only. Use '' or omit to skip.")
-    ap.add_argument("--out", default="fire-model-training/dedup/dfire_finetune")
+    ap.add_argument("--out", default="model-training/dedup/dfire_finetune")
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--zip", nargs="?", const="", default=None,

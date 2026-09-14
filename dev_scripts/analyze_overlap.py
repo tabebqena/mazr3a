@@ -34,10 +34,10 @@ USAGE
 -----
   # how much of Abonia fire-8 is inside the 8,939 training pool?
   python dev_scripts/analyze_overlap.py --candidate \
-      fire-model-training/2_Abonia/abonia_repo/datasets/fire-8 --tag abonia \
-      --ref "fire-model-training/1_SalahALHaismawi/dataset/Fire Detection.v1i.yolov8.zip" \
+      model-training/sources/abonia/abonia_repo/datasets/fire-8 --tag abonia \
+      --ref "model-training/sources/salah_haismawi/dataset/Fire Detection.v1i.yolov8.zip" \
       --ref-label 8939 --sample 8 \
-      --cache fire-model-training/dedup/overlap_reports/_index_8939.json
+      --cache model-training/dedup/overlap_reports/_index_8939.json
 
   # internal near-dup rate of a set (no reference): use dedup_images.py --internal,
   # or pass --ref of the set itself.
@@ -131,7 +131,7 @@ def main():
     ap.add_argument("--hamming", type=int, default=10,
                     help="dHash Hamming threshold for 'near-dup' (default 10)")
     ap.add_argument("--out", default=None,
-                    help="output dir (default: fire-model-training/dedup/"
+                    help="output dir (default: model-training/dedup/"
                          "overlap_reports/<tag>_vs_<refs>)")
     ap.add_argument("--cache", default=None,
                     help="persist/reuse the reference fingerprint index as JSON")

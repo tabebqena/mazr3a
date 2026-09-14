@@ -2,13 +2,13 @@
 """prep_fire_large_dataset.py - build a self-contained train/val layout for fine-tuning the
 fire model on the LARGE local datasets.
 
-Inputs (all under the git-ignored fire-model-training/):
-    --ready      Roboflow export root, e.g. fire-model-training/ready_fire_smoke_dataset.yolov8
+Inputs (all under the git-ignored model-training/):
+    --ready      Roboflow export root, e.g. model-training/sources/ready_fire_smoke.yolov8
                  (uses its train/{images,labels}; 12,799 imgs, fire/other/smoke at idx 0/1/2)
-    --negatives  curated pure-background dir, e.g. fire-model-training/default-other (430 imgs, no labels)
+    --negatives  curated pure-background dir, e.g. model-training/default-other (430 imgs, no labels)
                  -> added to TRAIN as empty-label background samples (FP reduction)
 
-Output (default fire-model-training/large_finetune/):
+Output (default model-training/large_finetune/):
     train/images/ train/labels/   # labeled ready split + empty-label ready + negatives
     val/images/   val/labels/     # held-out labeled subset (mAP / early stopping)
     data.yaml                     # names fire/other/smoke, relative train/val, abs path
@@ -25,9 +25,9 @@ train.
 
 Usage:
     .venv/bin/python dev_scripts/prep_fire_large_dataset.py \
-        --ready fire-model-training/ready_fire_smoke_dataset.yolov8 \
-        --negatives fire-model-training/default-other \
-        --out fire-model-training/large_finetune \
+        --ready model-training/sources/ready_fire_smoke.yolov8 \
+        --negatives model-training/default-other \
+        --out model-training/large_finetune \
         --val-frac 0.05 --seed 0 --zip
 """
 import argparse
@@ -83,10 +83,10 @@ def main():
     ap.add_argument("--ready", required=True, help="ready_fire_smoke_dataset export root")
     ap.add_argument("--negatives", action="append", default=None,
                     help="curated background dir; REPEATABLE to mix several "
-                         "(default: fire-model-training/default-other). Each is "
+                         "(default: model-training/default-other). Each is "
                          "walked RECURSIVELY and added to train as empty labels. "
                          "Use --no-negatives to skip.")
-    ap.add_argument("--out", default="fire-model-training/large_finetune")
+    ap.add_argument("--out", default="model-training/large_finetune")
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-negatives", action="store_true", help="do not add --negatives images")
@@ -169,7 +169,7 @@ def main():
     n_neg = 0
     neg_report = []
     if not args.no_negatives:
-        neg_dirs = args.negatives or ["fire-model-training/default-other"]
+        neg_dirs = args.negatives or ["model-training/default-other"]
         for raw in neg_dirs:
             neg_src = os.path.abspath(raw)
             if not os.path.isdir(neg_src):

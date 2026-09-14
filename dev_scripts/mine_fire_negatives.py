@@ -23,7 +23,7 @@ The candidates are found WITH the buggy model, so the band may contain a real
 
 Usage:
     .venv/bin/python dev_scripts/mine_fire_negatives.py \
-        --clips-dir camera-clips --out fire-model-training/dog_negatives \
+        --clips-dir camera-clips --out model-training/dog_negatives \
         --every-s 2 --min-score 0.35 --max-score 0.90
     # smoke test:
     .venv/bin/python dev_scripts/mine_fire_negatives.py --cams cam08 --limit-clips 8
@@ -100,7 +100,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--clips-dir", default="camera-clips")
-    ap.add_argument("--out", default="fire-model-training/dog_negatives")
+    ap.add_argument("--out", default="model-training/dog_negatives")
     ap.add_argument("--model-dir", default="models/fire")
     ap.add_argument("--cams", help="comma-separated cameras (default: all dirs)")
     ap.add_argument("--every-s", type=float, dest="every_s", default=2.0,

@@ -3,7 +3,7 @@
 
 WHY
 ---
-`model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1/` is a *HuggingFace
+`model-training/sources/fireviewer/` is a *HuggingFace
 datasets cache* (blobs/ + snapshots/ + refs/), NOT an image folder: the JPEGs live inside
 Parquet shards (`data/{train,validation,test}/*.parquet`) and the boxes live with them.
 Ultralytics cannot train on that layout, so this tool streams the shards and writes a normal
@@ -52,7 +52,7 @@ Needs `pyarrow` in the venv used to run it:
 USAGE
 -----
     # Full export (all 102,257 imgs, ~31 GB on disk) + Colab zip:
-    FV=model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1
+    FV=model-training/sources/fireviewer
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py --out $FV/fireviewer_v1_yolo --zip
 
     # Colab: after snapshot_download() the parquet sits in data/<split>/ at the root of
@@ -66,10 +66,10 @@ USAGE
     # Quick evaluation sample: 400 imgs from the held-out validation split, proportional
     # across sources (per-image sampling -> exactly 400):
     .venv/bin/python dev_scripts/prep_fireviewer_dataset.py \
-        --out model-training/fireviewer_assess --splits validation \
+        --out model-training/eval/fireviewer_assess --splits validation \
         --limit 400 --sample-mode image
     .venv/bin/python dev_scripts/test_fire_model.py models/fire/best.pt \
-        model-training/fireviewer_assess/data.yaml --conf 0.5
+        model-training/eval/fireviewer_assess/data.yaml --conf 0.5
 
     # A smaller, fire-balanced TRAINING pool: cap each split at 8,000 imgs, drop GPL-3.0
     # (alarmod), keep only the surveillance/smoke-heavy sources:
@@ -337,7 +337,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--corpus",
-                    default="model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1",
+                    default="model-training/sources/fireviewer",
                     help="HF datasets cache root of the FireViewer corpus")
     ap.add_argument("--out", required=True, help="NEW output YOLO dataset root")
     ap.add_argument("--splits", default="train,validation,test",

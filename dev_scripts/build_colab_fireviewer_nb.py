@@ -17,7 +17,7 @@ BALANCE -> verify -> negatives -> trainer check -> LAUNCH -> STATUS -> RESUME ->
 
 Usage:
     python dev_scripts/build_colab_fireviewer_nb.py \
-        --out model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1/fireviewer-v6-bootstrap-colab.ipynb
+        --out model-training/sources/fireviewer/fireviewer-v6-bootstrap-colab.ipynb
 """
 import argparse
 import json
@@ -965,12 +965,12 @@ C_NEXT = md([
     "## Next\n",
     "\n",
     "Pull `best_fireviewer_v6.pt` from `MyDrive/colab-data/v6-training/` into\n",
-    "`model-training/fireviewer_v6_finetune/best_finetuned.pt`, then judge it **locally**\n",
+    "`model-training/eval/fireviewer_v6_finetune/best_finetuned.pt`, then judge it **locally**\n",
     "against the full export (v4 baseline: mAP@50 0.392, fire image-recall 63.5 %,\n",
     "pyro-sdis smoke 2.4 %):\n",
     "\n",
     "```bash\n",
-    "FV=model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1\n",
+    "FV=model-training/sources/fireviewer\n",
     "sed 's#val: val/images#val: test/images#' \\\n",
     "    $FV/fireviewer_v1_yolo/data.yaml > $FV/fireviewer_v1_yolo/data_test.yaml\n",
     ".venv/bin/python dev_scripts/test_fire_model.py <ckpt> \\\n",

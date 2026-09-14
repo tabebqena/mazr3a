@@ -28,14 +28,14 @@ USAGE
   # data.yaml is directly usable by dev_scripts/test_fire_model.py (D-Fire has
   # no 'valid' split; the held-out test split plays the val role, as in Phase 2):
   .venv/bin/python dev_scripts/remap_dataset_classes.py \
-      --src fire-model-training/dedup/dfire_dedup \
-      --out fire-model-training/dedup/dfire_clean_eval \
+      --src model-training/dedup/dfire_dedup \
+      --out model-training/dedup/dfire_clean_eval \
       --map "1:0,0:2" --names "fire,other,smoke" --splits test --test-as-val
 
   # Remap the whole clean set (train + test) for a Phase-4 fine-tune zip:
   .venv/bin/python dev_scripts/remap_dataset_classes.py \
-      --src fire-model-training/dedup/dfire_dedup \
-      --out fire-model-training/dedup/dfire_model_order \
+      --src model-training/dedup/dfire_dedup \
+      --out model-training/dedup/dfire_model_order \
       --map "1:0,0:2" --names "fire,other,smoke"
 
 SAFETY / READ-ONLY CONTRACT

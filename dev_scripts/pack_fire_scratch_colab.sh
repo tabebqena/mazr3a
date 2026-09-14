@@ -18,13 +18,13 @@
 #
 # Usage:
 #   ./dev_scripts/pack_fire_scratch_colab.sh [output.zip]
-# Default output: model-training/fire_scratch_colab/colab_upload.zip
+# Default output: model-training/runs/fire_scratch_colab/colab_upload.zip
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MT="model-training"
-OUT="${1:-$MT/fire_scratch_colab/colab_upload.zip}"
+OUT="${1:-$MT/runs/fire_scratch_colab/colab_upload.zip}"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 
 WORK="$(mktemp -d)"
@@ -51,21 +51,21 @@ copy_imgs() {
 }
 
 echo "collecting domain negatives -> $WORK/negatives"
-copy_imgs "$MT/false-negatives/default-other"                          "$WORK/negatives"
-copy_imgs "$MT/false-negatives/climate"                                "$WORK/negatives"
-copy_imgs "$MT/false-negatives/dogs"                                   "$WORK/negatives"
-copy_imgs "$MT/false-negatives/places"                                 "$WORK/negatives"
-copy_imgs "$MT/our-cctv/dog-fp-alerts"                                 "$WORK/negatives"
-copy_imgs "$MT/our-camera-clips/fire_events_over_0_5_false_positives"  "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/default-other"                          "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/climate"                                "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/dogs"                                   "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/places"                                 "$WORK/negatives"
+copy_imgs "$MT/ours/cctv/dog-fp-alerts"                                 "$WORK/negatives"
+copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5_false_positives"  "$WORK/negatives"
 
 echo "collecting our-domain CCTV true fires (held-out test) -> $WORK/domain_test"
-copy_imgs "$MT/our-camera-clips/fire_events_over_0_5"                  "$WORK/domain_test"
+copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5"                  "$WORK/domain_test"
 
 echo "bundling CCTV Emergency (flat images+labels YOLO layout)"
-if [ -d "$MT/4_CCTV_Emergency" ]; then
-  cp -r "$MT/4_CCTV_Emergency/." "$WORK/cctv_emergency/"
+if [ -d "$MT/sources/cctv_emergency" ]; then
+  cp -r "$MT/sources/cctv_emergency/." "$WORK/cctv_emergency/"
 else
-  echo "  (skip, absent) $MT/4_CCTV_Emergency"
+  echo "  (skip, absent) $MT/sources/cctv_emergency"
 fi
 
 echo "bundling scripts"

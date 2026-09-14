@@ -355,6 +355,8 @@ def merge_source(src, src_root, src_names, src_manifest, out, classes, cfg_map,
     class_map = dict(cfg_map)
     class_map.update(src.get("class_map") or {})
     index_map = {int(k): v for k, v in (src.get("index_map") or {}).items()}
+    exclude = set(src.get("exclude_sources") or [])
+    include = set(src.get("sources") or [])
     mf_rows = []
     out_img = {s: os.path.join(out, s, "images") for s in ("train", "val", "test")}
     out_lbl = {s: os.path.join(out, s, "labels") for s in ("train", "val", "test")}
@@ -363,6 +365,12 @@ def merge_source(src, src_root, src_names, src_manifest, out, classes, cfg_map,
 
     n = n_bg = 0
     for sp, img, lbl, stem in source_records(src_root):
+        # filter by the source's own manifest source_name (e.g. drop alarmod from fireviewer)
+        rec_name = src_manifest.get(stem, ("", ""))[1]
+        if exclude and rec_name in exclude:
+            continue
+        if include and rec_name and rec_name not in include:
+            continue
         if role == "test":
             tgt = "test"
         elif role == "negatives":

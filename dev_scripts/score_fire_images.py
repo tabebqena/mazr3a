@@ -47,9 +47,9 @@ Usage:
     .venv/bin/python dev_scripts/score_fire_images.py <dir> --per-dir 0 --sample 0
 
     # more skips + copy everything scoring >= 0.35 for a look
-    .venv/bin/python dev_scripts/score_fire_images.py "fire-model-training/to extract" \
-        --per-dir 0 --sample 0 --skip-dirs valid,preview --out fire-model-training/scores_x \
-        --copy-hits fire-model-training/hits_x --min-score 0.35
+    .venv/bin/python dev_scripts/score_fire_images.py "model-training/to extract" \
+        --per-dir 0 --sample 0 --skip-dirs valid,preview --out model-training/scores_x \
+        --copy-hits model-training/hits_x --min-score 0.35
 
     # interrupted? just run the exact same command again to continue
 
@@ -279,8 +279,8 @@ def main():
     ap.add_argument("--no-resume", dest="no_resume", action="store_true",
                     help="ignore an existing <out>/fire_scores.csv and start over")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", default="fire-model-training/fire_scores",
-                    help="output dir for the CSV + summary [fire-model-training/fire_scores]")
+    ap.add_argument("--out", default="model-training/fire_scores",
+                    help="output dir for the CSV + summary [model-training/fire_scores]")
     ap.add_argument("--top", type=int, default=25,
                     help="how many worst offenders to print [25]")
     ap.add_argument("--min-score", type=float, dest="min_score", default=0.5,

@@ -36,7 +36,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSIONS_DIR = os.path.join(ROOT, "models", "fire", "versions")
 ACTIVE_PT = os.path.join(ROOT, "models", "fire", "best.pt")
 SCORER = os.path.join(ROOT, "dev_scripts", "test_fire_model.py")
-DEFAULT_OUT = os.path.join(ROOT, "fire-model-training", "compare", "cross-version")
+DEFAULT_OUT = os.path.join(ROOT, "model-training", "eval", "compare", "cross-version")
 PREFERRED_PY = os.path.join(ROOT, ".venv", "bin", "python")
 
 # --------------------------------------------------------------------------
@@ -46,7 +46,7 @@ PREFERRED_PY = os.path.join(ROOT, ".venv", "bin", "python")
 SUITES = [
     {
         "key": "generic200",
-        "yaml": "fire-model-training/eval/data.yaml",
+        "yaml": "model-training/eval/data.yaml",
         "title": "Generic internet benchmark (200 imgs, v1-era)",
         "caveat": ("Drawn from the TRAIN split of a Roboflow internet-fire pool that "
                    "overlaps v1's 8,939 base -> NOT generalization-clean. Use as a "
@@ -56,7 +56,7 @@ SUITES = [
     },
     {
         "key": "rfs2000",
-        "yaml": "fire-model-training/eval/ready_fire_smoke_r2000/data.yaml",
+        "yaml": "model-training/eval/ready_fire_smoke_r2000/data.yaml",
         "title": "Ready fire/smoke random-2000 regression suite (1,899 imgs, internal-dedup)",
         "caveat": ("Uniform random 2,000-image subset of the same Roboflow internet-fire "
                    "pool as generic200, INTERNAL-dedup ONLY (2,000 -> 1,899: near-dup "
@@ -69,7 +69,7 @@ SUITES = [
     },
     {
         "key": "negatives430",
-        "yaml": "fire-model-training/eval/negatives/data.yaml",
+        "yaml": "model-training/eval/negatives/data.yaml",
         "title": "Pure-background FP suite (430 no-fire images)",
         "caveat": ("Curated background/no-fire web+stock frames, ALL empty-label -> no "
                    "positive GT, so mAP is meaningless and val() is skipped (--skip-val). "
@@ -80,7 +80,7 @@ SUITES = [
     },
     {
         "key": "abonia25",
-        "yaml": "fire-model-training/dedup/abonia_clean_eval/data.yaml",
+        "yaml": "model-training/dedup/abonia_clean_eval/data.yaml",
         "title": "Abonia clean held-out test (25 imgs)",
         "caveat": ("Clean (internal + vs-8,939 dedup) CCTV/video 608x608 - the nearest "
                    "thing we hold to farm-CCTV. TINY N=25 -> noisy; prefer fire image "
@@ -89,7 +89,7 @@ SUITES = [
     },
     {
         "key": "dfire2164",
-        "yaml": "fire-model-training/dedup/dfire_clean_eval/data.yaml",
+        "yaml": "model-training/dedup/dfire_clean_eval/data.yaml",
         "title": "D-Fire clean held-out test (2,164 imgs)",
         "caveat": ("Clean (internal + vs 8,939 union Abonia-kept dedup), model-order "
                    "remap applied. Largest & cleanest numeric suite, BUT D-Fire train "
@@ -98,7 +98,7 @@ SUITES = [
     },
     {
         "key": "cctv48",
-        "yaml": "fire-model-training/dedup/cctv_clean_eval/data.yaml",
+        "yaml": "model-training/dedup/cctv_clean_eval/data.yaml",
         "title": "CCTV Smoke & Fire Emergency - synthetic event-level (48 imgs)",
         "caveat": ("100% synthetic (Simuletic) high-angle CCTV, early-stage micro-ignitions "
                    "(bin fires, sidewalk paper, smoldering vegetation) - the closest "

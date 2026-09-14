@@ -16,12 +16,12 @@ N/A (no fire/smoke class) instead of being scored - scoring them would be 0 by c
 Model discovery (md5-deduped):
   * ACTIVE         models/fire/best.pt                       -> tag `v4`
   * archived       models/fire/versions/*/model.pt           -> tag `v1`, `v2`, ...
-  * downloads      model-training/pretrained-models/*.pt      -> tag = filename stem
+  * downloads      model-training/pretrained/*.pt      -> tag = filename stem
 
 Usage:
     .venv/bin/python dev_scripts/compare_pretrained_fire_models.py \
-        [--manifest model-training/fire-benchmark-200/manifest.csv] \
-        [--out model-training/fire-model-compare-200] \
+        [--manifest model-training/eval/fire-benchmark-200/manifest.csv] \
+        [--out model-training/eval/fire-model-compare-200] \
         [--models v4 v1 abonia-yolov8s-fire-best] [--conf 0.5] \
         [--thresholds 0.25,0.35,0.5,0.7] [--imgsz 0] [--batch 16] [--force]
     .venv/bin/python dev_scripts/compare_pretrained_fire_models.py --list-models
@@ -44,9 +44,9 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSIONS_DIR = os.path.join(ROOT, "models", "fire", "versions")
 ACTIVE_PT = os.path.join(ROOT, "models", "fire", "best.pt")
-PRETRAINED_DIR = os.path.join(ROOT, "model-training", "pretrained-models")
-DEFAULT_MANIFEST = os.path.join(ROOT, "model-training", "fire-benchmark-200", "manifest.csv")
-DEFAULT_OUT = os.path.join(ROOT, "model-training", "fire-model-compare-200")
+PRETRAINED_DIR = os.path.join(ROOT, "model-training", "pretrained")
+DEFAULT_MANIFEST = os.path.join(ROOT, "model-training", "eval/fire-benchmark-200", "manifest.csv")
+DEFAULT_OUT = os.path.join(ROOT, "model-training", "eval/fire-model-compare-200")
 
 CATEGORIES = ["fire_smoke", "fire_only", "smoke_only", "other"]
 FIRE_NAMES = {"fire", "flame"}

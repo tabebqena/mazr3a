@@ -25,8 +25,8 @@ USAGE
 -----
   # Event-level dedup + remap to model order + write the clean flat suite:
   .venv/bin/python dev_scripts/build_cctv_eval_suite.py \
-      --src fire-model-training/4_CCTV_Emergency \
-      --out fire-model-training/dedup/cctv_clean_eval \
+      --src model-training/sources/cctv_emergency \
+      --out model-training/dedup/cctv_clean_eval \
       --names fire,other,smoke
 
   # representative: 'medoid' (frame closest to the family's other frames, default)
@@ -196,9 +196,9 @@ def main():
     ap = argparse.ArgumentParser(
         description="Phase-5: build the event-level CCTV Smoke & Fire compare suite "
                     "(one representative per varN family; native fire0/smoke1 -> fire/other/smoke).")
-    ap.add_argument("--src", default="fire-model-training/4_CCTV_Emergency",
+    ap.add_argument("--src", default="model-training/sources/cctv_emergency",
                     help="source root with flat images/+labels/ (read-only)")
-    ap.add_argument("--out", default="fire-model-training/dedup/cctv_clean_eval",
+    ap.add_argument("--out", default="model-training/dedup/cctv_clean_eval",
                     help="NEW clean-suite root (must be outside --src)")
     ap.add_argument("--names", default="fire,other,smoke",
                     help="comma-separated model-order class names (default fire,other,smoke)")

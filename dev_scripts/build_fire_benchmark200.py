@@ -31,7 +31,7 @@ dev_scripts/compare_pretrained_fire_models.py.
 
 Usage:
     .venv/bin/python dev_scripts/build_fire_benchmark200.py \
-        [--out model-training/fire-benchmark-200] [--per-category 50] [--seed 0] [--force]
+        [--out model-training/eval/fire-benchmark-200] [--per-category 50] [--seed 0] [--force]
 """
 import argparse
 import csv
@@ -51,17 +51,17 @@ LABEL_SOURCES = [
     {
         "key": "dfire_test",
         "title": "D-Fire test (held out from V4's D-Fire train)",
-        "images": "model-training/3_DFire/dfire/test/images",
-        "labels": "model-training/3_DFire/dfire/test/labels",
+        "images": "model-training/sources/dfire/dfire/test/images",
+        "labels": "model-training/sources/dfire/dfire/test/labels",
         "map": {0: "smoke", 1: "fire"},
         "domain": "varied internet / CCTV fire+smoke",
     },
     {
         "key": "fireviewer_test",
         "title": "FireViewer corpus test (never trained)",
-        "images": ("model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1/"
+        "images": ("model-training/sources/fireviewer/"
                    "fireviewer_v1_yolo/test/images"),
-        "labels": ("model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1/"
+        "labels": ("model-training/sources/fireviewer/"
                    "fireviewer_v1_yolo/test/labels"),
         "map": {0: "fire", 1: "other", 2: "smoke"},
         "domain": "aerial / forest / tower wildfire",
@@ -69,8 +69,8 @@ LABEL_SOURCES = [
     {
         "key": "cctv_emergency",
         "title": "CCTV Smoke & Fire Emergency, Simuletic (eval-only)",
-        "images": "model-training/4_CCTV_Emergency/images",
-        "labels": "model-training/4_CCTV_Emergency/labels",
+        "images": "model-training/sources/cctv_emergency/images",
+        "labels": "model-training/sources/cctv_emergency/labels",
         "map": {0: "fire", 1: "smoke"},
         "domain": "synthetic high-angle CCTV",
     },
@@ -79,10 +79,10 @@ LABEL_SOURCES = [
 # No-label sources -> always category 'other' (no fire/smoke boxes by construction).
 NEG_SOURCES = [
     {"key": "eval_negatives", "title": "Curated no-fire backgrounds", "images": "model-training/eval/negatives/images", "domain": "web/stock backgrounds"},
-    {"key": "fn_places", "title": "Hard negatives: places", "images": "model-training/false-negatives/places", "domain": "deployment-hard no-fire"},
-    {"key": "fn_dogs", "title": "Hard negatives: dogs", "images": "model-training/false-negatives/dogs", "domain": "deployment-hard no-fire"},
-    {"key": "fn_climate", "title": "Hard negatives: climate", "images": "model-training/false-negatives/climate", "domain": "deployment-hard no-fire"},
-    {"key": "fn_default_other", "title": "Hard negatives: default-other", "images": "model-training/false-negatives/default-other", "domain": "deployment-hard no-fire"},
+    {"key": "fn_places", "title": "Hard negatives: places", "images": "model-training/ours/negatives/places", "domain": "deployment-hard no-fire"},
+    {"key": "fn_dogs", "title": "Hard negatives: dogs", "images": "model-training/ours/negatives/dogs", "domain": "deployment-hard no-fire"},
+    {"key": "fn_climate", "title": "Hard negatives: climate", "images": "model-training/ours/negatives/climate", "domain": "deployment-hard no-fire"},
+    {"key": "fn_default_other", "title": "Hard negatives: default-other", "images": "model-training/ours/negatives/default-other", "domain": "deployment-hard no-fire"},
 ]
 
 _T0 = time.time()
@@ -201,7 +201,7 @@ def round_robin_pick(cands_by_source, target, rng):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default="model-training/fire-benchmark-200")
+    ap.add_argument("--out", default="model-training/eval/fire-benchmark-200")
     ap.add_argument("--per-category", type=int, default=50, dest="per_category")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--force", action="store_true", help="wipe --out first")

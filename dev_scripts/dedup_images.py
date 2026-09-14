@@ -52,11 +52,11 @@ To make that a hard guarantee, the script refuses to run when a write target
 (--report-dir / --out / --cache) resolves INSIDE the candidate source tree or
 inside a directory reference source - the original dataset is always left
 byte-for-byte untouched, and a deduplicated version is produced elsewhere
-(e.g. fire-model-training/dedup/<name>_dedup).
+(e.g. model-training/dedup/<name>_dedup).
 
 OUTPUTS
 -------
-Reports (always written to --report-dir, default fire-model-training/dedup/
+Reports (always written to --report-dir, default model-training/dedup/
 overlap_reports):
   <tag>_per_image.csv   one row per candidate (status/reason/match/hamming)
   <tag>_kept.txt        kept image paths (relative to the candidate root)
@@ -73,16 +73,16 @@ USAGE
 -----
   # 1) index the real training pool once (cache it so later runs are fast):
   python dev_scripts/dedup_images.py --candidate X \
-      --ref "fire-model-training/1_SalahALHaismawi/dataset/Fire Detection.v1i.yolov8.zip" \
-      --ref-label 8939 --cache fire-model-training/dedup/overlap_reports/_index_8939.json
+      --ref "model-training/sources/salah_haismawi/dataset/Fire Detection.v1i.yolov8.zip" \
+      --ref-label 8939 --cache model-training/dedup/overlap_reports/_index_8939.json
 
   # 2) internal dedup of a candidate (video-frame near-dups), report only:
   python dev_scripts/dedup_images.py --candidate .../fire-8 --tag abonia --internal
 
   # 3) dedup against the cached training pool and write the clean set:
   python dev_scripts/dedup_images.py --candidate .../fire-8 --tag abonia --out \
-      fire-model-training/dedup/abonia_dedup --flat \
-      --cache fire-model-training/dedup/overlap_reports/_index_8939.json
+      model-training/dedup/abonia_dedup --flat \
+      --cache model-training/dedup/overlap_reports/_index_8939.json
 
 Note: this module doubles as the shared fingerprint/matching library used by
 dev_scripts/analyze_overlap.py (imported by adding this dir to sys.path).
@@ -212,7 +212,7 @@ def ensure_outside(readonly_roots, dst, flag):
                     "This tool NEVER deletes/overwrites source images; it only WRITES "
                     "new report/clean-copy files, and those must live OUTSIDE every "
                     "source dataset directory. Pick a separate output path, e.g. "
-                    "fire-model-training/dedup/." % (flag, dst, root))
+                    "model-training/dedup/." % (flag, dst, root))
         except ValueError:
             pass  # different drive/prefix (e.g. Windows)
 
@@ -689,8 +689,8 @@ def copy_kept(rows, out_root, flat):
 # CLI
 # --------------------------------------------------------------------------- #
 def _default_report_dir():
-    return ("fire-model-training/dedup/overlap_reports"
-            if os.path.isdir("fire-model-training") else "./dedup_overlap_reports")
+    return ("model-training/dedup/overlap_reports"
+            if os.path.isdir("model-training") else "./dedup_overlap_reports")
 
 
 def main():
@@ -717,7 +717,7 @@ def main():
                     help="with --out: merge splits into <out>/{images,labels}")
     ap.add_argument("--report-dir", default=None,
                     help="where CSV/lists/summary go "
-                         "(default fire-model-training/dedup/overlap_reports)")
+                         "(default model-training/dedup/overlap_reports)")
     ap.add_argument("--cache", default=None,
                     help="persist/reuse the reference fingerprint index as JSON")
     args = ap.parse_args()

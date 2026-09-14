@@ -19,13 +19,13 @@
 #
 # Usage:
 #   ./dev_scripts/pack_colab_upload.sh [output.zip]
-# Default output: model-training/datasets--fireviewer--fire-smoke-detection-corpus-v1/colab_upload.zip
+# Default output: model-training/sources/fireviewer/colab_upload.zip
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MT="model-training"
-OUT="${1:-$MT/datasets--fireviewer--fire-smoke-detection-corpus-v1/colab_upload.zip}"
+OUT="${1:-$MT/sources/fireviewer/colab_upload.zip}"
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 
 WORK="$(mktemp -d)"
@@ -51,15 +51,15 @@ copy_imgs() {
 }
 
 echo "collecting negatives -> $WORK/negatives"
-copy_imgs "$MT/false-negatives/default-other"                          "$WORK/negatives"
-copy_imgs "$MT/false-negatives/climate"                                "$WORK/negatives"
-copy_imgs "$MT/false-negatives/dogs"                                   "$WORK/negatives"
-copy_imgs "$MT/false-negatives/places"                                 "$WORK/negatives"
-copy_imgs "$MT/our-cctv/dog-fp-alerts"                                 "$WORK/negatives"
-copy_imgs "$MT/our-camera-clips/fire_events_over_0_5_false_positives"  "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/default-other"                          "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/climate"                                "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/dogs"                                   "$WORK/negatives"
+copy_imgs "$MT/ours/negatives/places"                                 "$WORK/negatives"
+copy_imgs "$MT/ours/cctv/dog-fp-alerts"                                 "$WORK/negatives"
+copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5_false_positives"  "$WORK/negatives"
 
 echo "collecting our-domain fire audit set -> $WORK/audit"
-copy_imgs "$MT/our-camera-clips/fire_events_over_0_5"                  "$WORK/audit"
+copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5"                  "$WORK/audit"
 
 echo "bundling base checkpoint + scripts"
 cp models/fire/best.pt models/fire/labelmap.txt "$WORK/model/"

@@ -64,10 +64,10 @@ C_TITLE = md(
         "\n",
         "- Plan: [`plans/fire-model-large-finetune-colab.md`](../plans/fire-model-large-finetune-colab.md)\n",
         "- Dataset prep (run once, locally), v5 example:\n",
-        "  `python dev_scripts/prep_fire_large_dataset.py --ready fire-model-training/ready_fire_smoke_dataset.yolov8 "
-        "--negatives fire-model-training/v5_negatives_dedup_rfs --out fire-model-training/v5_finetune_firerich "
+        "  `python dev_scripts/prep_fire_large_dataset.py --ready model-training/sources/ready_fire_smoke.yolov8 "
+        "--negatives model-training/v5_negatives_dedup_rfs --out model-training/v5_finetune_firerich "
         "--val-frac 0.05 --seed 0 --zip`\n",
-        "  → produces `fire-model-training/v5_finetune_firerich_colab.zip` (already `train/`, `val/`, `data.yaml`).\n",
+        "  → produces `model-training/v5_finetune_firerich_colab.zip` (already `train/`, `val/`, `data.yaml`).\n",
         "- **Class contract:** fire=0 / other=1 / smoke=2. Export is index-aligned; labels are **not** "
         "remapped, only the `data.yaml` names are set. `other` is trained but ignored in production.\n",
     ]
@@ -308,7 +308,7 @@ C_NEXT = md(
         "\n",
         "1. `best_finetuned.pt` is already on Drive (`DRIVE_DIR/best_finetuned.pt`) plus inside the "
         "results zip - pull it back into the repo as "
-        "`fire-model-training/<out>/best_finetuned.pt`.\n",
+        "`model-training/<out>/best_finetuned.pt`.\n",
         "2. Run the LOCAL evaluation (FP on `eval/negatives` must drop; fire recall on "
         "`dedup/dfire_clean_eval` must not) - see [`plans/fire-model-large-finetune-colab.md`]"
         "(../plans/fire-model-large-finetune-colab.md) §5.\n",

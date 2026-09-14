@@ -49,6 +49,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/negatives" "$WORK/domain_test" "$WORK/scripts"
 mkdir -p "$WORK/cctv_emergency"
+mkdir -p "$WORK/salah_haismawi"
 
 # Copy images only - RECURSIVELY (some sets nest under images/camNN/) - and never the
 # annotated (overlay-burned) variants, which would teach the model the drawn boxes.
@@ -83,17 +84,26 @@ fi
 echo "collecting our-domain CCTV true fires (held-out test) -> $WORK/domain_test"
 copy_imgs "$MT/ours/camera-clips/fire_events_over_0_5"                  "$WORK/domain_test"
 
-echo "bundling CCTV Emergency (flat images+labels YOLO layout)"
+echo "bundling CCTV Emergency (flat images+labels YOLO layout, test-only)"
 if [ -d "$MT/sources/cctv_emergency" ]; then
   cp -r "$MT/sources/cctv_emergency/." "$WORK/cctv_emergency/"
 else
   echo "  (skip, absent) $MT/sources/cctv_emergency"
 fi
 
+echo "bundling SalahALHaismawi (Roboflow 'Fire Detection.v1i.yolov8' -> YOLO tree, train)"
+SALAH_ZIP="$MT/sources/salah_haismawi/dataset/Fire Detection.v1i.yolov8.zip"
+if [ -f "$SALAH_ZIP" ]; then
+  unzip -q -o "$SALAH_ZIP" -d "$WORK/salah_haismawi"
+else
+  echo "  (skip, absent) $SALAH_ZIP"
+fi
+
 echo "bundling scripts"
 cp dev_scripts/prep_fire_scratch_dataset.py \
    dev_scripts/prep_fireviewer_dataset.py \
    dev_scripts/dedup_fire_scratch.py \
+   dev_scripts/augment_fire_train.py \
    dev_scripts/colab_train_scratch.py "$WORK/scripts/"
 
 printf 'Fire scratch Colab upload bundle\ncreated (UTC): %s\ngit: %s\n' \
@@ -106,9 +116,11 @@ rm -f "$OUT"
 
 n_neg=$(find "$WORK/negatives" -type f | wc -l)
 n_dom=$(find "$WORK/domain_test" -type f | wc -l)
+n_salah=$(find "$WORK/salah_haismawi" -type f | wc -l)
 echo
 echo "negatives   : $n_neg images ($(du -sh "$WORK/negatives" | cut -f1))"
 echo "domain_test : $n_dom images ($(du -sh "$WORK/domain_test" | cut -f1))"
+echo "salah_hai.  : $n_salah files ($(du -sh "$WORK/salah_haismawi" | cut -f1))"
 echo "bundle      -> $OUT  ($(du -h "$OUT" | cut -f1))"
 echo
 echo "Upload that one file to Google Drive:  MyDrive/mazr3a-fire-scratch/colab_upload.zip"

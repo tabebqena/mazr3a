@@ -89,6 +89,18 @@ def main():
                     help="backbone layers to freeze; 0 = full train (default for scratch)")
     ap.add_argument("--lr0", type=float, default=0.01)
     ap.add_argument("--patience", type=int, default=20)
+    ap.add_argument("--degrees", type=float, default=0.0,
+                    help="online rotation aug (symmetric +-deg); 15 = the smoke-run +-15 deg")
+    ap.add_argument("--fliplr", type=float, default=0.5,
+                    help="horizontal flip probability (0.5 = left<->right)")
+    ap.add_argument("--flipud", type=float, default=0.0,
+                    help="upside-down flip probability (keep 0.0 - no upside-down flip)")
+    ap.add_argument("--hsv-h", type=float, default=0.015,
+                    help="hue-shift aug fraction")
+    ap.add_argument("--hsv-s", type=float, default=0.7,
+                    help="saturation-shift aug fraction")
+    ap.add_argument("--hsv-v", type=float, default=0.4,
+                    help="brightness/value-shift aug fraction")
     ap.add_argument("--save-period", type=int, default=1)
     ap.add_argument("--device", default="0")
     ap.add_argument("--plots", action="store_true",
@@ -133,6 +145,8 @@ def main():
     model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz, batch=args.batch,
                 device=args.device, project=project, name=args.name, exist_ok=True,
                 freeze=args.freeze, lr0=args.lr0, patience=args.patience,
+                degrees=args.degrees, fliplr=args.fliplr, flipud=args.flipud,
+                hsv_h=args.hsv_h, hsv_s=args.hsv_s, hsv_v=args.hsv_v,
                 save_period=args.save_period, plots=args.plots, verbose=True)
 
     save_dir = str(getattr(model.trainer, "save_dir", os.path.join(project, args.name)))

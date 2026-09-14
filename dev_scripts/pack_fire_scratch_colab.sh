@@ -1,32 +1,33 @@
 #!/usr/bin/env bash
-# pack_fire_scratch_colab.sh - build the SMALL Colab upload bundle for the scratch fire-model run.
+# pack_fire_scratch_colab.sh - build the SPLIT Colab upload bundles for the scratch fire-model run.
 #
-# The EXTERNAL training sets are NOT uploaded: Colab downloads them straight from their
-# sources (the FireViewer HF corpus, Roboflow/zip URLs, ...) - that is the whole point of
-# prep_fire_scratch_dataset.py. Only the things that exist nowhere else go in this bundle:
+# Data folders are zipped INDIVIDUALLY so a re-run only re-uploads what actually changed:
 #
-#   scripts/prep_fire_scratch_dataset.py   download + merge external sources -> raw YOLO tree
-#   scripts/prep_fireviewer_dataset.py     parquet->YOLO converter (dependency of the above)
-#   scripts/dedup_fire_scratch.py          the dedup passes + lightweight fingerprint index
-#   scripts/colab_train_scratch.py         the detached, Drive-resilient SCRATCH trainer
-#   cctv_emergency/                        Simuletic CCTV Emergency (240) - merged into TRAIN
-#   domain_test/                           our own CCTV TRUE fires (HELD OUT - never trained)
-#   negatives/                             our domain hard negatives -> train as background
+#   <out>/uploads/negatives.zip
+#   <out>/uploads/domain_test.zip
+#   <out>/uploads/cctv_emergency.zip
+#   <out>/uploads/salah_haismawi.zip
 #
-# Abonia fire-8 is NOT bundled: the notebook fetches it from its GitHub source
-# (Abonia1/YOLOv8-Fire-and-Smoke-Detection, datasets/fire-8) via a sparse clone.
+# Scripts change often, so they ship per-version (each run uploads its own):
+#
+#   <out>/<version>/scripts.zip
+#
+# UPLOAD (Google Drive):
+#   the four data zips -> MyDrive/mazr3a-fire-scratch/uploads/
+#   scripts.zip        -> MyDrive/mazr3a-fire-scratch/<version>/scripts.zip
+#
+# The notebook re-uses an already-uploaded data zip when its local folder already exists, and
+# only downloads/extracts the ones it still needs (see build_fire_scratch_colab_nb.py Cell 4).
 #
 # Usage:
-#   ./dev_scripts/pack_fire_scratch_colab.sh [output.zip] [--negatives true|false]
-#   ./dev_scripts/pack_fire_scratch_colab.sh --negatives false
-#   ./dev_scripts/pack_fire_scratch_colab.sh -o /path/out.zip --negatives false
-# Defaults: output = model-training/runs/fire_scratch_colab/colab_upload.zip, negatives = true
+#   ./dev_scripts/pack_fire_scratch_colab.sh [--out DIR] [--version v3] [--negatives true|false]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MT="model-training"
-OUT=""
+OUT_DIR="$MT/runs/fire_scratch_colab"
+VERSION="v3"
 NEGATIVES=true
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,12 +39,20 @@ while [ $# -gt 0 ]; do
       esac
       shift 2
       ;;
-    -o|--out) OUT="$2"; shift 2 ;;
-    *) OUT="$1"; shift ;;   # positional output path (backward-compatible)
+    -o|--out) OUT_DIR="$2"; shift 2 ;;
+    --version) VERSION="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-OUT="${OUT:-$MT/runs/fire_scratch_colab/colab_upload.zip}"
-case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
+
+# make the output dir absolute: the zip commands run inside a subshell that cd's into $WORK
+case "$OUT_DIR" in
+  /*) ;;
+  *) OUT_DIR="$ROOT/$OUT_DIR" ;;
+esac
+
+UPLOADS_DIR="$OUT_DIR/uploads"
+SCRIPTS_DIR="$OUT_DIR/$VERSION"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -106,23 +115,31 @@ cp dev_scripts/prep_fire_scratch_dataset.py \
    dev_scripts/augment_fire_train.py \
    dev_scripts/colab_train_scratch.py "$WORK/scripts/"
 
-printf 'Fire scratch Colab upload bundle\ncreated (UTC): %s\ngit: %s\n' \
+printf 'Fire scratch Colab upload (split bundles)\ncreated (UTC): %s\ngit: %s\nversion: %s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse --short HEAD 2>/dev/null || echo n/a)" \
-  > "$WORK/BUNDLE.txt"
+  "$VERSION" > "$WORK/BUNDLE.txt"
 
-mkdir -p "$(dirname "$OUT")"
-rm -f "$OUT"
-( cd "$WORK" && zip -qr "$OUT" . )
+mkdir -p "$UPLOADS_DIR" "$SCRIPTS_DIR"
 
-n_neg=$(find "$WORK/negatives" -type f | wc -l)
-n_dom=$(find "$WORK/domain_test" -type f | wc -l)
-n_salah=$(find "$WORK/salah_haismawi" -type f | wc -l)
+echo "writing split data bundles -> $UPLOADS_DIR"
+for f in negatives domain_test cctv_emergency salah_haismawi; do
+  if [ -d "$WORK/$f" ] && [ -n "$(find "$WORK/$f" -type f -print -quit 2>/dev/null)" ]; then
+    ( cd "$WORK" && zip -qr "$UPLOADS_DIR/$f.zip" "$f" )
+  else
+    echo "  (skip empty) $f"
+  fi
+done
+
+echo "writing per-version scripts bundle -> $SCRIPTS_DIR/scripts.zip"
+( cd "$WORK" && zip -qr "$SCRIPTS_DIR/scripts.zip" scripts BUNDLE.txt )
+
 echo
-echo "negatives   : $n_neg images ($(du -sh "$WORK/negatives" | cut -f1))"
-echo "domain_test : $n_dom images ($(du -sh "$WORK/domain_test" | cut -f1))"
-echo "salah_hai.  : $n_salah files ($(du -sh "$WORK/salah_haismawi" | cut -f1))"
-echo "bundle      -> $OUT  ($(du -h "$OUT" | cut -f1))"
+for f in negatives domain_test cctv_emergency salah_haismawi; do
+  [ -f "$UPLOADS_DIR/$f.zip" ] && echo "  $f: $(du -h "$UPLOADS_DIR/$f.zip" | cut -f1)"
+done
+echo "  scripts: $(du -h "$SCRIPTS_DIR/scripts.zip" | cut -f1)"
 echo
-echo "Upload that one file to Google Drive:  MyDrive/mazr3a-fire-scratch/colab_upload.zip"
-echo "then run the Colab notebook generated by dev_scripts/build_fire_scratch_colab_nb.py"
-echo "(it reads colab_upload.zip from that Drive folder)."
+echo "Upload:"
+echo "  the four data zips -> MyDrive/mazr3a-fire-scratch/uploads/"
+echo "  scripts.zip       -> MyDrive/mazr3a-fire-scratch/$VERSION/scripts.zip"
+echo "then run the notebook generated by dev_scripts/build_fire_scratch_colab_nb.py"

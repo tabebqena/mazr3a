@@ -439,8 +439,9 @@ def main():
     rep.append("")
     rep.append("data.yaml   -> %s" % yaml_path)
     rep.append("manifest.csv-> %s" % mf_path)
-    rep.append("HELD OUT: the 'test' split must NOT be trained on - register it as a new "
-               "eval suite (dev_scripts/compare_fire_models.py SUITES).")
+    rep.append("HELD OUT: the 'test' split must NOT be trained on. A bounded 1,000-image "
+               "sample is registered as suite 'fvtest1000' in "
+               "dev_scripts/compare_fire_models.py (model-training/eval/fireviewer_test_sample).")
     text = "\n".join(rep)
     with open(os.path.join(out, "prep_report.txt"), "w", encoding="utf-8") as fh:
         fh.write(text + "\n")

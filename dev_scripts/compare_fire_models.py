@@ -112,6 +112,20 @@ SUITES = [
                    "domain probe, not a numeric benchmark."),
         "skip_val": False,
     },
+    {
+        "key": "fvtest1000",
+        "yaml": "model-training/eval/fireviewer_test_sample/data.yaml",
+        "title": "FireViewer held-out test split (1,000-image sample, leak-free)",
+        "caveat": ("1,000-image sample of the FireViewer corpus v1 held-out TEST split "
+                   "(full split = 22,067 images; bounded here so the CPU matrix stays "
+                   "tractable). Leak-free by construction: the corpus ships a clip-level "
+                   "split_group and this split is never trained on in any round. "
+                   "Fire/smoke GT only - no 'other'(1) boxes (362/1000 empty-label "
+                   "background; 521 fire + 665 smoke boxes). The strongest "
+                   "generalisation-clean smoke+fire benchmark we hold; prefer fire/smoke "
+                   "image recall over box mAP."),
+        "skip_val": False,
+    },
 ]
 
 SUITE_KEYS = [s["key"] for s in SUITES]

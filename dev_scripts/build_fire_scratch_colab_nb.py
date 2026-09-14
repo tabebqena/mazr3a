@@ -44,6 +44,9 @@ import os
 
 DEFAULT_OUT = "notebooks/fire-scratch-train-colab.ipynb"
 
+# Bump on every notebook change (it is stamped into the notebook title + metadata).
+NOTEBOOK_VERSION = "1.0.0"
+
 
 def md(source):
     return {"cell_type": "markdown", "metadata": {}, "source": source}
@@ -740,8 +743,24 @@ C_NEXT = md([
 ])
 
 
+def version_cell():
+    """Markdown cell stamped with the notebook version, build time and git hash."""
+    import datetime
+    import subprocess
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        git = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True).stdout.strip() or "n/a"
+    except Exception:
+        git = "n/a"
+    return md([
+        "> **Notebook version v%s** · built %s · git `%s`\n" % (NOTEBOOK_VERSION, ts, git),
+    ])
+
+
 def build(out=DEFAULT_OUT):
     cells = _demagic([
+        version_cell(),
         C_TITLE, C_SETUP, C_CONFIG, C_LOGGING, C_BUNDLE, C_SOURCES, C_DEDUP, C_VERIFY,
         C_TRAINER_CHECK, C_LAUNCH, C_STATUS, C_WAIT, C_RESUME, C_COLLECT, C_NEXT,
     ])
@@ -750,7 +769,7 @@ def build(out=DEFAULT_OUT):
     nb = {
         "cells": cells,
         "metadata": {
-            "colab": {"provenance": []},
+            "colab": {"provenance": [], "version": NOTEBOOK_VERSION},
             "kernelspec": {"name": "python3", "display_name": "Python 3"},
             "language_info": {"name": "python"},
         },

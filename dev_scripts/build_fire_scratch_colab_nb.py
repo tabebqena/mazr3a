@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """build_fire_scratch_colab_nb.py - generate notebooks/fire-scratch-train-colab.ipynb.
 
-A ready-to-import Google Colab notebook that trains a fire detector FROM SCRATCH (a
-COCO-pretrained backbone, NOT the existing fire checkpoint) on external datasets it downloads
-itself (nothing large is uploaded), then deduplicates them honestly and trains in a way that
-survives losing the editor.
+A ready-to-import Google Colab notebook for the "scratch" fire-model campaign: it trains from a
+COCO-pretrained backbone (``yolo11s.pt``) - NOT from the production fire checkpoint
+(``models/fire/best.pt``, i.e. v4/v5/v6) - on external datasets it downloads itself (nothing large
+is uploaded), then deduplicates them honestly and trains in a way that survives losing the editor.
+A later campaign run can continue from the previous run's winner (e.g. v2 continues
+``v1/scratch-v1.pt``).
 
 THE HONEST-VALIDATION CONTRACT (the whole point of this notebook)
 -----------------------------------------------------------------
@@ -45,7 +47,7 @@ import os
 DEFAULT_OUT = "notebooks/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.3.0"
+NOTEBOOK_VERSION = "1.4.0"
 
 
 def md(source):
@@ -63,11 +65,12 @@ def code(source):
 
 
 C_TITLE = md([
-    "# Fire model — train from scratch (clean model, honest validation)\n",
+    "# Fire model — scratch campaign (COCO backbone, honest validation)\n",
     "\n",
-    "Trains a fire detector **from scratch** (a COCO-pretrained backbone, **not** the existing\n",
-    "fire checkpoint) on external datasets the notebook **downloads itself**, deduplicates them\n",
-    "honestly, and stores every artifact on Google Drive.\n",
+    "Trains a fire detector **from a COCO-pretrained backbone** (`yolo11s.pt`) — **not** from the\n",
+    "production fire checkpoint (`models/fire/best.pt`, i.e. v4/v5/v6). Later campaign runs can\n",
+    "continue from the previous run's winner (e.g. `v2` continues `v1/scratch-v1.pt`). Datasets are\n",
+    "downloaded by the notebook itself, deduplicated honestly, and artifacts live on Drive.\n",
     "\n",
     "- **Dataset build:** download → merge → dedup → clean `train/val/test`. Dedup runs each set\n",
     "  against ITSELF first, then cross-set (see the honest-validation contract below).\n",

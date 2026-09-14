@@ -47,6 +47,7 @@ import hashlib
 import json
 import math
 import os
+import time
 import shutil
 import sys
 from collections import Counter
@@ -285,9 +286,15 @@ def self_dedup(rows, split, hamming_lim, group_bounded):
     pool = KeptSet()
     cur_group = None
     removed = 0
+    total = sum(1 for r in rows if r["split"] == split)
+    done = 0
+    t0 = time.time()
+    print("  %s self-dedup: %d images (scope=%s)"
+          % (split, total, "group" if group_bounded else "global"), flush=True)
     for r in rows:
         if r["split"] != split or not r["kept"]:
             continue
+        done += 1
         if group_bounded and r["group"] != cur_group:
             pool = KeptSet()          # new clip/group: a fresh dHash pool (frames compared within)
             cur_group = r["group"]
@@ -302,19 +309,36 @@ def self_dedup(rows, split, hamming_lim, group_bounded):
         else:
             seen_md5.add(r["md5"])
             pool.add(r["md5"], r["dhash"])
+        if done % 5000 == 0:
+            el = time.time() - t0
+            rate = done / el if el else 0
+            eta = (total - done) / rate / 60 if rate else 0
+            print("    %d/%d (%.0f%%) removed %d | %.0f img/s | ETA %.1f min"
+                  % (done, total, 100.0 * done / max(1, total), removed, rate, eta), flush=True)
     return removed
 
 
 def mark_vs_pool(rows, split, pool, reason, limit):
     """Remove images of `split` that near-dup any entry of an immutable reference pool."""
-    removed = 0
+    total = sum(1 for r in rows if r["split"] == split)
+    ref_n = len(pool._ph) if hasattr(pool, "_ph") else 0
+    print("  %s: %d images vs %d reference hashes" % (reason, total, ref_n), flush=True)
+    removed = done = 0
+    t0 = time.time()
     for r in rows:
         if r["split"] != split or not r["kept"]:
             continue
+        done += 1
         if pool.near(r["md5"], r["dhash"], limit):
             r["kept"] = False
             r["reason"] = reason
             removed += 1
+        if done % 5000 == 0:
+            el = time.time() - t0
+            rate = done / el if el else 0
+            eta = (total - done) / rate / 60 if rate else 0
+            print("    %d/%d (%.0f%%) removed %d | %.0f img/s | ETA %.1f min"
+                  % (done, total, 100.0 * done / max(1, total), removed, rate, eta), flush=True)
     return removed
 
 

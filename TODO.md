@@ -75,6 +75,16 @@ the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
  have exited, decide whether it is still needed, then stop/disable it or promote it
  to a managed service. Also sanity-check for ports held open and CPU/temperature
  impact of the leftovers.
+- **Enrich fire-model negatives from free external datasets.** Continue the Places365
+ starter (500 imgs already merged into `model-training/ours/negatives/places/`, now 645).
+ Next sources to sample, score with v4, manually exclude fire, then merge per category:
+ scenes (`SUN397`, `ADE20K`, more `Places365`), surveillance (`VisDrone-DET`,
+ `CityPersons`), general objects (`COCO 2017`, `Open Images V7`). Workflow: download a
+ 500–1000-img sample → [`dev_scripts/score_fire_images.py`](dev_scripts/score_fire_images.py)
+ → copy suspects to `./suspect` → merge clean imgs into
+ `model-training/ours/negatives/<category>` → [`dev_scripts/dedup_images.py`](dev_scripts/dedup_images.py)
+ → wire into training and re-run the FP audit (`model-training/eval/negatives` +
+ `firewatch.py --dry-run`).
 
 ## scenereader — cross-camera episode narrator (in progress)
 

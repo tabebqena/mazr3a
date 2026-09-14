@@ -43,14 +43,18 @@ off instead of recomputing expensive work:
 
     1. fingerprint  - md5 + dHash for every pool image, APPENDED incrementally to
                       ``<report>/fingerprints.jsonl`` (partial lines are ignored on resume).
-    2. mark         - all dedup/balance decisions, checkpointed to ``<report>/decisions.jsonl``
-                      after EVERY pass (see the pass list above); ``state.json`` records which
-                      passes are already done, so an interrupt mid-mark resumes from the next pass.
+                      SLOW + safely resumable -> intra-stage resume.
+    2. mark         - all dedup/balance decisions, computed in-memory and written ONCE to
+                      ``<report>/decisions.jsonl`` when the stage finishes. It is FAST,
+                      deterministic and replaying half-done passes would be error-prone, so it is
+                      NOT intra-stage resumable: an interrupt restarts this stage from scratch
+                      (only the completed-stage result is replayed on later runs).
     3. copy         - bg-extra + clean tree, written one file at a time via ``*.part`` +
                       ``os.replace`` (atomic), skipping destinations that already exist with the
                       correct size. Interrupting a 100k-file copy just resumes the remaining files.
+                      SLOW + safely resumable -> intra-stage resume.
     4. report       - data.yaml / manifest.csv / per_image.csv / run indexes / summary.txt
-                      (idempotent, always rewritten).
+                      (FAST + idempotent; always rewritten, never resumed).
 
 Run progress is printed to stdout AND appended to ``<report>/dedup.log`` every ``--progress-every``
 files (default 1000) or every ~15 s, whichever comes first, with img/s + ETA.
@@ -593,80 +597,72 @@ def load_index(index_dir, positives_only=False):
 
 
 def mark_stage(rows, args, state, report_dir, log, progress_every):
-    """Run all dedup + balance passes, checkpointing decisions after EVERY pass."""
+    """Run all dedup + balance passes in-memory and persist the final decisions.
+
+    Deliberately NOT intra-stage resumable: the passes are pure in-memory computation
+    (fast relative to fingerprinting/copying) and re-running them from scratch is fully
+    deterministic, so per-pass checkpointing would add replay risk for little benefit.
+    The stage IS resumable as a whole - once it completes, ``decisions.jsonl`` holds the
+    final result and a later run just replays it onto the freshly-loaded rows.
+    """
     dec_path = os.path.join(report_dir, "decisions.jsonl")
     state_path = os.path.join(report_dir, "state.json")
 
     if state.get("mark_done"):
-        # Decisions were already computed: replay them onto the freshly-loaded rows so the
-        # copy/report stages see the same kept/reason state as the completed mark stage.
+        # Replay the completed decisions onto freshly-loaded rows so copy/report see them.
         apply_decisions(rows, load_decisions(dec_path))
-        log("stage mark: already done, applying recorded decisions and skipping")
+        log("stage mark: already done, replaying recorded decisions and skipping")
         return
 
-    done = list(state.get("passes_done", []))
-    counts = dict(state.get("counts", {}))
-
-    if done:
-        apply_decisions(rows, load_decisions(dec_path))
-        log("stage mark: resuming with %d passes already done: %s"
-            % (len(done), ",".join(done)))
-
+    log("stage mark: running all passes (not intra-stage resumable; "
+        "an interrupt restarts this stage from scratch)")
     prev_train = load_index(args.prev_train_index, positives_only=True)
     prev_test = load_index(args.prev_test_index, positives_only=False)
+    counts = {}
 
-    def passes():
-        yield ("test-self", lambda: self_dedup(rows, "test", args.hamming, True,
-                                               log, progress_every))
-        yield ("val-self", lambda: self_dedup(rows, "val", args.hamming, True,
-                                              log, progress_every))
-        yield ("train-self", lambda: self_dedup(rows, "train", args.hamming,
-                                                args.train_scope == "group", log, progress_every))
-        if prev_train:
-            yield ("test-vs-prev-train", lambda: mark_vs_pool(
-                rows, "test", prev_train, "test-vs-prev-train", args.hamming, log, progress_every))
-            yield ("val-vs-prev-train", lambda: mark_vs_pool(
-                rows, "val", prev_train, "val-vs-prev-train", args.hamming, log, progress_every))
-            yield ("train-vs-prev-train", lambda: mark_vs_pool(
-                rows, "train", prev_train, "train-vs-prev-train", args.hamming, log, progress_every))
-        if prev_test:
-            yield ("test-vs-prev-test", lambda: mark_vs_pool(
-                rows, "test", prev_test, "test-vs-prev-test", args.hamming, log, progress_every))
-            yield ("val-vs-prev-test", lambda: mark_vs_pool(
-                rows, "val", prev_test, "val-vs-prev-test", args.hamming, log, progress_every))
-            yield ("train-vs-prev-test", lambda: mark_vs_pool(
-                rows, "train", prev_test, "train-vs-prev-test", args.hamming, log, progress_every))
-        if not args.no_train_vs_test:
-            cur_test = FixedPool.from_rows([r for r in rows if r["split"] == "test" and r["kept"]])
-            yield ("train-vs-test", lambda: mark_vs_pool(
-                rows, "train", cur_test, "train-vs-test", args.hamming, log, progress_every))
-        if not args.no_train_vs_val:
-            cur_val = FixedPool.from_rows([r for r in rows if r["split"] == "val" and r["kept"]])
-            yield ("train-vs-val", lambda: mark_vs_pool(
-                rows, "train", cur_val, "train-vs-val", args.hamming, log, progress_every))
-        # fire vs not-fire balance runs LAST, after every dedup pass has settled the set
-        yield ("balance-bg-cap", lambda: balance_background(rows, args.max_bg_share))
-
-    done_set = set(done)
-    ran = 0
-    for name, fn in passes():
-        if name in done_set:
-            continue
+    def run(name, fn):
         counts[name] = fn()
-        ran += 1
-        done_set.add(name)
-        state["passes_done"] = sorted(done_set)
-        state["counts"] = counts
-        save_decisions(rows, dec_path)
-        save_state(state, state_path)
-        log("stage mark: pass %s -> removed %d (checkpointed)" % (name, counts[name]))
+        log("stage mark: pass %s -> removed %d" % (name, counts[name]))
 
-    if ran:
-        log("stage mark: complete (%d passes run, %d total)" % (ran, len(done_set)))
-    else:
-        log("stage mark: no remaining passes")
+    if not args.no_test_self:
+        run("test-self", lambda: self_dedup(rows, "test", args.hamming, True,
+                                            log, progress_every))
+    if not args.no_val_self:
+        run("val-self", lambda: self_dedup(rows, "val", args.hamming, True,
+                                           log, progress_every))
+    if not args.no_train_self:
+        run("train-self", lambda: self_dedup(rows, "train", args.hamming,
+                                             args.train_scope == "group", log, progress_every))
+    if prev_train:
+        run("test-vs-prev-train", lambda: mark_vs_pool(
+            rows, "test", prev_train, "test-vs-prev-train", args.hamming, log, progress_every))
+        run("val-vs-prev-train", lambda: mark_vs_pool(
+            rows, "val", prev_train, "val-vs-prev-train", args.hamming, log, progress_every))
+        run("train-vs-prev-train", lambda: mark_vs_pool(
+            rows, "train", prev_train, "train-vs-prev-train", args.hamming, log, progress_every))
+    if prev_test:
+        run("test-vs-prev-test", lambda: mark_vs_pool(
+            rows, "test", prev_test, "test-vs-prev-test", args.hamming, log, progress_every))
+        run("val-vs-prev-test", lambda: mark_vs_pool(
+            rows, "val", prev_test, "val-vs-prev-test", args.hamming, log, progress_every))
+        run("train-vs-prev-test", lambda: mark_vs_pool(
+            rows, "train", prev_test, "train-vs-prev-test", args.hamming, log, progress_every))
+    if not args.no_train_vs_test:
+        cur_test = FixedPool.from_rows([r for r in rows if r["split"] == "test" and r["kept"]])
+        run("train-vs-test", lambda: mark_vs_pool(
+            rows, "train", cur_test, "train-vs-test", args.hamming, log, progress_every))
+    if not args.no_train_vs_val:
+        cur_val = FixedPool.from_rows([r for r in rows if r["split"] == "val" and r["kept"]])
+        run("train-vs-val", lambda: mark_vs_pool(
+            rows, "train", cur_val, "train-vs-val", args.hamming, log, progress_every))
+    # fire vs not-fire balance runs LAST, after every dedup pass has settled the set
+    run("balance-bg-cap", lambda: balance_background(rows, args.max_bg_share))
+
+    save_decisions(rows, dec_path)
+    state["counts"] = counts
     state["mark_done"] = True
     save_state(state, state_path)
+    log("stage mark: complete (%d passes)" % len(counts))
 
 
 # ---------------------------------------------------------------------------

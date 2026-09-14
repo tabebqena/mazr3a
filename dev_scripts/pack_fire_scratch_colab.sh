@@ -26,7 +26,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MT="model-training"
-OUT_DIR="$MT/runs/fire_scratch_colab"
+OUT_DIR="$MT/runs/scratch-v3"
 VERSION="v3"
 NEGATIVES=true
 while [ $# -gt 0 ]; do

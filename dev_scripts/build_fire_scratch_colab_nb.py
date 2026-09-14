@@ -45,7 +45,7 @@ import os
 DEFAULT_OUT = "notebooks/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.0.0"
+NOTEBOOK_VERSION = "1.1.0"
 
 
 def md(source):
@@ -85,7 +85,7 @@ C_TITLE = md([
 C_SETUP = code([
     "# Cell 1 - deps + GPU\n",
     "!nvidia-smi\n",
-    "!pip -q install --upgrade ultralytics pyarrow huggingface_hub gdown\n",
+    "!pip -q install --upgrade ultralytics pyarrow huggingface_hub gdown kagglehub\n",
     "import torch, ultralytics, pyarrow, huggingface_hub\n",
     "print('ultralytics', ultralytics.__version__, '| pyarrow', pyarrow.__version__)\n",
     "print('torch', torch.__version__, '| cuda', torch.cuda.is_available())\n",
@@ -155,9 +155,10 @@ C_CONFIG = code([
     "     'class_map': {'fire': 'fire', 'smoke': None}},                    # 240 imgs, on-domain CCTV\n",
     "    {'id': 'negatives', 'type': 'yolo_dir', 'path': UPLOAD + '/negatives', 'role': 'negatives'},\n",
     "    {'id': 'cctv_test', 'type': 'yolo_dir', 'path': UPLOAD + '/domain_test', 'role': 'test'},\n",
-    "    # LATER / larger sets (point to the same download source you used locally - not bundled):\n",
-    "    # {'id': 'dfire', 'type': 'zip_url', 'url': 'https://TODO-dfire-url', 'download': 'wget',\n",
-    "    #  'index_map': {0: None, 1: 'fire'}},      # D-Fire native 0=smoke 1=fire (17,221+4,306)\n",
+    "    # LATER / larger sets (pulled by Colab from the same source we download from - not bundled):\n",
+    "    # {'id': 'dfire', 'type': 'kaggle_yolo', 'repo': 'sayedgamal99/smoke-fire-detection-yolo',\n",
+    "    #  'role': 'train', 'index_map': {0: None, 1: 'fire'}},   # D-Fire Kaggle 'ready to use' (CC0),\n",
+    "    #                                      # 0=smoke 1=fire -> fire-only drops smoke; test split held out\n",
     "    # {'id': 'ready_fire_smoke', 'type': 'yolo_dir', 'path': UPLOAD + '/ready_fire_smoke',\n",
     "    #  'role': 'train', 'index_map': {0: 'fire', 1: None, 2: None}},   # 12,799 imgs, broken names\n",
     "]\n",

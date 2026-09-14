@@ -17,6 +17,11 @@ SOURCE TYPES
   zip_url                 A Roboflow-style YOLO export zip (train/valid/test) or a flat
                           images/labels zip. Fields: ``url``, ``download`` ("wget"|"gdown"),
                           ``layout`` ("roboflow"|"flat"), ``class_map``, ``role``.
+  kaggle_yolo             A Kaggle "ready to use" YOLO dataset (e.g. the D-Fire Kaggle mirror
+                          ``sayedgamal99/smoke-fire-detection-yolo``, CC0). Downloaded anonymously
+                          with ``kagglehub.dataset_download``. The YOLO tree is located under the
+                          downloaded root (``data/`` if present). Fields: ``repo`` ("owner/dataset"),
+                          ``class_map``/``index_map``, ``role``.
   yolo_dir                An existing local YOLO tree (uploaded / Drive) - used for the held-out
                           CCTV domain test (role=test) and for domain negatives (role=negatives).
 
@@ -176,6 +181,16 @@ def download_zip(url, download, cache, out_zip):
     run(cmd)
 
 
+def download_kaggle(repo, cache):
+    """Download a public Kaggle dataset anonymously via kagglehub; return the local root."""
+    import kagglehub  # noqa: F401
+    path = kagglehub.dataset_download(repo, path=cache)
+    if not path or not os.path.isdir(path):
+        die("kagglehub returned no local path for %s" % repo)
+    print("  kaggle dataset ->", path)
+    return path
+
+
 # --------------------------------------------------------------------------- #
 # source enumeration
 # --------------------------------------------------------------------------- #
@@ -315,6 +330,23 @@ def stage_source(src, cache, scripts_dir):
                 root = entries[0]
         return root, read_yaml_names(os.path.join(root, "data.yaml")), {}
 
+    if typ == "kaggle_yolo":
+        repo = src.get("repo")                 # "sayedgamal99/smoke-fire-detection-yolo"
+        if not repo:
+            die("source %r: missing 'repo'" % src_id)
+        stage = os.path.join(cache, "kaggle_" + src_id)
+        os.makedirs(stage, exist_ok=True)
+        dl = download_kaggle(repo, stage)
+        yaml_root = dl
+        # Kaggle "ready to use" exports usually nest the YOLO tree under data/ with
+        # data.yaml at the archive root (Roboflow-style); step into data/ when present.
+        if os.path.isdir(os.path.join(dl, "data", "train", "images")):
+            dl = os.path.join(dl, "data")
+        names = read_yaml_names(os.path.join(dl, "data.yaml"))
+        if not names:
+            names = read_yaml_names(os.path.join(yaml_root, "data.yaml"))
+        return dl, names, {}
+
     if typ == "github_repo":
         # sparse clone pulls ONLY the dataset subpath (e.g. Abonia's datasets/fire-8),
         # not the repo's 390 MB of demos/weights/runs.
@@ -405,7 +437,7 @@ def merge_source(src, src_root, src_names, src_manifest, out, classes, cfg_map,
     stats["per_source"][src_id] = {"images": n, "background": n_bg}
 
     # downloaded sources are disposable once merged; keep only the bundled yolo_dir trees
-    if src.get("type") in ("huggingface_fireviewer", "zip_url", "github_repo"):
+    if src.get("type") in ("huggingface_fireviewer", "zip_url", "github_repo", "kaggle_yolo"):
         shutil.rmtree(src_root, ignore_errors=True)
         print("  freed source tree ->", src_root, flush=True)
     return mf_rows

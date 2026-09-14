@@ -655,7 +655,7 @@ def mark_stage(rows, args, state, report_dir, log, progress_every):
         cur_val = FixedPool.from_rows([r for r in rows if r["split"] == "val" and r["kept"]])
         run("train-vs-val", lambda: mark_vs_pool(
             rows, "train", cur_val, "train-vs-val", args.hamming, log, progress_every))
-    # fire vs not-fire balance runs LAST, after every dedup pass has settled the set
+    # positive-vs-background balance runs LAST, after every dedup pass has settled the set
     run("balance-bg-cap", lambda: balance_background(rows, args.max_bg_share))
 
     save_decisions(rows, dec_path)
@@ -782,13 +782,15 @@ def save_index(path, rows, split_filter, run_name):
 
 
 def balance_background(rows, max_bg_share):
-    """Cap the background fraction of KEPT train images (fire vs not-fire balance).
+    """Cap the background fraction of KEPT train images (positive vs background balance).
 
     Returns the number of kept background train images moved out (reason 'balance-bg-cap').
     Solves ``bg_new / n_new <= max_bg_share`` for the minimum number to remove:
         remove = ceil((n_bg - max_bg_share * n) / (1 - max_bg_share)).
-    Background = an image with no positive box (empty label); in a fire-only run that
-    includes pure background AND smoke-only images.
+    Background = an image with NO box of any class (empty label). Any image with a
+    fire/other/smoke box counts as a positive and is never capped. (In the old fire-only
+    round smoke boxes were dropped to background, so this also covered smoke-only images;
+    in the fire/other/smoke round smoke is a positive and stays protected.)
     """
     train = [r for r in rows if r["split"] == "train" and r["kept"]]
     n = len(train)
@@ -859,13 +861,13 @@ def report_stage(rows, args, state, by_split, log):
     n_tr = len(kept_train)
     n_bg = sum(1 for r in kept_train if not r["cls"])
     rep.append("")
-    rep.append("train class balance (fire vs not-fire):")
-    rep.append("  fire-positive = %d (%.0f%%)" % (n_tr - n_bg, 100 * (n_tr - n_bg) / max(1, n_tr)))
-    rep.append("  background    = %d (%.0f%%)   cap = %.0f%%"
+    rep.append("train class balance (positive vs background):")
+    rep.append("  positive (fire/smoke/other) = %d (%.0f%%)" % (n_tr - n_bg, 100 * (n_tr - n_bg) / max(1, n_tr)))
+    rep.append("  background                   = %d (%.0f%%)   cap = %.0f%%"
                % (n_bg, 100 * n_bg / max(1, n_tr), 100 * args.max_bg_share))
     if n_tr and (n_tr - n_bg) / n_tr < 0.10:
-        rep.append("  WARNING: fire-positive share is under 10%% - recall will likely suffer; "
-                   "lower --max-bg-share or add more fire sources.")
+        rep.append("  WARNING: positive share is under 10%% - recall will likely suffer; "
+                   "lower --max-bg-share or add more fire/smoke sources.")
     rep.append("")
     rep.append("removals by pass:")
     for k in sorted(counts):
@@ -902,9 +904,9 @@ def main():
                     help="dir of *.jsonl fingerprints of EVERY previously-held-out test/val image")
     ap.add_argument("--run-name", default="scratch", help="tag stored in the index files")
     ap.add_argument("--max-bg-share", type=float, default=0.60,
-                    help="cap the background (non-fire) fraction of TRAIN images [0.60]. "
-                         "Higher = more negatives / fewer false positives; lower = more fire "
-                         "samples / better recall.")
+                    help="cap the background (empty-label) fraction of TRAIN images [0.60]. "
+                         "Higher = more negatives / fewer false positives; lower = more "
+                         "positive (fire/smoke) samples / better recall.")
     ap.add_argument("--bg-extra", default=None,
                     help="dir that receives background images moved out by the cap "
                          "(default: <out>_bg_extra; reversible, nothing is deleted)")

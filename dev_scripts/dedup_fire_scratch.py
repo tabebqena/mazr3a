@@ -20,7 +20,7 @@ Reads the merged pool written by dev_scripts/prep_fire_scratch_dataset.py
 Near-dup = 64-bit dHash Hamming distance <= --hamming (default 8) OR byte-identical md5.
 md5 is checked O(1); dHash uses a vectorised numpy pool (uint64 XOR + bitwise_count) with a
 small pure-Python "dirty tail", exactly like dev_scripts/dedup_images.py. Nothing is ever
-deleted: kept images + labels are COPIED into --out.
+deleted from the pool: kept images + labels are COPIED into --out.
 
 LIGHTWEIGHT PERSISTENT FINGERPRINT INDEX (never re-download old datasets)
 ------------------------------------------------------------------------
@@ -34,12 +34,39 @@ kept test+val fingerprints to ``<report>/run_test_index.jsonl``; the notebook co
 files into the Drive index directories ONLY AFTER a successful training, so the persistent
 index accumulates exactly the runs that were actually trained.
 
+RESUMABLE STAGES + PROGRESS (2026-09-14)
+----------------------------------------
+The old version was one long in-memory job: a mid-copy failure (e.g. ENOSPC) meant re-running
+EVERYTHING from scratch, including fingerprinting all images again. This version splits the run
+into four idempotent stages that checkpoint to ``<report>/`` so a re-run resumes where it left
+off instead of recomputing expensive work:
+
+    1. fingerprint  - md5 + dHash for every pool image, APPENDED incrementally to
+                      ``<report>/fingerprints.jsonl`` (partial lines are ignored on resume).
+    2. mark         - all dedup/balance decisions, checkpointed to ``<report>/decisions.jsonl``
+                      after EVERY pass (see the pass list above); ``state.json`` records which
+                      passes are already done, so an interrupt mid-mark resumes from the next pass.
+    3. copy         - bg-extra + clean tree, written one file at a time via ``*.part`` +
+                      ``os.replace`` (atomic), skipping destinations that already exist with the
+                      correct size. Interrupting a 100k-file copy just resumes the remaining files.
+    4. report       - data.yaml / manifest.csv / per_image.csv / run indexes / summary.txt
+                      (idempotent, always rewritten).
+
+Run progress is printed to stdout AND appended to ``<report>/dedup.log`` every ``--progress-every``
+files (default 1000) or every ~15 s, whichever comes first, with img/s + ETA.
+
 USAGE
 -----
     python dedup_fire_scratch.py --pool /content/raw_yolo --out /content/clean_yolo \
         --hamming 8 --train-scope group \
         --prev-train-index /content/drive/MyDrive/.../fingerprints/train \
         --prev-test-index  /content/drive/MyDrive/.../fingerprints/test
+
+    # resume after a crash (default behaviour):
+    python dedup_fire_scratch.py --pool /content/raw_yolo --out /content/clean_yolo
+
+    # ignore all checkpoints and recompute fingerprint + mark from scratch:
+    python dedup_fire_scratch.py --pool /content/raw_yolo --out /content/clean_yolo --fresh
 """
 import argparse
 import csv
@@ -47,13 +74,15 @@ import hashlib
 import json
 import math
 import os
-import time
 import shutil
 import sys
+import time
 from collections import Counter
 from io import BytesIO
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+STATE_VERSION = 1
 
 _LANCZOS = None
 
@@ -205,6 +234,79 @@ def is_image(name):
     return os.path.splitext(name)[1].lower() in IMG_EXTS
 
 
+# ---------------------------------------------------------------------------
+# Logging / progress helpers
+# ---------------------------------------------------------------------------
+
+class Logger:
+    """Tee every progress line to stdout and an append-only log file."""
+
+    def __init__(self, path):
+        self.path = path
+        if path:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            self.fh = open(path, "a", encoding="utf-8")
+        else:
+            self.fh = None
+
+    def __call__(self, msg):
+        line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+        print(line, flush=True)
+        if self.fh is not None:
+            self.fh.write(line + "\n")
+            self.fh.flush()
+
+    def close(self):
+        if self.fh is not None:
+            self.fh.close()
+
+
+class Progress:
+    """Emit a progress line every `every` ticks or `interval` seconds, then a final line."""
+
+    def __init__(self, total, label, every=1000, interval=15.0, log=None, suffix=None):
+        self.total = max(1, total)
+        self.label = label
+        self.every = max(1, every)
+        self.interval = interval
+        self.log = log or (lambda m: print(m, flush=True))
+        self.suffix = suffix or (lambda: "")
+        self.done = 0
+        self.t0 = time.time()
+        self.last = self.t0
+
+    def _emit(self, final=False):
+        now = time.time()
+        el = now - self.t0
+        rate = self.done / el if el else 0
+        eta = (self.total - self.done) / rate if rate else 0
+        pct = 100.0 * self.done / self.total
+        state = "done" if final else "%.0f%%" % pct
+        msg = "    %s %d/%d (%s) | %.0f img/s | ETA %.1f min | %s" % (
+            self.label, self.done, self.total, state, rate, eta / 60.0, self.suffix())
+        self.log(msg)
+        self.last = now
+
+    def tick(self, n=1):
+        self.done += n
+        now = time.time()
+        if (self.done % self.every == 0) or (now - self.last >= self.interval):
+            self._emit()
+
+    def finish(self):
+        self._emit(final=True)
+
+
+# ---------------------------------------------------------------------------
+# Pool / checkpoint load + save
+# ---------------------------------------------------------------------------
+
+def _fp_key(split, stem):
+    return split + "\t" + stem
+
+
 def load_pool(pool):
     """Return rows = [{split, stem, group, img, lbl, md5, dhash, kept, reason}]."""
     manifest = {}
@@ -249,34 +351,154 @@ def load_pool(pool):
     return rows
 
 
-def fingerprint(rows, skip_broken, broken_out):
-    """Compute md5 + dhash for every row; quarantine unreadable images."""
-    broken = 0
-    for i, r in enumerate(rows):
-        try:
-            with open(r["img"], "rb") as fh:
-                data = fh.read()
-            r["md5"] = hashlib.md5(data).hexdigest()
-            r["dhash"] = dhash_of(data)
-        except Exception:
-            broken += 1
+def load_fingerprints(fp_path):
+    """Return {key: {"md5":..., "dhash":..., "unreadable":bool}} from fingerprints.jsonl.
+
+    Malformed / truncated tail lines are ignored, so a kill mid-append only loses the last
+    partially-written line (which is simply recomputed on the next run).
+    """
+    out = {}
+    if not os.path.isfile(fp_path):
+        return out
+    with open(fp_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+                key = _fp_key(o["split"], o["stem"])
+                out[key] = {
+                    "md5": o.get("md5"),
+                    "dhash": o.get("dhash"),
+                    "unreadable": bool(o.get("u")),
+                }
+            except (ValueError, KeyError):
+                continue
+    return out
+
+
+def apply_fingerprints(rows, fp_cache):
+    """Merge cached md5/dhash (and unreadable quarantine flag) into the in-memory rows."""
+    for r in rows:
+        hit = fp_cache.get(_fp_key(r["split"], r["stem"]))
+        if hit is None:
+            continue
+        r["md5"] = hit["md5"]
+        r["dhash"] = hit["dhash"]
+        if hit["unreadable"]:
             r["kept"] = False
             r["reason"] = "unreadable"
-            if not skip_broken:
-                sys.exit("unreadable image (set --skip-broken to quarantine): %s" % r["img"])
-            if broken_out:
-                os.makedirs(os.path.join(broken_out, "images"), exist_ok=True)
-                try:
-                    shutil.move(r["img"], os.path.join(broken_out, "images",
-                                r["stem"] + os.path.splitext(r["img"])[1]))
-                except OSError:
-                    pass
-        if i and i % 5000 == 0:
-            print("  fingerprinted %d/%d images" % (i, len(rows)), flush=True)
-    print("  fingerprinted %d images (%d unreadable)" % (len(rows), broken), flush=True)
 
 
-def self_dedup(rows, split, hamming_lim, group_bounded):
+def load_decisions(path):
+    """Return {key: (kept, reason)} from decisions.jsonl checkpoint."""
+    out = {}
+    if not os.path.isfile(path):
+        return out
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+                out[_fp_key(o["split"], o["stem"])] = (bool(o.get("kept")), o.get("reason", ""))
+            except (ValueError, KeyError):
+                continue
+    return out
+
+
+def apply_decisions(rows, dec):
+    for r in rows:
+        hit = dec.get(_fp_key(r["split"], r["stem"]))
+        if hit is not None:
+            r["kept"], r["reason"] = hit
+
+
+def save_decisions(rows, path):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps({"split": r["split"], "stem": r["stem"],
+                                 "kept": 1 if r["kept"] else 0, "reason": r["reason"]}) + "\n")
+    os.replace(tmp, path)
+
+
+def load_state(path):
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                s = json.load(fh)
+            if isinstance(s, dict):
+                return s
+        except (ValueError, OSError):
+            pass
+    return {"version": STATE_VERSION}
+
+
+def save_state(state, path):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: fingerprint
+# ---------------------------------------------------------------------------
+
+def fingerprint_stage(rows, args, state, report_dir, log, progress_every):
+    fp_path = os.path.join(report_dir, "fingerprints.jsonl")
+    cache = load_fingerprints(fp_path)
+    apply_fingerprints(rows, cache)
+
+    missing = [r for r in rows if _fp_key(r["split"], r["stem"]) not in cache]
+    if not missing:
+        log("stage fingerprint: all %d images already cached (%s)" % (len(rows), fp_path))
+        state["fingerprint_done"] = True
+        return
+
+    log("stage fingerprint: %d/%d images still need hashing" % (len(missing), len(rows)))
+    broken = 0
+    prog = Progress(len(missing), "fingerprint", progress_every, log=log,
+                    suffix=lambda: "broken=%d" % broken)
+    with open(fp_path, "a", encoding="utf-8") as fh:
+        for r in missing:
+            try:
+                with open(r["img"], "rb") as img_fh:
+                    data = img_fh.read()
+                r["md5"] = hashlib.md5(data).hexdigest()
+                r["dhash"] = dhash_of(data)
+                u = 0
+            except Exception:
+                broken += 1
+                r["kept"] = False
+                r["reason"] = "unreadable"
+                u = 1
+                if not args.skip_broken:
+                    sys.exit("unreadable image (set --skip-broken to quarantine): %s" % r["img"])
+                if args.broken_out:
+                    os.makedirs(os.path.join(args.broken_out, "images"), exist_ok=True)
+                    try:
+                        shutil.move(r["img"], os.path.join(
+                            args.broken_out, "images", r["stem"] + os.path.splitext(r["img"])[1]))
+                    except OSError:
+                        pass
+            fh.write(json.dumps({"split": r["split"], "stem": r["stem"],
+                                 "md5": r["md5"], "dhash": r["dhash"], "u": u}) + "\n")
+            fh.flush()
+            prog.tick()
+    prog.finish()
+    log("stage fingerprint: complete (%d unreadable)" % broken)
+    state["fingerprint_done"] = True
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: dedup / balance marking
+# ---------------------------------------------------------------------------
+
+def self_dedup(rows, split, hamming_lim, group_bounded, log, progress_every):
     """Remove images of `split` that near-dup an earlier KEPT image of the same split.
 
     Exact md5 duplicates are ALWAYS removed globally (byte-identical is byte-identical,
@@ -286,15 +508,14 @@ def self_dedup(rows, split, hamming_lim, group_bounded):
     pool = KeptSet()
     cur_group = None
     removed = 0
-    total = sum(1 for r in rows if r["split"] == split)
-    done = 0
-    t0 = time.time()
-    print("  %s self-dedup: %d images (scope=%s)"
-          % (split, total, "group" if group_bounded else "global"), flush=True)
+    total = sum(1 for r in rows if r["split"] == split and r["kept"])
+    log("  %s self-dedup: %d images (scope=%s)"
+        % (split, total, "group" if group_bounded else "global"))
+    prog = Progress(total, "  %s self" % split, progress_every, log=log,
+                    suffix=lambda: "removed %d" % removed)
     for r in rows:
         if r["split"] != split or not r["kept"]:
             continue
-        done += 1
         if group_bounded and r["group"] != cur_group:
             pool = KeptSet()          # new clip/group: a fresh dHash pool (frames compared within)
             cur_group = r["group"]
@@ -309,36 +530,28 @@ def self_dedup(rows, split, hamming_lim, group_bounded):
         else:
             seen_md5.add(r["md5"])
             pool.add(r["md5"], r["dhash"])
-        if done % 5000 == 0:
-            el = time.time() - t0
-            rate = done / el if el else 0
-            eta = (total - done) / rate / 60 if rate else 0
-            print("    %d/%d (%.0f%%) removed %d | %.0f img/s | ETA %.1f min"
-                  % (done, total, 100.0 * done / max(1, total), removed, rate, eta), flush=True)
+        prog.tick()
+    prog.finish()
     return removed
 
 
-def mark_vs_pool(rows, split, pool, reason, limit):
+def mark_vs_pool(rows, split, pool, reason, limit, log, progress_every):
     """Remove images of `split` that near-dup any entry of an immutable reference pool."""
-    total = sum(1 for r in rows if r["split"] == split)
+    total = sum(1 for r in rows if r["split"] == split and r["kept"])
     ref_n = len(pool._ph) if hasattr(pool, "_ph") else 0
-    print("  %s: %d images vs %d reference hashes" % (reason, total, ref_n), flush=True)
-    removed = done = 0
-    t0 = time.time()
+    log("  %s: %d images vs %d reference hashes" % (reason, total, ref_n))
+    removed = 0
+    prog = Progress(total, "  " + reason, progress_every, log=log,
+                    suffix=lambda: "removed %d" % removed)
     for r in rows:
         if r["split"] != split or not r["kept"]:
             continue
-        done += 1
         if pool.near(r["md5"], r["dhash"], limit):
             r["kept"] = False
             r["reason"] = reason
             removed += 1
-        if done % 5000 == 0:
-            el = time.time() - t0
-            rate = done / el if el else 0
-            eta = (total - done) / rate / 60 if rate else 0
-            print("    %d/%d (%.0f%%) removed %d | %.0f img/s | ETA %.1f min"
-                  % (done, total, 100.0 * done / max(1, total), removed, rate, eta), flush=True)
+        prog.tick()
+    prog.finish()
     return removed
 
 
@@ -379,9 +592,190 @@ def load_index(index_dir, positives_only=False):
     return FixedPool(md5s, hashes)
 
 
+def mark_stage(rows, args, state, report_dir, log, progress_every):
+    """Run all dedup + balance passes, checkpointing decisions after EVERY pass."""
+    dec_path = os.path.join(report_dir, "decisions.jsonl")
+    state_path = os.path.join(report_dir, "state.json")
+
+    if state.get("mark_done"):
+        # Decisions were already computed: replay them onto the freshly-loaded rows so the
+        # copy/report stages see the same kept/reason state as the completed mark stage.
+        apply_decisions(rows, load_decisions(dec_path))
+        log("stage mark: already done, applying recorded decisions and skipping")
+        return
+
+    done = list(state.get("passes_done", []))
+    counts = dict(state.get("counts", {}))
+
+    if done:
+        apply_decisions(rows, load_decisions(dec_path))
+        log("stage mark: resuming with %d passes already done: %s"
+            % (len(done), ",".join(done)))
+
+    prev_train = load_index(args.prev_train_index, positives_only=True)
+    prev_test = load_index(args.prev_test_index, positives_only=False)
+
+    def passes():
+        yield ("test-self", lambda: self_dedup(rows, "test", args.hamming, True,
+                                               log, progress_every))
+        yield ("val-self", lambda: self_dedup(rows, "val", args.hamming, True,
+                                              log, progress_every))
+        yield ("train-self", lambda: self_dedup(rows, "train", args.hamming,
+                                                args.train_scope == "group", log, progress_every))
+        if prev_train:
+            yield ("test-vs-prev-train", lambda: mark_vs_pool(
+                rows, "test", prev_train, "test-vs-prev-train", args.hamming, log, progress_every))
+            yield ("val-vs-prev-train", lambda: mark_vs_pool(
+                rows, "val", prev_train, "val-vs-prev-train", args.hamming, log, progress_every))
+            yield ("train-vs-prev-train", lambda: mark_vs_pool(
+                rows, "train", prev_train, "train-vs-prev-train", args.hamming, log, progress_every))
+        if prev_test:
+            yield ("test-vs-prev-test", lambda: mark_vs_pool(
+                rows, "test", prev_test, "test-vs-prev-test", args.hamming, log, progress_every))
+            yield ("val-vs-prev-test", lambda: mark_vs_pool(
+                rows, "val", prev_test, "val-vs-prev-test", args.hamming, log, progress_every))
+            yield ("train-vs-prev-test", lambda: mark_vs_pool(
+                rows, "train", prev_test, "train-vs-prev-test", args.hamming, log, progress_every))
+        if not args.no_train_vs_test:
+            cur_test = FixedPool.from_rows([r for r in rows if r["split"] == "test" and r["kept"]])
+            yield ("train-vs-test", lambda: mark_vs_pool(
+                rows, "train", cur_test, "train-vs-test", args.hamming, log, progress_every))
+        if not args.no_train_vs_val:
+            cur_val = FixedPool.from_rows([r for r in rows if r["split"] == "val" and r["kept"]])
+            yield ("train-vs-val", lambda: mark_vs_pool(
+                rows, "train", cur_val, "train-vs-val", args.hamming, log, progress_every))
+        # fire vs not-fire balance runs LAST, after every dedup pass has settled the set
+        yield ("balance-bg-cap", lambda: balance_background(rows, args.max_bg_share))
+
+    done_set = set(done)
+    ran = 0
+    for name, fn in passes():
+        if name in done_set:
+            continue
+        counts[name] = fn()
+        ran += 1
+        done_set.add(name)
+        state["passes_done"] = sorted(done_set)
+        state["counts"] = counts
+        save_decisions(rows, dec_path)
+        save_state(state, state_path)
+        log("stage mark: pass %s -> removed %d (checkpointed)" % (name, counts[name]))
+
+    if ran:
+        log("stage mark: complete (%d passes run, %d total)" % (ran, len(done_set)))
+    else:
+        log("stage mark: no remaining passes")
+    state["mark_done"] = True
+    save_state(state, state_path)
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: copy bg-extra + clean tree
+# ---------------------------------------------------------------------------
+
+def _copy_image(src, dst, log, copied, skipped, missing):
+    """Atomically copy one image unless dst already exists with the right size."""
+    if not os.path.isfile(src):
+        missing += 1
+        return copied, skipped, missing
+    if os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
+        skipped += 1
+        return copied, skipped, missing
+    part = dst + ".part"
+    shutil.copy2(src, part)
+    os.replace(part, dst)
+    copied += 1
+    return copied, skipped, missing
+
+
+def _copy_label(src, dst, skipped, missing):
+    """Copy a label file, or create an empty one when the source has no boxes."""
+    if os.path.isfile(src):
+        if os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
+            skipped += 1
+            return skipped, missing
+        part = dst + ".part"
+        shutil.copy2(src, part)
+        os.replace(part, dst)
+    else:
+        if not os.path.isfile(dst):
+            open(dst, "w", encoding="utf-8").close()
+        else:
+            skipped += 1
+    return skipped, missing
+
+
+def copy_bg_extra(rows, bg_dir, log, progress_every):
+    """Copy background images moved out by the cap so they stay reversible (not deleted)."""
+    bg_rows = [r for r in rows if r["reason"] == "balance-bg-cap"]
+    if not bg_rows:
+        return 0
+    os.makedirs(os.path.join(bg_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(bg_dir, "labels"), exist_ok=True)
+    log("stage copy: bg-extra %d images -> %s" % (len(bg_rows), bg_dir))
+    copied = skipped = missing = 0
+    prog = Progress(len(bg_rows), "  bg-extra", progress_every, log=log,
+                    suffix=lambda: "copied %d, skipped %d" % (copied, skipped))
+    for r in bg_rows:
+        ext = os.path.splitext(r["img"])[1].lower()
+        copied, skipped, missing = _copy_image(
+            r["img"], os.path.join(bg_dir, "images", r["stem"] + ext),
+            log, copied, skipped, missing)
+        skipped, missing = _copy_label(
+            r["lbl"], os.path.join(bg_dir, "labels", r["stem"] + ".txt"), skipped, missing)
+        prog.tick()
+    prog.finish()
+    log("stage copy: bg-extra done (copied %d, skipped %d, missing %d)"
+        % (copied, skipped, missing))
+    return len(bg_rows)
+
+
+def copy_clean(rows, out, log, progress_every):
+    """Copy every kept image + label into the clean YOLO tree (resumable per file)."""
+    for split in ("train", "val", "test"):
+        os.makedirs(os.path.join(out, split, "images"), exist_ok=True)
+        os.makedirs(os.path.join(out, split, "labels"), exist_ok=True)
+    kept = [r for r in rows if r["kept"]]
+    log("stage copy: clean tree %d kept images -> %s" % (len(kept), out))
+    copied = skipped = missing = 0
+    prog = Progress(len(kept), "  clean", progress_every, log=log,
+                    suffix=lambda: "copied %d, skipped %d" % (copied, skipped))
+    for r in kept:
+        ext = os.path.splitext(r["img"])[1].lower()
+        copied, skipped, missing = _copy_image(
+            r["img"], os.path.join(out, r["split"], "images", r["stem"] + ext),
+            log, copied, skipped, missing)
+        skipped, missing = _copy_label(
+            r["lbl"], os.path.join(out, r["split"], "labels", r["stem"] + ".txt"),
+            skipped, missing)
+        prog.tick()
+    prog.finish()
+    log("stage copy: clean tree done (copied %d, skipped %d, missing %d)"
+        % (copied, skipped, missing))
+    return len(kept)
+
+
+def copy_stage(rows, args, state, log, progress_every):
+    # Always run the copy loop: it is idempotent (skips files whose destination already
+    # exists with the correct size), so an interrupted copy resumes by copying only the
+    # missing files. This also self-heals a partially-written tree even if ``copy_done``
+    # was already recorded.
+    bg_dir = args.bg_extra or (args.out + "_bg_extra")
+    copy_bg_extra(rows, bg_dir, log, progress_every)
+    copy_clean(rows, args.out, log, progress_every)
+    state["copy_done"] = True
+    save_state(state, os.path.join(args.report, "state.json"))
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: final report / dataset metadata (idempotent)
+# ---------------------------------------------------------------------------
+
 def save_index(path, rows, split_filter, run_name):
     """Write one JSONL file {md5,d,stem,run,classes,pos} for kept rows of the given splits."""
-    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         for r in rows:
             if r["split"] not in split_filter or not r["kept"]:
@@ -421,47 +815,79 @@ def balance_background(rows, max_bg_share):
     return removed
 
 
-def write_bg_extra(rows, bg_extra_dir):
-    """Copy background images moved out by the cap so they stay reversible (not deleted)."""
-    if not bg_extra_dir:
-        return 0
-    n = 0
-    for r in rows:
-        if r["reason"] != "balance-bg-cap":
-            continue
-        os.makedirs(os.path.join(bg_extra_dir, "images"), exist_ok=True)
-        os.makedirs(os.path.join(bg_extra_dir, "labels"), exist_ok=True)
-        ext = os.path.splitext(r["img"])[1].lower()
-        shutil.copy2(r["img"], os.path.join(bg_extra_dir, "images", r["stem"] + ext))
-        lbl = os.path.join(bg_extra_dir, "labels", r["stem"] + ".txt")
-        if os.path.isfile(r["lbl"]):
-            shutil.copy2(r["lbl"], lbl)
-        else:
-            open(lbl, "w", encoding="utf-8").close()
-        n += 1
-    return n
+def report_stage(rows, args, state, by_split, log):
+    out = args.out
+    report_dir = args.report
+    kept_rows = [r for r in rows if r["kept"]]
+    kept_split = Counter(r["split"] for r in kept_rows)
 
+    log("stage report: writing data.yaml / manifest / indexes / summary")
 
-def write_clean(rows, out, pool):
+    with open(os.path.join(out, "data.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("# CLEAN deduplicated pool (dedup_fire_scratch.py)\n")
+        fh.write("path: %s\n" % out.replace("\\", "/"))
+        fh.write("train: train/images\n")
+        fh.write("val: %s\n" % ("val/images" if kept_split["val"] else "test/images"))
+        fh.write("test: test/images\n")
+    src_yaml = os.path.join(args.pool, "data.yaml")
+    if os.path.isfile(src_yaml):
+        tail = [ln for ln in open(src_yaml, encoding="utf-8")
+                if ln.startswith(("nc:", "names:", "  "))]
+        with open(os.path.join(out, "data.yaml"), "a", encoding="utf-8") as fh:
+            fh.writelines(tail)
+
+    # this run's lightweight fingerprints (the notebook promotes them to Drive after training)
+    save_index(os.path.join(report_dir, "run_train_index.jsonl"), rows, ("train",), args.run_name)
+    save_index(os.path.join(report_dir, "run_test_index.jsonl"), rows, ("test", "val"), args.run_name)
+
+    with open(os.path.join(out, "manifest.csv"), "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["split", "stem", "split_group", "kept", "reason"])
+        for r in rows:
+            w.writerow([r["split"], r["stem"], r["group"],
+                        "1" if r["kept"] else "0", r["reason"]])
+    with open(os.path.join(report_dir, "per_image.csv"), "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["split", "stem", "status", "reason"])
+        for r in rows:
+            w.writerow([r["split"], r["stem"], "kept" if r["kept"] else "removed", r["reason"]])
+
+    counts = state.get("counts", {})
+    rep = ["Dedup report (hamming <= %d, train scope %s)" % (args.hamming, args.train_scope),
+           "=" * 64]
     for split in ("train", "val", "test"):
-        os.makedirs(os.path.join(out, split, "images"), exist_ok=True)
-        os.makedirs(os.path.join(out, split, "labels"), exist_ok=True)
-    kept_rows = []
-    for r in rows:
-        if not r["kept"]:
-            continue
-        ext = os.path.splitext(r["img"])[1].lower()
-        dst = os.path.join(out, r["split"], "images", r["stem"] + ext)
-        if not os.path.exists(dst):
-            shutil.copy2(r["img"], dst)
-        lbl = r["lbl"]
-        if os.path.isfile(lbl):
-            shutil.copy2(lbl, os.path.join(out, r["split"], "labels", r["stem"] + ".txt"))
-        else:
-            open(os.path.join(out, r["split"], "labels", r["stem"] + ".txt"), "w").close()
-        kept_rows.append(r)
-    return kept_rows
+        n = by_split[split]
+        k = sum(1 for r in rows if r["split"] == split and r["kept"])
+        rep.append("%-5s kept %d / %d (removed %d)" % (split, k, n, n - k))
+    kept_train = [r for r in rows if r["split"] == "train" and r["kept"]]
+    n_tr = len(kept_train)
+    n_bg = sum(1 for r in kept_train if not r["cls"])
+    rep.append("")
+    rep.append("train class balance (fire vs not-fire):")
+    rep.append("  fire-positive = %d (%.0f%%)" % (n_tr - n_bg, 100 * (n_tr - n_bg) / max(1, n_tr)))
+    rep.append("  background    = %d (%.0f%%)   cap = %.0f%%"
+               % (n_bg, 100 * n_bg / max(1, n_tr), 100 * args.max_bg_share))
+    if n_tr and (n_tr - n_bg) / n_tr < 0.10:
+        rep.append("  WARNING: fire-positive share is under 10%% - recall will likely suffer; "
+                   "lower --max-bg-share or add more fire sources.")
+    rep.append("")
+    rep.append("removals by pass:")
+    for k in sorted(counts):
+        rep.append("  %-20s %d" % (k, counts[k]))
+    rep.append("")
+    rep.append("this-run indexes (promote to Drive AFTER a successful train):")
+    rep.append("  %s/run_train_index.jsonl" % report_dir)
+    rep.append("  %s/run_test_index.jsonl" % report_dir)
+    rep.append("clean -> %s" % out)
+    text = "\n".join(rep)
+    with open(os.path.join(report_dir, "summary.txt"), "w", encoding="utf-8") as fh:
+        fh.write(text + "\n")
+    log(text)
 
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -491,6 +917,11 @@ def main():
     ap.add_argument("--no-train-self", action="store_true")
     ap.add_argument("--no-train-vs-test", action="store_true")
     ap.add_argument("--no-train-vs-val", action="store_true")
+    ap.add_argument("--fresh", action="store_true",
+                    help="ignore existing checkpoints and recompute fingerprint + mark from scratch")
+    ap.add_argument("--log-file", default=None, help="log file (default: <report>/dedup.log)")
+    ap.add_argument("--progress-every", type=int, default=1000,
+                    help="emit a progress line every N images (default 1000)")
     args = ap.parse_args()
 
     pool = os.path.abspath(args.pool)
@@ -500,112 +931,50 @@ def main():
         return
     report_dir = os.path.abspath(args.report or (out + "_report"))
     os.makedirs(report_dir, exist_ok=True)
+    args.out = out
+    args.report = report_dir
+    args.pool = pool
+
+    log = Logger(args.log_file or os.path.join(report_dir, "dedup.log"))
+    log("=== dedup_fire_scratch.py start ===")
+    log("command: %s" % " ".join(sys.argv))
+    log("pool=%s out=%s report=%s" % (pool, out, report_dir))
+
+    state_path = os.path.join(report_dir, "state.json")
+    if args.fresh:
+        for p in ("state.json", "fingerprints.jsonl", "decisions.jsonl"):
+            try:
+                os.remove(os.path.join(report_dir, p))
+            except OSError:
+                pass
+        log("--fresh: cleared state/fingerprint/decision checkpoints")
+    state = load_state(state_path)
+    if state.get("version") != STATE_VERSION:
+        state = {"version": STATE_VERSION}
+        log("state version mismatch -> starting fresh checkpoints")
 
     rows = load_pool(pool)
     by_split = Counter(r["split"] for r in rows)
-    print("pool images:", dict(by_split), flush=True)
-    print("fingerprinting ...", flush=True)
-    fingerprint(rows, args.skip_broken, args.broken_out)
+    log("pool images: %s" % dict(by_split))
 
-    counts = {}
-    # test/val self-dedup is GROUP-scoped (within a clip) like train: video-frame corpora
-    # collapse to ~1 image per clip under GLOBAL scope, which would starve early stopping.
-    if not args.no_test_self:
-        counts["test-self"] = self_dedup(rows, "test", args.hamming, True)
-    if not args.no_val_self:
-        counts["val-self"] = self_dedup(rows, "val", args.hamming, True)
-    if not args.no_train_self:
-        counts["train-self"] = self_dedup(rows, "train", args.hamming,
-                                          args.train_scope == "group")
+    # --- stage 1: fingerprint (resumable) ---
+    fingerprint_stage(rows, args, state, report_dir, log, args.progress_every)
+    save_state(state, state_path)
 
-    prev_train = load_index(args.prev_train_index, positives_only=True)
-    prev_test = load_index(args.prev_test_index, positives_only=False)
-    if prev_train:
-        counts["test-vs-prev-train"] = mark_vs_pool(rows, "test", prev_train, "test-vs-prev-train", args.hamming)
-        counts["val-vs-prev-train"] = mark_vs_pool(rows, "val", prev_train, "val-vs-prev-train", args.hamming)
-        counts["train-vs-prev-train"] = mark_vs_pool(rows, "train", prev_train, "train-vs-prev-train", args.hamming)
-    if prev_test:
-        counts["test-vs-prev-test"] = mark_vs_pool(rows, "test", prev_test, "test-vs-prev-test", args.hamming)
-        counts["val-vs-prev-test"] = mark_vs_pool(rows, "val", prev_test, "val-vs-prev-test", args.hamming)
-        counts["train-vs-prev-test"] = mark_vs_pool(rows, "train", prev_test, "train-vs-prev-test", args.hamming)
+    # --- stage 2: mark (resumable, checkpointed per pass) ---
+    mark_stage(rows, args, state, report_dir, log, args.progress_every)
+    save_state(state, state_path)
 
-    if not args.no_train_vs_test:
-        cur_test = FixedPool.from_rows([r for r in rows if r["split"] == "test" and r["kept"]])
-        counts["train-vs-test"] = mark_vs_pool(rows, "train", cur_test, "train-vs-test", args.hamming)
-    if not args.no_train_vs_val:
-        cur_val = FixedPool.from_rows([r for r in rows if r["split"] == "val" and r["kept"]])
-        counts["train-vs-val"] = mark_vs_pool(rows, "train", cur_val, "train-vs-val", args.hamming)
+    # --- stage 3: copy (resumable per file) ---
+    copy_stage(rows, args, state, log, args.progress_every)
+    save_state(state, state_path)
 
-    # fire vs not-fire balance (runs LAST, after every dedup pass has settled the set)
-    counts["balance-bg-cap"] = balance_background(rows, args.max_bg_share)
-    bg_extra = args.bg_extra or (out + "_bg_extra")
-    if counts["balance-bg-cap"]:
-        n_extra = write_bg_extra(rows, bg_extra)
-        print("background cap: moved %d -> %s" % (n_extra, bg_extra), flush=True)
+    # --- stage 4: report (idempotent) ---
+    report_stage(rows, args, state, by_split, log)
+    save_state(state, state_path)
 
-    kept_rows = write_clean(rows, out, pool)
-
-    # data.yaml for the clean pool (val fallback to test when val is empty)
-    kept_split = Counter(r["split"] for r in kept_rows)
-    with open(os.path.join(out, "data.yaml"), "w", encoding="utf-8") as fh:
-        fh.write("# CLEAN deduplicated pool (dedup_fire_scratch.py)\n")
-        fh.write("path: %s\n" % out.replace("\\", "/"))
-        fh.write("train: train/images\n")
-        fh.write("val: %s\n" % ("val/images" if kept_split["val"] else "test/images"))
-        fh.write("test: test/images\n")
-    src_yaml = os.path.join(pool, "data.yaml")
-    if os.path.isfile(src_yaml):
-        tail = [ln for ln in open(src_yaml, encoding="utf-8")
-                if ln.startswith(("nc:", "names:", "  "))]
-        with open(os.path.join(out, "data.yaml"), "a", encoding="utf-8") as fh:
-            fh.writelines(tail)
-
-    # this run's lightweight fingerprints (the notebook promotes them to Drive after training)
-    save_index(os.path.join(report_dir, "run_train_index.jsonl"), rows, ("train",), args.run_name)
-    save_index(os.path.join(report_dir, "run_test_index.jsonl"), rows, ("test", "val"), args.run_name)
-
-    with open(os.path.join(out, "manifest.csv"), "w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["split", "stem", "split_group", "kept", "reason"])
-        for r in rows:
-            w.writerow([r["split"], r["stem"], r["group"],
-                        "1" if r["kept"] else "0", r["reason"]])
-    with open(os.path.join(report_dir, "per_image.csv"), "w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["split", "stem", "status", "reason"])
-        for r in rows:
-            w.writerow([r["split"], r["stem"], "kept" if r["kept"] else "removed", r["reason"]])
-
-    rep = ["Dedup report (hamming <= %d, train scope %s)" % (args.hamming, args.train_scope),
-           "=" * 64]
-    for split in ("train", "val", "test"):
-        n = by_split[split]
-        k = sum(1 for r in rows if r["split"] == split and r["kept"])
-        rep.append("%-5s kept %d / %d (removed %d)" % (split, k, n, n - k))
-    kept_train = [r for r in rows if r["split"] == "train" and r["kept"]]
-    n_tr = len(kept_train)
-    n_bg = sum(1 for r in kept_train if not r["cls"])
-    rep.append("")
-    rep.append("train class balance (fire vs not-fire):")
-    rep.append("  fire-positive = %d (%.0f%%)" % (n_tr - n_bg, 100 * (n_tr - n_bg) / max(1, n_tr)))
-    rep.append("  background    = %d (%.0f%%)   cap = %.0f%%"
-               % (n_bg, 100 * n_bg / max(1, n_tr), 100 * args.max_bg_share))
-    if n_tr and (n_tr - n_bg) / n_tr < 0.10:
-        rep.append("  WARNING: fire-positive share is under 10%% - recall will likely suffer; "
-                   "lower --max-bg-share or add more fire sources.")
-    rep.append("")
-    rep.append("removals by pass:")
-    for k, v in counts.items():
-        rep.append("  %-20s %d" % (k, v))
-    rep.append("")
-    rep.append("this-run indexes (promote to Drive AFTER a successful train):")
-    rep.append("  %s/run_train_index.jsonl" % report_dir)
-    rep.append("  %s/run_test_index.jsonl" % report_dir)
-    rep.append("clean -> %s" % out)
-    text = "\n".join(rep)
-    with open(os.path.join(report_dir, "summary.txt"), "w", encoding="utf-8") as fh:
-        fh.write(text + "\n")
-    print("\n" + text)
+    log("=== dedup_fire_scratch.py complete ===")
+    log.close()
 
 
 if __name__ == "__main__":

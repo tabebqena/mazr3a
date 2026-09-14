@@ -93,8 +93,8 @@ gallery.
 text tables only (`events`, `episodes`, `episode_events`, `person_aliases`).
 - Metadata-first descriptions (deterministic, zero hallucination); the VLM only
 enriches.
-- The small model (SmolVLM2-500M GGUF via llama.cpp) is kept **resident**
-(`MODEL_KEEP_LOADED=true`); load/unload is **deferred to an optimization**.
+- The small model (SmolVLM2-500M GGUF via llama.cpp) is **loaded per batch**
+  (`MODEL_KEEP_LOADED=false`) so it does not stay resident in host RAM.
 - The existing 2B OpenVINO export is **kept and never re-downloaded**; switching is
 a config flip (`MODEL_BACKEND=llamacpp|openvino`). Model prep is add-only.
 - Idle-gated drain (loadavg + CPU temp), plus a portal **Process now** button and a
@@ -164,8 +164,9 @@ car 2, dog 2); `zones = []` (none defined yet).
    promote script.
 
 ### Deferred
-- [ ] Residency optimization (`MODEL_KEEP_LOADED=false` + `IDLE_UNLOAD_S`) only if
-   RAM becomes contended, e.g. with the larger retained model.
+- [x] Residency optimization — applied 2026-09-14: `MODEL_KEEP_LOADED=false` in
+   [`config/scenereader.conf`](config/scenereader.conf) (the small model no longer
+   stays resident; `IDLE_UNLOAD_S` remains unimplemented).
 - [ ] Face recognition names (after assisted labeling), action recognition, gait.
 
 ### Needs from the operator

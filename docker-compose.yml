@@ -147,9 +147,9 @@ services:
   #
   # COST: a tiny periodic disk scan, plus a small (<=500M GGUF) VLM caption batch
   # that runs ONLY when the idle governor (host loadavg + CPU temp) is open and is
-  # bounded by MAX_EVENTS_PER_RUN/MAX_RUN_SECONDS. The model is loaded ONCE and
-  # kept resident (MODEL_KEEP_LOADED=true) - for a small model, reload churn would
-  # cost CPU for no real RAM gain.
+  # bounded by MAX_EVENTS_PER_RUN/MAX_RUN_SECONDS. The model is NOT kept resident
+  # (MODEL_KEEP_LOADED=false): it is loaded only inside a caption batch and freed
+  # right after, to lower host RAM (restore true if caption latency matters more).
   #
   # MODEL SWITCHING: the previously-downloaded Qwen2-VL-2B OpenVINO IR stays in
   # ./models/scene (git-ignored, KEPT - never deleted/re-downloaded) and is

@@ -12,8 +12,8 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v42` |
-| Last updated | 2026-09-13 |
+| Summary version | `v43` |
+| Last updated | 2026-09-14 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.5` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
@@ -169,7 +169,7 @@ stopped `scenewatch`); the adaptive scene layer is in
 | Config | [`config/scenereader.conf`](config/scenereader.conf) + [`config/places.conf`](config/places.conf) (episode shape, scene/movement tuning, caption cost, model backend) |
 | Frame source | Read **in place, never copied** — host `./media` IS Frigate's `/media/frigate`; snapshots are `clips/<camera>-<event_id>.jpg` with a `-clean.webp` sibling (no `media/snapshots/`). |
 | Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): `config/frigate.db`, **read-only**, joined by the exact event id. `api`/`auto` fall back to `/api/events/<id>`. |
-| Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = small **SmolVLM2-500M GGUF + mmproj** served by a resident `llama-server` (~0.5–0.7 GB, single server slot); `openvino` = the **retained** Qwen2-VL-2B INT4 IR (~2 GB). Config-only switch. |
+| Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = small **SmolVLM2-500M GGUF + mmproj** captioned **load-per-batch** (`MODEL_KEEP_LOADED=false` → one-shot `llama-mtmd-cli`, ~0.5–0.7 GB only during a batch, not resident); `openvino` = the **retained** Qwen2-VL-2B INT4 IR (~2 GB). Config-only switch. |
 | Model prerequisite | **NOT deployed by git.** Small GGUF: [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) (add-only). Retained IR: [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh). See [`models/scene/README.md`](models/scene/README.md). |
 | Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases + scenes + scene_events), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-*.lock`. **No image copies anywhere.** |
 | Volumes | `./scenereader:/scenereader:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |

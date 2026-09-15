@@ -47,7 +47,7 @@ import os
 DEFAULT_OUT = "notebooks/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.6.0"
+NOTEBOOK_VERSION = "1.7.0"
 
 
 def md(source):
@@ -361,6 +361,8 @@ C_DEDUP = code([
     "# dedup now SKIPS the train-side near-dup scan (--no-train-self, no --prev-train-index) so no\n",
     "# positive train signal is thrown away; it only enforces test/val isolation. Then\n",
     "# augment_fire_train.py re-renders EVERY train image. Test/val stay byte-original.\n",
+    "# Resumable/reusable: dedup + augment checkpoints are mirrored to <DRIVE>/<VERSION>/state/ and\n",
+    "# restored at the start (gated by the sources config md5) so a recycle resumes, not restarts.\n",
     "import os, subprocess, sys, shutil as _sh\n",
     "need(os.path.exists(RAW + '/data.yaml'), 'run Cell 5 (build raw pool) first')\n",
     "need(os.path.exists(UPLOAD + '/scripts/dedup_fire_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
@@ -377,6 +379,21 @@ C_DEDUP = code([
     "with drive_log('06_dedup'):\n",
     "    os.makedirs(FPS_TRAIN, exist_ok=True)\n",
     "    os.makedirs(FPS_TEST, exist_ok=True)\n",
+    "\n",
+    "    # --- restore last run's reusable state from Drive so a recycle resumes, not restarts ---\n",
+    "    STATE_DIR = DRIVE_DIR + '/' + VERSION + '/state'\n",
+    "    import hashlib as _hl\n",
+    "    _cfg_hash = (_hl.md5(open('/content/sources.json', 'rb').read()).hexdigest()\n",
+    "                 if os.path.exists('/content/sources.json') else '')\n",
+    "    _gate = os.path.join(STATE_DIR, 'sources.md5')\n",
+    "    if _cfg_hash and os.path.isfile(_gate) and open(_gate).read().strip() == _cfg_hash:\n",
+    "        os.makedirs(CLEAN + '_report', exist_ok=True)\n",
+    "        for _f in ('fingerprints.jsonl', 'augmentation_state.jsonl'):\n",
+    "            _s = os.path.join(STATE_DIR, _f)\n",
+    "            if os.path.exists(_s):\n",
+    "                _sh.copy2(_s, os.path.join(CLEAN + '_report', _f))\n",
+    "        print('restored dedup/augment state from Drive ->', CLEAN + '_report')\n",
+    "\n",
     "\n",
     "    # merge EVERY previous run's held-out TEST/val fingerprints (isolation) into one local dir\n",
     "    prev_test = '/content/prev_test_fp'\n",
@@ -412,6 +429,17 @@ C_DEDUP = code([
     "    if rc != 0:\n",
     "        raise SystemExit('augment_fire_train.py exited ' + str(rc))\n",
     "    print(open(CLEAN + '_report/augmentation_summary.txt', encoding='utf-8').read())\n",
+    "\n",
+    "    # --- persist the reusable state to Drive: keep/discard decisions + per-image aug ops ---\n",
+    "    os.makedirs(STATE_DIR, exist_ok=True)\n",
+    "    for _f in ('fingerprints.jsonl', 'decisions.jsonl', 'per_image.csv',\n",
+    "               'augmentation_state.jsonl', 'augmentation_report.csv'):\n",
+    "        _s = os.path.join(CLEAN + '_report', _f)\n",
+    "        if os.path.exists(_s):\n",
+    "            _sh.copy2(_s, os.path.join(STATE_DIR, _f))\n",
+    "    if _cfg_hash:\n",
+    "        open(os.path.join(STATE_DIR, 'sources.md5'), 'w').write(_cfg_hash)\n",
+    "    print('dedup/augment state persisted ->', STATE_DIR)\n",
 ])
 
 C_VERIFY = code([

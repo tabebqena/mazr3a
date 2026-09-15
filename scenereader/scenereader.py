@@ -1099,7 +1099,7 @@ def main(argv=None):
                     and not cap.alive():
                 LOG("WARNING: no llama.cpp runtime found (looked for {}). Captions "
                     "will be EMPTY until it is fetched: `bash "
-                    "dev_scripts/prep_scene_model_llamacpp.sh --bin "
+                    "dev_scripts/deploy/prep_scene_model_llamacpp.sh --bin "
                     "--llamacpp-tag b10900`".format(s.llama_server_bin))
             probe = None
             rows = conn.execute(

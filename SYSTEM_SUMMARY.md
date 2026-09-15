@@ -12,8 +12,8 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v43` |
-| Last updated | 2026-09-14 |
+| Summary version | `v44` |
+| Last updated | 2026-09-15 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.5` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
@@ -110,7 +110,7 @@ with `docker compose up -d` / `docker compose down`.
 | Evidence store | `./media` (`<STORE_DIR>/<cam>/*.jpg` + `<STORE_DIR>/firewatch.db`) |
 | Store ownership | `firewatch.db` + its `-wal`/`-shm` sidecars must be writable by **uid 1000** (the container user). NEVER open the live DB from the host (not even `mode=ro`) — a foreign WAL sidecar wedges every write while alerts still fire. Read it via `docker exec firewatch …`. See [`.roo/rules/firewatch-store-ownership.md`](.roo/rules/firewatch-store-ownership.md) and [`plans/firewatch-store-readonly-recovery.md`](plans/firewatch-store-readonly-recovery.md). |
 | Store recovery | [`scripts/backfill_firewatch_store.py`](scripts/backfill_firewatch_store.py) re-registers evidence JPEGs with no `frames` row so missed alerts reappear in the portal (dry-run by default, `--commit` to write). |
-| Store export | [`dev_scripts/pull_firewatch_evidence.sh`](dev_scripts/pull_firewatch_evidence.sh) downloads every evidence JPEG (DB-referenced **and** orphans) + a consistent DB snapshot + metadata CSVs into `./firewatch-evidence/` (git-ignored local mirror; the DB is read **inside** the container only). |
+| Store export | [`dev_scripts/deploy/pull_firewatch_evidence.sh`](dev_scripts/deploy/pull_firewatch_evidence.sh) downloads every evidence JPEG (DB-referenced **and** orphans) + a consistent DB snapshot + metadata CSVs into `./firewatch-evidence/` (git-ignored local mirror; the DB is read **inside** the container only). |
 | Volumes (ro) | `./firewatch:/firewatch` · `./scripts:/scripts` · `./config:/config` · `./models:/models` · `./media:/media/firewatch` (rw) |
 | Ports | none (outbound only) |
 | Notes | Code/config edits need only `docker compose restart firewatch`. Active model = fire v4 (YOLO26-S). |
@@ -170,7 +170,7 @@ stopped `scenewatch`); the adaptive scene layer is in
 | Frame source | Read **in place, never copied** — host `./media` IS Frigate's `/media/frigate`; snapshots are `clips/<camera>-<event_id>.jpg` with a `-clean.webp` sibling (no `media/snapshots/`). |
 | Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): `config/frigate.db`, **read-only**, joined by the exact event id. `api`/`auto` fall back to `/api/events/<id>`. |
 | Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = small **SmolVLM2-500M GGUF + mmproj** captioned **load-per-batch** (`MODEL_KEEP_LOADED=false` → one-shot `llama-mtmd-cli`, ~0.5–0.7 GB only during a batch, not resident); `openvino` = the **retained** Qwen2-VL-2B INT4 IR (~2 GB). Config-only switch. |
-| Model prerequisite | **NOT deployed by git.** Small GGUF: [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) (add-only). Retained IR: [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh). See [`models/scene/README.md`](models/scene/README.md). |
+| Model prerequisite | **NOT deployed by git.** Small GGUF: [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](dev_scripts/deploy/prep_scene_model_llamacpp.sh) (add-only). Retained IR: [`dev_scripts/deploy/prep_scene_model.sh`](dev_scripts/deploy/prep_scene_model.sh). See [`models/scene/README.md`](models/scene/README.md). |
 | Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases + scenes + scene_events), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-*.lock`. **No image copies anywhere.** |
 | Volumes | `./scenereader:/scenereader:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
@@ -183,7 +183,7 @@ stopped `scenewatch`); the adaptive scene layer is in
 | `frigate` | [`config/config.yaml`](config/config.yaml), [`models/coco/`](models/coco/), `docker-compose.yml`, `.env` |
 | `mqtt` | [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf) |
 | `firewatch` | [`firewatch/firewatch.py`](firewatch/firewatch.py), [`config/firewatch.conf`](config/firewatch.conf), [`models/fire/`](models/fire/), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
-| `scenereader` | [`scenereader/`](scenereader/) (service + modules), [`config/scenereader.conf`](config/scenereader.conf), [`config/places.conf`](config/places.conf), [`models/scene/`](models/scene/) (git-ignored), [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) |
+| `scenereader` | [`scenereader/`](scenereader/) (service + modules), [`config/scenereader.conf`](config/scenereader.conf), [`config/places.conf`](config/places.conf), [`models/scene/`](models/scene/) (git-ignored), [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](dev_scripts/deploy/prep_scene_model_llamacpp.sh) |
 | `telegram-bot` | [`scripts/telegram_bot.py`](scripts/telegram_bot.py), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
 | `logs` | [`scripts/container_logs.py`](scripts/container_logs.py) |
 | `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
@@ -403,15 +403,15 @@ Developer scripts of note (local, not deployed):
 | File | Purpose |
 |---|---|
 | [`dev_scripts/deploy_all.sh`](dev_scripts/deploy_all.sh) | SSH to host, `git pull --ff-only`, `docker compose up -d --build` + restart ALL services, verify |
-| [`dev_scripts/run_ssh.sh`](dev_scripts/run_ssh.sh) | Run ONE read-only remote command (SSH_ASKPASS, no `sshpass`) |
-| [`dev_scripts/pull_firewatch_evidence.sh`](dev_scripts/pull_firewatch_evidence.sh) | Download the firewatch evidence store (evidence JPEGs + orphan JPEGs + DB snapshot + manifest/frames/detections CSVs) to `./firewatch-evidence/`; md5-verified, container-only DB access |
-| [`dev_scripts/compare_fire_models_on_evidence.py`](dev_scripts/compare_fire_models_on_evidence.py) | Score two fire models image-level on the labelled evidence collection (positives vs negatives, fire-only, production bars + threshold sweep + FP budgets); `*_annotated.jpg` never used as input |
-| [`dev_scripts/prep_fire_model.sh`](dev_scripts/prep_fire_model.sh) | `best.pt` → OpenVINO IR (`models/fire/`) |
-| [`dev_scripts/prep_scene_model_llamacpp.sh`](dev_scripts/prep_scene_model_llamacpp.sh) | **ADD-ONLY** fetch of the small GGUF + mmproj into `models/scene/smolvlm2-500m/` (`--bin --llamacpp-tag <tag>` also fetches llama.cpp). Never touches the retained IR. |
-| [`dev_scripts/prep_scene_model.sh`](dev_scripts/prep_scene_model.sh) | Fetch the **RETAINED** OpenVINO VLM (Qwen2-VL-2B int4) into `models/scene/`; refuses to clobber without `--force` |
-| [`dev_scripts/promote_fire_model.sh`](dev_scripts/promote_fire_model.sh) | Promote a versioned checkpoint to ACTIVE |
-| [`dev_scripts/test_fire_model.py`](dev_scripts/test_fire_model.py) | Local fire-model benchmark |
-| Other `dev_scripts/*` | dataset build / analysis helpers |
+| [`dev_scripts/deploy/run_ssh.sh`](dev_scripts/deploy/run_ssh.sh) | Run ONE read-only remote command (SSH_ASKPASS, no `sshpass`) |
+| [`dev_scripts/deploy/pull_firewatch_evidence.sh`](dev_scripts/deploy/pull_firewatch_evidence.sh) | Download the firewatch evidence store (evidence JPEGs + orphan JPEGs + DB snapshot + manifest/frames/detections CSVs) to `./firewatch-evidence/`; md5-verified, container-only DB access |
+| [`dev_scripts/fire/compare_fire_models_on_evidence.py`](dev_scripts/fire/compare_fire_models_on_evidence.py) | Score two fire models image-level on the labelled evidence collection (positives vs negatives, fire-only, production bars + threshold sweep + FP budgets); `*_annotated.jpg` never used as input |
+| [`dev_scripts/deploy/prep_fire_model.sh`](dev_scripts/deploy/prep_fire_model.sh) | `best.pt` → OpenVINO IR (`models/fire/`) |
+| [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](dev_scripts/deploy/prep_scene_model_llamacpp.sh) | **ADD-ONLY** fetch of the small GGUF + mmproj into `models/scene/smolvlm2-500m/` (`--bin --llamacpp-tag <tag>` also fetches llama.cpp). Never touches the retained IR. |
+| [`dev_scripts/deploy/prep_scene_model.sh`](dev_scripts/deploy/prep_scene_model.sh) | Fetch the **RETAINED** OpenVINO VLM (Qwen2-VL-2B int4) into `models/scene/`; refuses to clobber without `--force` |
+| [`dev_scripts/deploy/promote_fire_model.sh`](dev_scripts/deploy/promote_fire_model.sh) | Promote a versioned checkpoint to ACTIVE |
+| [`dev_scripts/fire/test_fire_model.py`](dev_scripts/fire/test_fire_model.py) | Local fire-model benchmark |
+| Other `dev_scripts/{fire,gmail,colab,deploy,nvr,scene}/*` | dataset build / analysis helpers |
 
 Workflow (**the orchestrator runs on the DEV MACHINE, not the host** — it SSHes
 to `ssh.mazr3a.garden` and does everything there as `dr`, the clone owner):

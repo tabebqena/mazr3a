@@ -32,12 +32,12 @@ restarts the `frigate` service so the new model is reloaded.
 
 ## Regenerate / replace
 
-Export new candidates with `dev_scripts/prep_coco_model.sh [imgsz] [models]`
+Export new candidates with `dev_scripts/deploy/prep_coco_model.sh [imgsz] [models]`
 (writes into this dir). Pass a comma-separated model list to export just one
 without rewriting the other tracked `.onnx` files, e.g.:
 
 ```bash
-./dev_scripts/prep_coco_model.sh 640 yolo11s
+./dev_scripts/deploy/prep_coco_model.sh 640 yolo11s
 ```
 
 The script verifies `labelmap.txt` still has the 80 classes in Ultralytics COCO
@@ -53,4 +53,4 @@ by editing the `path`/`model_path` in `config/config.yaml`.
 | Input | 640×640, NCHW, 0–1 RGB |
 | Classes | 80 (COCO), exact Ultralytics index order |
 | Format | ONNX, NMS-free, `opset=12` |
-| Exported | `yolo11n` + `yolov8s` 2026-09-05, `yolo11s` 2026-09-10 by `dev_scripts/prep_coco_model.sh` |
+| Exported | `yolo11n` + `yolov8s` 2026-09-05, `yolo11s` 2026-09-10 by `dev_scripts/deploy/prep_coco_model.sh` |

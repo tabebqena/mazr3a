@@ -27,7 +27,7 @@ regenerated from it. **v1 is superseded but retained** in the git-ignored archiv
 > NOT yet on your cameras. It was promoted by user decision with the on-camera
 > `firewatch.py --dry-run` pilot (day/night/IR, near/distance views, a test flame) still the
 > real acceptance test. Revert is easy: promote `v1` again via
-> `./dev_scripts/promote_fire_model.sh v1-2026-09-05-hf-yolo26s-8939img`.
+> `./dev_scripts/deploy/promote_fire_model.sh v1-2026-09-05-hf-yolo26s-8939img`.
 
 ## Required files (after conversion)
 
@@ -72,7 +72,7 @@ models/fire/
 
 **Promote a version to ACTIVE:**
 ```bash
-./dev_scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # or unique prefix "v2"
+./dev_scripts/deploy/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # or unique prefix "v2"
 ```
 It copies `model.pt` → `best.pt` (plus a bundled OpenVINO IR if present), prints the exact
 `prep_fire_model.sh` command to regenerate the IR, and reminds you to deploy
@@ -132,7 +132,7 @@ and MIT license. (Its weights were superseded; `models/fire/best.pt` is now the 
 
 Fine-tune the chosen checkpoint on ~100-200 frames from your own cameras (best
 generalization for your angles/lighting), or train `yolov8n` on a Roboflow fire/smoke
-dataset. Use [`dev_scripts/prep_fire_model.sh`](../../dev_scripts/prep_fire_model.sh) to convert
+dataset. Use [`dev_scripts/deploy/prep_fire_model.sh`](../../dev_scripts/deploy/prep_fire_model.sh) to convert
 any resulting `.pt` to this directory's OpenVINO IR format.
 
 ## Provenance

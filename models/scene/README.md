@@ -34,11 +34,11 @@ because the goal is the smallest useful model.
 
 ```bash
 cd ~/frigate
-bash dev_scripts/prep_scene_model_llamacpp.sh            # GGUF + mmproj
-bash dev_scripts/prep_scene_model_llamacpp.sh --list     # inspect the repo first
-bash dev_scripts/prep_scene_model_llamacpp.sh --force    # replace what is there
+bash dev_scripts/deploy/prep_scene_model_llamacpp.sh            # GGUF + mmproj
+bash dev_scripts/deploy/prep_scene_model_llamacpp.sh --list     # inspect the repo first
+bash dev_scripts/deploy/prep_scene_model_llamacpp.sh --force    # replace what is there
 # llama.cpp itself (the server/CLI) as reproducible pinned binaries:
-bash dev_scripts/prep_scene_model_llamacpp.sh --bin --llamacpp-tag <tag>
+bash dev_scripts/deploy/prep_scene_model_llamacpp.sh --bin --llamacpp-tag <tag>
 ```
 
 The script is **ADD-ONLY**: it skips every file that already exists (even a
@@ -56,7 +56,7 @@ URL at build time); they land in `models/scene/bin/` and
 | Repo | [`helenai/Qwen2-VL-2B-Instruct-ov-int4`](https://huggingface.co/helenai/Qwen2-VL-2B-Instruct-ov-int4) |
 | Architecture | `qwen2_vl` (2B params, INT4) |
 | Why it is still here | the operator may **reassess a larger model later**; deleting it would force a 1.76 GB re-download |
-| Refresh/re-install it | `bash dev_scripts/prep_scene_model.sh` (refuses to clobber without `--force`) |
+| Refresh/re-install it | `bash dev_scripts/deploy/prep_scene_model.sh` (refuses to clobber without `--force`) |
 
 ### Why the small model is NOT downloadable through OpenVINO GenAI
 

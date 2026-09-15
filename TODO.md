@@ -13,7 +13,7 @@ Loose follow-ups that are not yet a full plan.
   cross-check). Fix options — data fix (dog negatives → v5 fine-tune, recommended),
   animal-overlap guard, per-cam01 stop-gap — evidence + method in
   [`plans/firewatch-dog-false-positives.md`](plans/firewatch-dog-false-positives.md) and
-  re-scorer [`dev_scripts/analyze_fire_alert_frames.py`](dev_scripts/analyze_fire_alert_frames.py).
+  re-scorer [`dev_scripts/fire/analyze_fire_alert_frames.py`](dev_scripts/fire/analyze_fire_alert_frames.py).
   **No production change made — awaiting explicit permission** before implementing.
 - we swap the model to **YOLO11s**, make sure to check the machine monitor after time.
 
@@ -80,9 +80,9 @@ the model paths in config/config.yaml to /models/coco/yolo11n.onnx.
  Next sources to sample, score with v4, manually exclude fire, then merge per category:
  scenes (`SUN397`, `ADE20K`, more `Places365`), surveillance (`VisDrone-DET`,
  `CityPersons`), general objects (`COCO 2017`, `Open Images V7`). Workflow: download a
- 500–1000-img sample → [`dev_scripts/score_fire_images.py`](dev_scripts/score_fire_images.py)
+ 500–1000-img sample → [`dev_scripts/fire/score_fire_images.py`](dev_scripts/fire/score_fire_images.py)
  → copy suspects to `./suspect` → merge clean imgs into
- `model-training/ours/negatives/<category>` → [`dev_scripts/dedup_images.py`](dev_scripts/dedup_images.py)
+ `model-training/ours/negatives/<category>` → [`dev_scripts/fire/dedup_images.py`](dev_scripts/fire/dedup_images.py)
  → wire into training and re-run the FP audit (`model-training/eval/negatives` +
  `firewatch.py --dry-run`).
 
@@ -148,7 +148,7 @@ car 2, dog 2); `zones = []` (none defined yet).
    `IDLE_UNLOAD_S=0`) + scaffolded `config/places.conf`.
 - [ ] `scenereader/Dockerfile` + `requirements.txt` (prebuilt llama.cpp binary plus
    the openvino-genai runtime retained for the 2B IR; no torch).
-- [ ] `dev_scripts/prep_scene_model_llamacpp.sh` — add-only GGUF + mmproj fetcher
+- [ ] `dev_scripts/deploy/prep_scene_model_llamacpp.sh` — add-only GGUF + mmproj fetcher
    into its own subdir under `models/scene/`.
 - [ ] Update `models/scene/README.md` + `VERSIONS.md` (both models documented; the
    2B IR stays on disk untouched).

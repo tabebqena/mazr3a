@@ -6,14 +6,14 @@ large) and per-version `VERSION.json` manifests are **git-ignored** under
 survive even where the `.pt` files are not present).
 
 - **Naming convention + full design:** [`plans/model-versioning.md`](../plans/model-versioning.md)
-- **Promote helper:** [`dev_scripts/promote_fire_model.sh`](../dev_scripts/promote_fire_model.sh)
+- **Promote helper:** [`dev_scripts/deploy/promote_fire_model.sh`](../dev_scripts/deploy/promote_fire_model.sh)
 - **Deploy semantics:** the `models/fire/` root `best.*` files are the *active* set that
   `firewatch` loads (`MODEL_DIR=/models/fire`, hardcodes `best.xml`). They are a copy of
   the active version; `versions/` holds the canonical archive.
 
 > **Class order for every version below: `fire`(0) / `other`(1) / `smoke`(2).** Production
 > is fire-only (index 0), so alerts are unaffected; keep `labelmap.txt` in this order when
-> regenerating IR ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)).
+> regenerating IR ([`dev_scripts/deploy/prep_fire_model.sh`](../dev_scripts/deploy/prep_fire_model.sh)).
 
 ---
 
@@ -68,7 +68,7 @@ bundled), md5 `4a4ef19540518e27f886c2894ec168f8`, 20,294,341 B — copy of
 ## Promote to active
 
 ```bash
-./dev_scripts/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # exact name or "v2"
+./dev_scripts/deploy/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # exact name or "v2"
 ```
 
 The script copies the version's `model.pt` → `models/fire/best.pt` (+ bundled IR if any),
@@ -87,5 +87,5 @@ docker compose exec firewatch python /firewatch/firewatch.py --dry-run
 > `deploy_all.sh` (full deploy) via `git pull` — the host always matches the repo.
 > The git-ignored `versions/` archive never ships. To change the served model, generate
 > its IR from the active `.pt`
-> ([`dev_scripts/prep_fire_model.sh`](../dev_scripts/prep_fire_model.sh)), commit the ACTIVE set,
+> ([`dev_scripts/deploy/prep_fire_model.sh`](../dev_scripts/deploy/prep_fire_model.sh)), commit the ACTIVE set,
 > then deploy.

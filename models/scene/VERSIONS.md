@@ -6,8 +6,8 @@ coexist deliberately (see [`README.md`](README.md)):
 
 | Backend (`MODEL_BACKEND`) | Model | Fetched by | Notes |
 |---|---|---|---|
-| `llamacpp` (**default**) | SmolVLM2-500M GGUF + mmproj in `smolvlm2-500m/` | [`dev_scripts/prep_scene_model_llamacpp.sh`](../../dev_scripts/prep_scene_model_llamacpp.sh) | ADD-ONLY: skips existing files; `--force` replaces only what it fetches |
-| `openvino` (**retained**) | Qwen2-VL-2B-Instruct OpenVINO INT4 IR, directly in `models/scene/` | [`dev_scripts/prep_scene_model.sh`](../../dev_scripts/prep_scene_model.sh) | **KEPT — never deleted, never re-downloaded**; `--force` required to replace |
+| `llamacpp` (**default**) | SmolVLM2-500M GGUF + mmproj in `smolvlm2-500m/` | [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](../../dev_scripts/deploy/prep_scene_model_llamacpp.sh) | ADD-ONLY: skips existing files; `--force` replaces only what it fetches |
+| `openvino` (**retained**) | Qwen2-VL-2B-Instruct OpenVINO INT4 IR, directly in `models/scene/` | [`dev_scripts/deploy/prep_scene_model.sh`](../../dev_scripts/deploy/prep_scene_model.sh) | **KEPT — never deleted, never re-downloaded**; `--force` required to replace |
 
 **Rule:** after a successful fetch, append the line the script prints (date,
 source, how obtained, size, md5 of the largest weight file) and mark a replaced

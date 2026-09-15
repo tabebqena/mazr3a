@@ -91,7 +91,7 @@ class LlamaCppCaptioner(Captioner):
                  max_image_px=384, cli_timeout=300.0, prompt=None):
         if not model_file or not os.path.isfile(model_file):
             raise RuntimeError("MODEL_FILE not found: {!r} (run "
-                               "dev_scripts/prep_scene_model_llamacpp.sh)".format(model_file))
+                               "dev_scripts/deploy/prep_scene_model_llamacpp.sh)".format(model_file))
         self.model_file = model_file
         self.mmproj_file = mmproj_file if mmproj_file and os.path.isfile(mmproj_file) else None
         if not self.mmproj_file:

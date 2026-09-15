@@ -438,8 +438,8 @@ How it works:
 Operate:
 ```bash
 # PREREQUISITE: the model is NOT in git - fetch it first (curl only, no pip/torch)
-bash dev_scripts/prep_scene_model.sh       # Qwen2-VL-2B int4 (~1.76 GB)
-bash dev_scripts/prep_scene_model.sh --force   # replace an earlier export
+bash dev_scripts/deploy/prep_scene_model.sh       # Qwen2-VL-2B int4 (~1.76 GB)
+bash dev_scripts/deploy/prep_scene_model.sh --force   # replace an earlier export
 docker compose up -d --build scenewatch
 docker compose logs -f scenewatch          # watch captions / skips
 docker compose exec scenewatch python /scenewatch/scenewatch.py --check     # load + probe caption

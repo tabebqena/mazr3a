@@ -49,7 +49,7 @@ import os
 DEFAULT_OUT = "model-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.7.0"
+NOTEBOOK_VERSION = "1.8.0"
 
 
 def md(source):
@@ -140,13 +140,19 @@ C_CONFIG = code([
     "BASE_MODEL = DRIVE_DIR + '/v2/scratch-v1-dfire.pt'   # run 2's fire-only winner (nc=1)\n",
     "EXPECTED_BASE_MD5 = '3262b25be13b0888d21e7e96d16af20d'  # md5 of the LOCAL v2 copy - launch aborts on mismatch\n",
     "\n",
+    "# --- smaller run: cap the HF FireViewer download (train split only, whole clips) ---\n",
+    "FV_LIMIT = 20000   # FireViewer TRAIN images to keep (group-sampled); ~half of v3 -> ~13 min/epoch\n",
+    "\n",
     "# --- training sources: HF FireViewer + Abonia + SalahALHaismawi + negatives; CCTV is TEST-ONLY ---\n",
     "SOURCES = [\n",
     "    # 31 GB HF FireViewer corpus (re-downloaded by Colab; parquet cache freed after conversion).\n",
-    "    # alarmod is GPL-3.0 -> excluded.\n",
+    "    # alarmod is GPL-3.0 -> excluded. SMALL RUN: train split only (val/test are already covered\n",
+    "    # by v1/v2's fingerprint index) and capped at FV_LIMIT whole clips; the dedup bg-cap keeps\n",
+    "    # the 60/40 positive/background balance after dedup.\n",
     "    {'id': 'fireviewer', 'type': 'huggingface_fireviewer',\n",
     "     'repo': 'fireviewer/fire-smoke-detection-corpus-v1',\n",
-    "     'splits': 'train,validation,test', 'exclude_sources': ['alarmod']},\n",
+    "     'splits': 'train', 'exclude_sources': ['alarmod'],\n",
+    "     'limit': FV_LIMIT, 'sample_mode': 'group'},\n",
     "    # Abonia fire-8 (CC BY 4.0), fetched from GitHub via a sparse clone.\n",
     "    {'id': 'abonia', 'type': 'github_repo',\n",
     "     'repo': 'Abonia1/YOLOv8-Fire-and-Smoke-Detection',\n",
@@ -181,7 +187,7 @@ C_CONFIG = code([
     "AUG_HSV_V     = 0.1    # online brightness shift +-10%\n",
     "\n",
     "# --- training (continued low-LR FINE-TUNE of run 2's fire-only winner) ---\n",
-    "EPOCHS      = 50\n",
+    "EPOCHS      = 40    # smaller pool (~30k) converges in fewer passes; patience 15 early-stops\n",
     "BATCH       = 16    # 32 on an L4, 64+ on an A100; 8 if a T4 OOMs\n",
     "IMGSZ       = 640   # matches production input\n",
     "FREEZE      = 10    # freeze the backbone (fine-tune convention; scratch runs use 0)\n",

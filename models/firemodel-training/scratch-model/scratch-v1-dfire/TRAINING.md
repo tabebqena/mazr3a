@@ -1,11 +1,11 @@
 # scratch-v1-dfire — training record
 
-Run directory: `model-training/scratch-model/scratch-v1-dfire/`
+Run directory: `models/firemodel-training/scratch-model/scratch-v1-dfire/`
 
 ## Training path
 
 - v2 = **continued low-LR fine-tune of v1 on clean D-Fire**
-  ([`plans/fire-model-scratch-dfire-continued.md`](../../../plans/fire-model-scratch-dfire-continued.md)).
+  ([`plans/fire-model-scratch-dfire-continued.md`](../../../../plans/fire-model-scratch-dfire-continued.md)).
 - Same generated notebook, with `BASE_MODEL = v1/scratch-v1.pt`.
 
 ## Original (base) model
@@ -43,4 +43,4 @@ Run directory: `model-training/scratch-model/scratch-v1-dfire/`
 
 ## Provenance
 
-- Registry entry `scratch-v1-dfire` in `model-training/scratch-model/registry.json`.
+- Registry entry `scratch-v1-dfire` in [`registry.json`](../registry.json).

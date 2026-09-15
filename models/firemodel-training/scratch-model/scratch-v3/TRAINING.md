@@ -1,12 +1,12 @@
 # scratch-v3 — training record (configured, not yet trained)
 
-Run directory: `model-training/scratch-model/scratch-v3/`
+Run directory: `models/firemodel-training/scratch-model/scratch-v3/`
 
 ## Training path
 
 - v3 = **class-expansion fine-tune**: adds `smoke` + `other` on top of v2's fire skill
-  ([`plans/fire-model-smoke-class-training.md`](../../../plans/fire-model-smoke-class-training.md),
-  [`plans/fire-model-v3-class-expansion.md`](../../../plans/fire-model-v3-class-expansion.md)).
+  ([`plans/fire-model-smoke-class-training.md`](../../../../plans/fire-model-smoke-class-training.md),
+  [`plans/fire-model-v3-class-expansion.md`](../../../../plans/fire-model-v3-class-expansion.md)).
 
 ## Original (base) model
 
@@ -40,7 +40,7 @@ Run directory: `model-training/scratch-model/scratch-v3/`
 
 ## Status
 
-- **NOT trained yet.** Notebook generated at `model-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb`.
+- **NOT trained yet.** Notebook generated at `models/firemodel-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb`.
 
 ## Open decisions before training (see `plans/fire-model-v3-class-expansion.md`)
 

@@ -1,9 +1,8 @@
 # Scratch model campaign — version records
 
-Tracked, human-readable training records for the fire-model scratch campaign. Each entry mirrors one
-version folder under the git-ignored / `.rooignore`d `model-training/scratch-model/` tree, where the
-actual checkpoints, `args.yaml`, `results.csv` and run logs live. The authoritative strategy/plan is
-[`plans/fire-model-v3-class-expansion.md`](../../plans/fire-model-v3-class-expansion.md).
+Tracked, human-readable training records for the fire-model scratch campaign. Each entry lives next to
+its checkpoint under `models/firemodel-training/scratch-model/<run>/`; the authoritative strategy/plan is
+[`plans/fire-model-v3-class-expansion.md`](../../../plans/fire-model-v3-class-expansion.md).
 
 | Version | Dir | Record |
 |---|---|---|

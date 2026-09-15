@@ -1,13 +1,13 @@
 # scratch-v1 — training record
 
-Run directory: `model-training/scratch-model/scratch-v1/`
+Run directory: `models/firemodel-training/scratch-model/scratch-v1/`
 
 ## Training path
 
 - v1 = the **first from-scratch fire-only run** of the scratch campaign
-  ([`plans/fire-model-scratch-colab.md`](../../plans/fire-model-scratch-colab.md)).
+  ([`plans/fire-model-scratch-colab.md`](../../../../plans/fire-model-scratch-colab.md)).
 - Produced by the generated Colab notebook `fire-scratch-train-colab.ipynb` driving
-  [`dev_scripts/colab/colab_train_scratch.py`](../../dev_scripts/colab/colab_train_scratch.py).
+  [`dev_scripts/colab/colab_train_scratch.py`](../../../../dev_scripts/colab/colab_train_scratch.py).
 
 ## Original (base) model
 
@@ -25,7 +25,7 @@ Run directory: `model-training/scratch-model/scratch-v1/`
 - `val`:   **7,280** images (774 fire-positive + 6,506 background)
 - Sources: FireViewer HF corpus (excluding GPL `alarmod`) + Abonia `fire-8` + CCTV Emergency +
   domain negatives — all remapped to fire-only
-  ([`plans/fire-model-scratch-colab.md`](../../plans/fire-model-scratch-colab.md)).
+  ([`plans/fire-model-scratch-colab.md`](../../../../plans/fire-model-scratch-colab.md)).
 
 ## Training parameters (`args.yaml`)
 

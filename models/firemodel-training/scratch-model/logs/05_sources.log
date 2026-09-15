@@ -1,0 +1,45 @@
+
+========================================================================
+[05_sources] started 2026-09-14 15:26:36
+========================================================================
+[05_sources] finished 15:26:39
+
+========================================================================
+[05_sources] started 2026-09-14 15:50:29
+========================================================================
+
+=== source dfire (type=zip_url role=train) ===
+  + wget -q -O /content/src_cache/zip_dfire/src.zip https://www.kaggle.com/api/v1/datasets/download/sayedgamal99/smoke-fire-detection-yolo
+  names=[]  images=21527
+  freed source tree -> /content/src_cache/zip_dfire/extracted/data
+
+Scratch fire training - raw merged pool
+================================================================
+classes  : ['fire']
+out      : /content/raw_yolo
+
+per split: train=14122 val=3099 test=4306
+boxes    : fire=14692
+per source:
+  - dfire          images=21527 background=15705
+
+data.yaml  -> /content/raw_yolo/data.yaml
+manifest   -> /content/raw_yolo/manifest.csv
+NEXT: run dedup_fire_scratch.py --pool /content/raw_yolo --out <clean>
+
+Scratch fire training - raw merged pool
+================================================================
+classes  : ['fire']
+out      : /content/raw_yolo
+
+per split: train=14122 val=3099 test=4306
+boxes    : fire=14692
+per source:
+  - dfire          images=21527 background=15705
+
+data.yaml  -> /content/raw_yolo/data.yaml
+manifest   -> /content/raw_yolo/manifest.csv
+NEXT: run dedup_fire_scratch.py --pool /content/raw_yolo --out <clean>
+
+freed source cache -> /content/src_cache
+[05_sources] finished 15:51:51

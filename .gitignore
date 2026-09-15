@@ -133,3 +133,5 @@ firewatch-evidence/
 plans/
 prompt.txt
 notebooks/
+models/firemodel-training/scratch-model/scratch-v3/uploads/*
+models/firemodel-training/scratch-model/*/*/scripts.zip

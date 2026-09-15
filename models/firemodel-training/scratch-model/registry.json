@@ -1,0 +1,42 @@
+[
+  {
+    "name": "scratch-v1",
+    "date": "2026-09-14 08:53:01 UTC",
+    "classes": [
+      "fire"
+    ],
+    "base_model": "yolo11s.pt",
+    "md5": "6e3325cca6d07dc58028218b58d3e746",
+    "bytes": 19154394,
+    "metrics": {
+      "map50": 0.5535,
+      "map50_95": 0.2971,
+      "precision": 0.585,
+      "recall": 0.5316,
+      "per_class_map50": [
+        0.2971
+      ]
+    },
+    "metric_key": "map50"
+  },
+  {
+    "name": "scratch-v1-dfire",
+    "date": "2026-09-14 17:01:58 UTC",
+    "classes": [
+      "fire"
+    ],
+    "base_model": "/content/drive/MyDrive/mazr3a-fire-scratch/v1/scratch-v1.pt",
+    "md5": "3262b25be13b0888d21e7e96d16af20d",
+    "bytes": 19153242,
+    "metrics": {
+      "map50": 0.6643,
+      "map50_95": 0.329,
+      "precision": 0.6782,
+      "recall": 0.6153,
+      "per_class_map50": [
+        0.329
+      ]
+    },
+    "metric_key": "map50"
+  }
+]

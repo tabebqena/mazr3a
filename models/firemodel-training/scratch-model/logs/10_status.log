@@ -1,0 +1,19 @@
+
+========================================================================
+[10_status] started 2026-09-14 15:56:09
+========================================================================
+training status: running (0/50 epochs)
+trainer pid 4185 -> RUNNING
+local log : /content/train.log (0 B, written 0s ago)
+
+[local] /content/runs/scratch-v1-dfire
+   (missing)
+
+[Drive] /content/drive/MyDrive/mazr3a-fire-scratch/v2/runs/scratch-v1-dfire
+
+-- local log tail --
+
+
+-- GPU --
+0 %, 3 MiB
+[10_status] finished 15:56:09

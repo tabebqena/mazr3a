@@ -37,14 +37,16 @@ INCREMENTAL IMPROVEMENT / REGRESSION DECISION
 
 Usage:
     python dev_scripts/build_fire_scratch_colab_nb.py
-        # writes notebooks/fire-scratch-train-colab.ipynb
+        # writes model-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb
     python dev_scripts/build_fire_scratch_colab_nb.py --out <dir>/fire-scratch-train-colab.ipynb
 """
 import argparse
 import json
 import os
 
-DEFAULT_OUT = "notebooks/fire-scratch-train-colab.ipynb"
+# The notebook lives next to the pack script's output (scripts.zip + data uploads) so the whole
+# per-version bundle is in one place. Keep this in sync with pack_fire_scratch_colab.sh's OUT_DIR.
+DEFAULT_OUT = "model-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
 NOTEBOOK_VERSION = "1.7.0"

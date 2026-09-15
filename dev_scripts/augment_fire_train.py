@@ -19,25 +19,33 @@ at random, and the applied operation is recorded in <report>/augmentation_report
   * hue        - hue shift uniform(-0.015, +0.015) + saturation uniform(-0.1, +0.1)
   * noise      - additive Gaussian noise sigma ~5/255
 
-RESUMABLE + REUSABLE (2026-09-15)
---------------------------------
-Every finished image is journalled ONE LINE AT A TIME (append + flush) to
-``<report>/augmentation_state.jsonl``, so a kill mid-run loses at most the in-flight image.
-Each line records the stem, the chosen ``op`` + its parameters, and two md5s:
-  * ``src_md5`` - the image bytes BEFORE augmentation (the original);
-  * ``dst_md5`` - the image bytes AFTER augmentation (what is now on disk).
-On a re-run the journal is loaded and used in BOTH ways:
+NON-DESTRUCTIVE + RESUMABLE + REUSABLE (2026-09-15)
+---------------------------------------------------
+The ORIGINAL train images (dedup output) live in ``<clean>/train/images`` and are NEVER
+overwritten. Each augmented image is written to the runtime store ``<clean>/train/images_aug``
+(and its re-derived boxes to ``<clean>/train/labels_aug``) via ``*.part`` + ``os.replace``; only
+AFTER the augmented file is fully written is the original image + label REMOVED, so disk usage
+never doubles (originals shrink as the augmented store grows). ``<clean>/data.yaml`` is updated to
+``train: train/images_aug`` at the end.
 
-  * RESUME  - an image whose CURRENT on-disk md5 already equals ``dst_md5`` is skipped, so a
-              re-run after an interrupt only re-renders the images that were not finished.
+Every finished image is journalled ONE LINE AT A TIME (append + flush) to
+``<report>/augmentation_state.jsonl``, so a kill mid-run loses at most the in-flight image. Each
+line records the stem, the chosen ``op`` + its parameters, and two md5s for audit
+(``src_md5`` = original bytes, ``dst_md5`` = augmented bytes).
+
+  * RESUME  - the completion marker is the PRESENCE of the augmented file in the runtime store
+              (``train/images_aug/<stem>.<ext>``). A re-run skips any image whose augmented output
+              already exists (tidy-ing away a stale original left by a crash between write and
+              remove); images whose original is still present are re-rendered. No md5 comparison
+              is used for the skip decision.
   * REUSE   - a stem already in the journal keeps its recorded ``op`` + parameters (they are NOT
               re-rolled), so a re-run applies exactly the same augmentation decision; a brand-new
               stem gets a fresh deterministic op from ``stable_seed(stem)``.
 
 ``augmentation_report.csv`` and ``augmentation_summary.txt`` are re-derived from the journal, so
 they reflect the true final state even after a resume. There is deliberately NO ``--fresh``:
-augmentation rewrites the source image in place, so re-applying it would double-augment; to start
-over, re-run the dedup step (which re-copies the original bytes) and delete ``augmentation_state.jsonl``.
+augmentation consumes the originals, so "starting over" = re-run the dedup step (which re-copies
+the original bytes) and delete ``<clean>/train/images_aug`` + ``augmentation_state.jsonl``.
 
 USAGE
 -----
@@ -261,6 +269,22 @@ def render_op(im, w0, h0, boxes, op, p, seed):
     return im, boxes
 
 
+def rewrite_data_yaml(clean):
+    """Point ``train:`` at the augmented store (idempotent)."""
+    yaml_path = os.path.join(clean, "data.yaml")
+    if not os.path.isfile(yaml_path):
+        return
+    lines = []
+    for ln in open(yaml_path, encoding="utf-8"):
+        if ln.startswith("train:"):
+            ln = "train: train/images_aug\n"
+        lines.append(ln)
+    tmp = yaml_path + ".part"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.writelines(lines)
+    os.replace(tmp, yaml_path)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -273,18 +297,22 @@ def main():
     report = os.path.abspath(args.report or (clean + "_report"))
     os.makedirs(report, exist_ok=True)
 
-    img_dir = os.path.join(clean, "train", "images")
+    img_dir = os.path.join(clean, "train", "images")           # originals (dedup output)
     lbl_dir = os.path.join(clean, "train", "labels")
+    aug_img_dir = os.path.join(clean, "train", "images_aug")   # augmented runtime store
+    aug_lbl_dir = os.path.join(clean, "train", "labels_aug")
     if not os.path.isdir(img_dir):
         die("no train/images under --clean (%s)" % clean)
+    os.makedirs(aug_img_dir, exist_ok=True)
+    os.makedirs(aug_lbl_dir, exist_ok=True)
 
     state_path = os.path.join(report, "augmentation_state.jsonl")
     journal = load_journal(state_path)
 
     names = sorted(n for n in os.listdir(img_dir) if os.path.splitext(n)[1].lower() in IMG_EXTS)
     known = sum(1 for n in names if os.path.splitext(n)[0] in journal)
-    print("augment_fire_train: %d train images (%d already journalled)" % (len(names), known),
-          flush=True)
+    print("augment_fire_train: %d original train images pending (%d with recorded op)"
+          % (len(names), known), flush=True)
 
     op_counts = Counter()
     done = skipped = 0
@@ -292,48 +320,66 @@ def main():
     with open(state_path, "a", encoding="utf-8") as jfh:
         for idx, name in enumerate(names, 1):
             stem = os.path.splitext(name)[0]
-            img_path = os.path.join(img_dir, name)
-            lbl_path = os.path.join(lbl_dir, stem + ".txt")
-
-            with open(img_path, "rb") as fh:
-                data = fh.read()
-            cur_md5 = md5_bytes(data)
+            ext = os.path.splitext(name)[1].lower()
+            src_img = os.path.join(img_dir, stem + ext)
+            src_lbl = os.path.join(lbl_dir, stem + ".txt")
+            dst_img = os.path.join(aug_img_dir, stem + ext)
+            dst_lbl = os.path.join(aug_lbl_dir, stem + ".txt")
 
             rec = journal.get(stem)
-            if rec is not None and rec.get("op") in OPS and rec.get("dst_md5"):
-                # RESUME: the on-disk image already IS the recorded augmented output -> skip.
-                if cur_md5 == rec["dst_md5"]:
-                    skipped += 1
+
+            # RESUME: the augmented output already exists -> skip; tidy away a stale original
+            # left by a crash between the atomic write and the original-removal below.
+            if os.path.isfile(dst_img):
+                skipped += 1
+                if rec is not None and rec.get("op") in OPS:
                     op_counts[rec["op"]] += 1
-                    continue
-                # REUSE: a known stem keeps its recorded op + parameters (never re-rolled).
+                for p in (src_img, src_lbl):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+                continue
+
+            with open(src_img, "rb") as fh:
+                data = fh.read()
+            src_md5 = md5_bytes(data)
+
+            # REUSE: a known stem keeps its recorded op + parameters; a new stem rolls fresh.
+            if rec is not None and rec.get("op") in OPS:
                 op = rec["op"]
                 params = {k: rec.get(k, DEFAULT_PARAMS[k]) for k in OP_PARAMS}
             else:
-                # new stem: roll a fresh deterministic op from stable_seed(stem)
                 seed = stable_seed(stem)
                 rng = random.Random(seed)
                 op = rng.choice(OPS)
                 params = roll_params(op, rng)
 
-            src_md5 = cur_md5
             with Image.open(BytesIO(data)) as im:
                 im = im.convert("RGB")
                 w0, h0 = im.size
-                boxes = read_boxes(lbl_path)
+                boxes = read_boxes(src_lbl)
                 im, boxes = render_op(im, w0, h0, boxes, op, params, stable_seed(stem))
 
-                fmt = EXT_FORMAT.get(os.path.splitext(name)[1].lower(), "JPEG")
+                fmt = EXT_FORMAT.get(ext, "JPEG")
                 buf = BytesIO()
                 im.save(buf, format=fmt, quality=95)
                 out = buf.getvalue()
 
             dst_md5 = md5_bytes(out)
-            tmp_img = img_path + ".part"
+
+            # atomic write of the augmented image + re-derived label, THEN remove the originals
+            # (order matters: only delete the original once its replacement is safely on disk)
+            tmp_img = dst_img + ".part"
             with open(tmp_img, "wb") as fh:
                 fh.write(out)
-            os.replace(tmp_img, img_path)
-            write_boxes(lbl_path, boxes)
+            os.replace(tmp_img, dst_img)
+            write_boxes(dst_lbl, boxes)
+            for p in (src_img, src_lbl):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
             rec = {
                 "stem": stem, "op": op,
@@ -357,6 +403,11 @@ def main():
 
     # compact rewrite (drops duplicate lines an interrupted run may have appended)
     save_journal(journal, state_path)
+    rewrite_data_yaml(clean)
+
+    # final op distribution is derived from the journal so it reflects the WHOLE dataset,
+    # not just the images touched by this particular run (a resume skips most of them)
+    op_counts = Counter(r.get("op") for r in journal.values())
 
     # derive the final CSV + summary from the journal so they reflect the true state after a resume
     rows = []
@@ -377,9 +428,10 @@ def main():
     text = "\n".join([
         "augment_fire_train.py - train augmentation report",
         "=" * 64,
-        "augmented train images: %d (skipped %d already done)" % (done, skipped),
+        "augmented train images: %d (skipped %d already in store)" % (done, skipped),
         "operations applied (exactly one per image):",
     ] + op_lines + [
+        "store -> %s" % aug_img_dir,
         "state -> %s" % state_path,
         "report -> %s" % rep_path,
     ])

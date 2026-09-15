@@ -82,6 +82,7 @@ import shutil
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -236,6 +237,37 @@ class FixedPool:
 
 def is_image(name):
     return os.path.splitext(name)[1].lower() in IMG_EXTS
+
+
+def _acquire_lock(path, label):
+    """Take an advisory exclusive lock held for the whole process lifetime.
+
+    Prevents two concurrent invocations (e.g. the notebook cell re-run by mistake, or a
+    manual augment while dedup is still copying) from racing on the same output. Uses
+    ``fcntl.flock`` on Linux/macOS (what Colab runs) and ``msvcrt.locking`` on Windows.
+    The OS releases the lock when the process exits, so a second invocation fails fast
+    with a clear message instead of silently corrupting the output.
+    """
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    fh = open(path, "w", encoding="utf-8")
+    try:
+        try:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            # Windows fallback (never exercised on Linux/Colab; msvcrt has no type stubs).
+            import msvcrt
+            locking = getattr(msvcrt, "locking", None)
+            if locking is None:
+                raise RuntimeError("no flock and no msvcrt.locking available")
+            locking(fh.fileno(), getattr(msvcrt, "LK_NBLCK", 1), 1)
+    except OSError:
+        fh.close()
+        sys.exit("%s: another process already holds the lock %s "
+                 "(is a previous run still active?)" % (label, path))
+    return fh
 
 
 # ---------------------------------------------------------------------------
@@ -464,35 +496,56 @@ def fingerprint_stage(rows, args, state, report_dir, log, progress_every):
         return
 
     log("stage fingerprint: %d/%d images still need hashing" % (len(missing), len(rows)))
+    # Warm the lazily-cached PIL LANCZOS enum once so the worker threads don't race to
+    # initialise it (the race would be benign, but a single pre-load is cleaner).
+    _lanzos()
+
     broken = 0
     prog = Progress(len(missing), "fingerprint", progress_every, log=log,
                     suffix=lambda: "broken=%d" % broken)
-    with open(fp_path, "a", encoding="utf-8") as fh:
-        for r in missing:
-            try:
-                with open(r["img"], "rb") as img_fh:
-                    data = img_fh.read()
-                r["md5"] = hashlib.md5(data).hexdigest()
-                r["dhash"] = dhash_of(data)
-                u = 0
-            except Exception:
-                broken += 1
-                r["kept"] = False
-                r["reason"] = "unreadable"
-                u = 1
-                if not args.skip_broken:
-                    sys.exit("unreadable image (set --skip-broken to quarantine): %s" % r["img"])
-                if args.broken_out:
-                    os.makedirs(os.path.join(args.broken_out, "images"), exist_ok=True)
-                    try:
-                        shutil.move(r["img"], os.path.join(
-                            args.broken_out, "images", r["stem"] + os.path.splitext(r["img"])[1]))
-                    except OSError:
-                        pass
-            fh.write(json.dumps({"split": r["split"], "stem": r["stem"],
-                                 "md5": r["md5"], "dhash": r["dhash"], "u": u}) + "\n")
-            fh.flush()
-            prog.tick()
+
+    # Each worker hashes ONLY its own image and returns the result; the MAIN thread is the
+    # single writer of fingerprints.jsonl, so the append-only checkpoint never has two
+    # threads touching it at once (the same crash-consistency guarantee as before).
+    def work(r):
+        try:
+            with open(r["img"], "rb") as img_fh:
+                data = img_fh.read()
+            return r, hashlib.md5(data).hexdigest(), dhash_of(data), 0
+        except Exception:
+            return r, None, None, 1
+
+    ex = ThreadPoolExecutor(max_workers=args.workers)
+    try:
+        futures = [ex.submit(work, r) for r in missing]
+        with open(fp_path, "a", encoding="utf-8") as fh:
+            for fut in as_completed(futures):
+                r, md5, dhash, u = fut.result()
+                if u:
+                    broken += 1
+                    r["kept"] = False
+                    r["reason"] = "unreadable"
+                    if not args.skip_broken:
+                        log("fatal: unreadable image (set --skip-broken to quarantine): %s"
+                            % r["img"])
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        sys.exit(1)
+                    if args.broken_out:
+                        os.makedirs(os.path.join(args.broken_out, "images"), exist_ok=True)
+                        try:
+                            shutil.move(r["img"], os.path.join(
+                                args.broken_out, "images",
+                                r["stem"] + os.path.splitext(r["img"])[1]))
+                        except OSError:
+                            pass
+                else:
+                    r["md5"], r["dhash"] = md5, dhash
+                fh.write(json.dumps({"split": r["split"], "stem": r["stem"],
+                                     "md5": r["md5"], "dhash": r["dhash"], "u": u}) + "\n")
+                fh.flush()
+                prog.tick()
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     prog.finish()
     log("stage fingerprint: complete (%d unreadable)" % broken)
     state["fingerprint_done"] = True
@@ -701,7 +754,43 @@ def _copy_label(src, dst, skipped, missing):
     return skipped, missing
 
 
-def copy_bg_extra(rows, bg_dir, log, progress_every):
+def _copy_rows(rows, dst_dir_for, label, log, progress_every, workers):
+    """Copy every row's image + label concurrently; each (stem, dst) is unique -> race-free.
+
+    Workers copy their own (image, label) pair; the MAIN thread only aggregates counts and
+    advances the progress line. ``*.part`` temp names are per-destination, so no two workers
+    collide, and the size-check skip preserves the resumable semantics.
+    """
+    copied = skipped = missing = 0
+    prog = Progress(len(rows), label, progress_every, log=log,
+                    suffix=lambda: "copied %d, skipped %d" % (copied, skipped))
+    if not rows:
+        prog.finish()
+        return copied, skipped, missing
+
+    def work(r):
+        ext = os.path.splitext(r["img"])[1].lower()
+        d = dst_dir_for(r)
+        c = s = m = 0
+        c, s, m = _copy_image(r["img"], os.path.join(d, "images", r["stem"] + ext),
+                              None, c, s, m)
+        s, m = _copy_label(r["lbl"], os.path.join(d, "labels", r["stem"] + ".txt"), s, m)
+        return c, s, m
+
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+        for c, s, m in ex.map(work, rows):
+            copied += c
+            skipped += s
+            missing += m
+            prog.tick()
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+    prog.finish()
+    return copied, skipped, missing
+
+
+def copy_bg_extra(rows, bg_dir, log, progress_every, workers):
     """Copy background images moved out by the cap so they stay reversible (not deleted)."""
     bg_rows = [r for r in rows if r["reason"] == "balance-bg-cap"]
     if not bg_rows:
@@ -709,43 +798,22 @@ def copy_bg_extra(rows, bg_dir, log, progress_every):
     os.makedirs(os.path.join(bg_dir, "images"), exist_ok=True)
     os.makedirs(os.path.join(bg_dir, "labels"), exist_ok=True)
     log("stage copy: bg-extra %d images -> %s" % (len(bg_rows), bg_dir))
-    copied = skipped = missing = 0
-    prog = Progress(len(bg_rows), "  bg-extra", progress_every, log=log,
-                    suffix=lambda: "copied %d, skipped %d" % (copied, skipped))
-    for r in bg_rows:
-        ext = os.path.splitext(r["img"])[1].lower()
-        copied, skipped, missing = _copy_image(
-            r["img"], os.path.join(bg_dir, "images", r["stem"] + ext),
-            log, copied, skipped, missing)
-        skipped, missing = _copy_label(
-            r["lbl"], os.path.join(bg_dir, "labels", r["stem"] + ".txt"), skipped, missing)
-        prog.tick()
-    prog.finish()
+    copied, skipped, missing = _copy_rows(
+        bg_rows, lambda r: bg_dir, "  bg-extra", log, progress_every, workers)
     log("stage copy: bg-extra done (copied %d, skipped %d, missing %d)"
         % (copied, skipped, missing))
     return len(bg_rows)
 
 
-def copy_clean(rows, out, log, progress_every):
+def copy_clean(rows, out, log, progress_every, workers):
     """Copy every kept image + label into the clean YOLO tree (resumable per file)."""
     for split in ("train", "val", "test"):
         os.makedirs(os.path.join(out, split, "images"), exist_ok=True)
         os.makedirs(os.path.join(out, split, "labels"), exist_ok=True)
     kept = [r for r in rows if r["kept"]]
     log("stage copy: clean tree %d kept images -> %s" % (len(kept), out))
-    copied = skipped = missing = 0
-    prog = Progress(len(kept), "  clean", progress_every, log=log,
-                    suffix=lambda: "copied %d, skipped %d" % (copied, skipped))
-    for r in kept:
-        ext = os.path.splitext(r["img"])[1].lower()
-        copied, skipped, missing = _copy_image(
-            r["img"], os.path.join(out, r["split"], "images", r["stem"] + ext),
-            log, copied, skipped, missing)
-        skipped, missing = _copy_label(
-            r["lbl"], os.path.join(out, r["split"], "labels", r["stem"] + ".txt"),
-            skipped, missing)
-        prog.tick()
-    prog.finish()
+    copied, skipped, missing = _copy_rows(
+        kept, lambda r: os.path.join(out, r["split"]), "  clean", log, progress_every, workers)
     log("stage copy: clean tree done (copied %d, skipped %d, missing %d)"
         % (copied, skipped, missing))
     return len(kept)
@@ -757,8 +825,8 @@ def copy_stage(rows, args, state, log, progress_every):
     # missing files. This also self-heals a partially-written tree even if ``copy_done``
     # was already recorded.
     bg_dir = args.bg_extra or (args.out + "_bg_extra")
-    copy_bg_extra(rows, bg_dir, log, progress_every)
-    copy_clean(rows, args.out, log, progress_every)
+    copy_bg_extra(rows, bg_dir, log, progress_every, args.workers)
+    copy_clean(rows, args.out, log, progress_every, args.workers)
     state["copy_done"] = True
     save_state(state, os.path.join(args.report, "state.json"))
 
@@ -920,7 +988,13 @@ def main():
     ap.add_argument("--log-file", default=None, help="log file (default: <report>/dedup.log)")
     ap.add_argument("--progress-every", type=int, default=1000,
                     help="emit a progress line every N images (default 1000)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="worker threads for the fingerprint + copy stages "
+                         "(default: min(16, 2*cpu_count); 1 = single-threaded)")
     args = ap.parse_args()
+
+    if args.workers is None or args.workers <= 0:
+        args.workers = min(16, max(2, (os.cpu_count() or 4) * 2))
 
     pool = os.path.abspath(args.pool)
     out = os.path.abspath(args.out)
@@ -932,6 +1006,10 @@ def main():
     args.out = out
     args.report = report_dir
     args.pool = pool
+
+    # Cross-process guard: hold the same lock file that augment_fire_train.py uses so a
+    # concurrent dataset build can't race this one. Held until process exit (OS releases).
+    _lock_fh = _acquire_lock(os.path.join(report_dir, "build.lock"), "dedup_fire_scratch")
 
     log = Logger(args.log_file or os.path.join(report_dir, "dedup.log"))
     log("=== dedup_fire_scratch.py start ===")

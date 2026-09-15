@@ -49,7 +49,7 @@ import os
 DEFAULT_OUT = "model-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.8.0"
+NOTEBOOK_VERSION = "1.9.0"
 
 
 def md(source):
@@ -372,6 +372,8 @@ C_DEDUP = code([
     "# Resumable/reusable: dedup + augment checkpoints are mirrored to <DRIVE>/<VERSION>/state/ and\n",
     "# restored at the start (gated by the sources config md5) so a recycle resumes, not restarts.\n",
     "import os, subprocess, sys, shutil as _sh\n",
+    "# concurrent workers for the dedup + augment steps (I/O + C-extension bound; threads overlap)\n",
+    "WORKERS = min(16, max(2, (os.cpu_count() or 2) * 2))\n",
     "need(os.path.exists(RAW + '/data.yaml'), 'run Cell 5 (build raw pool) first')\n",
     "need(os.path.exists(UPLOAD + '/scripts/dedup_fire_scratch.py'), 'run Cell 4 (unpack bundle) first')\n",
     "need(os.path.exists(UPLOAD + '/scripts/augment_fire_train.py'), 'run Cell 4 (unpack bundle) first')\n",
@@ -423,6 +425,7 @@ C_DEDUP = code([
     "                  '--no-train-self',\n",
     "                  '--run-name', NAME,\n",
     "                  '--report', CLEAN + '_report',\n",
+    "                  '--workers', str(WORKERS),\n",
     "                  '--skip-broken', '--broken-out', '/content/broken'])\n",
     "    if rc != 0:\n",
     "        raise SystemExit('dedup_fire_scratch.py exited ' + str(rc))\n",
@@ -433,7 +436,8 @@ C_DEDUP = code([
     "    # augment EVERY train image (rotation/brightness/contrast/noise/hue/flip); test/val untouched\n",
     "    a = UPLOAD + '/scripts/augment_fire_train.py'\n",
     "    rc = _stream([sys.executable, a,\n",
-    "                  '--clean', CLEAN, '--report', CLEAN + '_report'])\n",
+    "                  '--clean', CLEAN, '--report', CLEAN + '_report',\n",
+    "                  '--workers', str(WORKERS)])\n",
     "    if rc != 0:\n",
     "        raise SystemExit('augment_fire_train.py exited ' + str(rc))\n",
     "    print(open(CLEAN + '_report/augmentation_summary.txt', encoding='utf-8').read())\n",

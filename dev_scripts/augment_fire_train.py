@@ -62,6 +62,8 @@ import os
 import random
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from io import BytesIO
 
 try:
@@ -92,6 +94,37 @@ EXT_FORMAT = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".bmp": "BMP", ".w
 
 def die(msg):
     sys.exit("augment_fire_train: " + msg)
+
+
+def _acquire_lock(path, label):
+    """Take an advisory exclusive lock held for the whole process lifetime.
+
+    Prevents two concurrent invocations from racing on the same clean pool (e.g. the
+    notebook cell re-run by mistake, or a manual augment while dedup is still copying).
+    Uses ``fcntl.flock`` on Linux/macOS (what Colab runs) and ``msvcrt.locking`` on
+    Windows. The OS releases the lock when the process exits, so a second invocation
+    fails fast with a clear message instead of silently corrupting the output.
+    """
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    fh = open(path, "w", encoding="utf-8")
+    try:
+        try:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            # Windows fallback (never exercised on Linux/Colab; msvcrt has no type stubs).
+            import msvcrt
+            locking = getattr(msvcrt, "locking", None)
+            if locking is None:
+                raise RuntimeError("no flock and no msvcrt.locking available")
+            locking(fh.fileno(), getattr(msvcrt, "LK_NBLCK", 1), 1)
+    except OSError:
+        fh.close()
+        die("another process already holds the lock %s (is a previous run still active?)"
+            % path)
+    return fh
 
 
 def stable_seed(stem):
@@ -285,17 +318,107 @@ def rewrite_data_yaml(clean):
     os.replace(tmp, yaml_path)
 
 
+def augment_one(name, img_dir, lbl_dir, aug_img_dir, aug_lbl_dir, journal_snapshot):
+    """Process ONE train image end-to-end; returns (status, rec, op).
+
+    ``status`` is 'skip' (augmented file already in the store) or 'done'. Every stem and
+    destination path is unique to this worker, so no lock is needed here: ``journal_snapshot``
+    is read-only (the REUSE source), and the worker writes only its own ``*.part`` + dst files.
+    """
+    stem = os.path.splitext(name)[0]
+    ext = os.path.splitext(name)[1].lower()
+    src_img = os.path.join(img_dir, stem + ext)
+    src_lbl = os.path.join(lbl_dir, stem + ".txt")
+    dst_img = os.path.join(aug_img_dir, stem + ext)
+    dst_lbl = os.path.join(aug_lbl_dir, stem + ".txt")
+
+    rec = journal_snapshot.get(stem)
+
+    # RESUME: the augmented output already exists -> skip; tidy away a stale original
+    # left by a crash between the atomic write and the original-removal below.
+    if os.path.isfile(dst_img):
+        for p in (src_img, src_lbl):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return "skip", rec, (rec.get("op") if rec else None)
+
+    with open(src_img, "rb") as fh:
+        data = fh.read()
+    src_md5 = md5_bytes(data)
+
+    # REUSE: a known stem keeps its recorded op + parameters; a new stem rolls fresh.
+    if rec is not None and rec.get("op") in OPS:
+        op = rec["op"]
+        params = {k: rec.get(k, DEFAULT_PARAMS[k]) for k in OP_PARAMS}
+    else:
+        seed = stable_seed(stem)
+        rng = random.Random(seed)
+        op = rng.choice(OPS)
+        params = roll_params(op, rng)
+
+    with Image.open(BytesIO(data)) as im:
+        im = im.convert("RGB")
+        w0, h0 = im.size
+        boxes = read_boxes(src_lbl)
+        im, boxes = render_op(im, w0, h0, boxes, op, params, stable_seed(stem))
+
+        fmt = EXT_FORMAT.get(ext, "JPEG")
+        buf = BytesIO()
+        im.save(buf, format=fmt, quality=95)
+        out = buf.getvalue()
+
+    dst_md5 = md5_bytes(out)
+
+    # atomic write of the augmented image + re-derived label, THEN remove the originals
+    # (order matters: only delete the original once its replacement is safely on disk)
+    tmp_img = dst_img + ".part"
+    with open(tmp_img, "wb") as fh:
+        fh.write(out)
+    os.replace(tmp_img, dst_img)
+    write_boxes(dst_lbl, boxes)
+    for p in (src_img, src_lbl):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+    rec = {
+        "stem": stem, "op": op,
+        "rot_deg": round(params["rot_deg"], 4),
+        "flip": params["flip"],
+        "bright": round(params["bright"], 4),
+        "contrast": round(params["contrast"], 4),
+        "hue": round(params["hue"], 4),
+        "sat": round(params["sat"], 4),
+        "noise_sigma": params["noise_sigma"],
+        "src_md5": src_md5, "dst_md5": dst_md5,
+    }
+    return "done", rec, op
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--clean", required=True, help="CLEAN pool produced by dedup_fire_scratch.py")
     ap.add_argument("--report", default=None, help="report dir (default: <clean>_report)")
     ap.add_argument("--seed", type=int, default=0, help="unused (seeds derive from stems)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="worker threads for augmentation (default: min(16, 2*cpu_count); "
+                         "1 = single-threaded)")
     args = ap.parse_args()
+
+    if args.workers is None or args.workers <= 0:
+        args.workers = min(16, max(2, (os.cpu_count() or 4) * 2))
 
     clean = os.path.abspath(args.clean)
     report = os.path.abspath(args.report or (clean + "_report"))
     os.makedirs(report, exist_ok=True)
+
+    # Cross-process guard: the same lock file dedup_fire_scratch.py uses, so a concurrent
+    # dataset build can't race this one. Held until process exit (OS releases).
+    _lock_fh = _acquire_lock(os.path.join(report, "build.lock"), "augment_fire_train")
 
     img_dir = os.path.join(clean, "train", "images")           # originals (dedup output)
     lbl_dir = os.path.join(clean, "train", "labels")
@@ -314,92 +437,35 @@ def main():
     print("augment_fire_train: %d original train images pending (%d with recorded op)"
           % (len(names), known), flush=True)
 
+    # REUSE reads an immutable snapshot: workers never see each other's new records, and the
+    # MAIN thread is the single writer of the journal + counters, so no lock is needed.
+    journal_snapshot = dict(journal)
+    worker = partial(augment_one, img_dir=img_dir, lbl_dir=lbl_dir,
+                     aug_img_dir=aug_img_dir, aug_lbl_dir=aug_lbl_dir,
+                     journal_snapshot=journal_snapshot)
+
     op_counts = Counter()
     done = skipped = 0
 
-    with open(state_path, "a", encoding="utf-8") as jfh:
-        for idx, name in enumerate(names, 1):
-            stem = os.path.splitext(name)[0]
-            ext = os.path.splitext(name)[1].lower()
-            src_img = os.path.join(img_dir, stem + ext)
-            src_lbl = os.path.join(lbl_dir, stem + ".txt")
-            dst_img = os.path.join(aug_img_dir, stem + ext)
-            dst_lbl = os.path.join(aug_lbl_dir, stem + ".txt")
-
-            rec = journal.get(stem)
-
-            # RESUME: the augmented output already exists -> skip; tidy away a stale original
-            # left by a crash between the atomic write and the original-removal below.
-            if os.path.isfile(dst_img):
-                skipped += 1
-                if rec is not None and rec.get("op") in OPS:
+    ex = ThreadPoolExecutor(max_workers=args.workers)
+    try:
+        with open(state_path, "a", encoding="utf-8") as jfh:
+            for idx, (status, rec, op) in enumerate(ex.map(worker, names), 1):
+                if status == "skip":
+                    skipped += 1
+                    if op in OPS:
+                        op_counts[op] += 1
+                else:
+                    journal[rec["stem"]] = rec
+                    jfh.write(json.dumps(rec) + "\n")
+                    jfh.flush()
+                    done += 1
                     op_counts[rec["op"]] += 1
-                for p in (src_img, src_lbl):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
-                continue
-
-            with open(src_img, "rb") as fh:
-                data = fh.read()
-            src_md5 = md5_bytes(data)
-
-            # REUSE: a known stem keeps its recorded op + parameters; a new stem rolls fresh.
-            if rec is not None and rec.get("op") in OPS:
-                op = rec["op"]
-                params = {k: rec.get(k, DEFAULT_PARAMS[k]) for k in OP_PARAMS}
-            else:
-                seed = stable_seed(stem)
-                rng = random.Random(seed)
-                op = rng.choice(OPS)
-                params = roll_params(op, rng)
-
-            with Image.open(BytesIO(data)) as im:
-                im = im.convert("RGB")
-                w0, h0 = im.size
-                boxes = read_boxes(src_lbl)
-                im, boxes = render_op(im, w0, h0, boxes, op, params, stable_seed(stem))
-
-                fmt = EXT_FORMAT.get(ext, "JPEG")
-                buf = BytesIO()
-                im.save(buf, format=fmt, quality=95)
-                out = buf.getvalue()
-
-            dst_md5 = md5_bytes(out)
-
-            # atomic write of the augmented image + re-derived label, THEN remove the originals
-            # (order matters: only delete the original once its replacement is safely on disk)
-            tmp_img = dst_img + ".part"
-            with open(tmp_img, "wb") as fh:
-                fh.write(out)
-            os.replace(tmp_img, dst_img)
-            write_boxes(dst_lbl, boxes)
-            for p in (src_img, src_lbl):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-
-            rec = {
-                "stem": stem, "op": op,
-                "rot_deg": round(params["rot_deg"], 4),
-                "flip": params["flip"],
-                "bright": round(params["bright"], 4),
-                "contrast": round(params["contrast"], 4),
-                "hue": round(params["hue"], 4),
-                "sat": round(params["sat"], 4),
-                "noise_sigma": params["noise_sigma"],
-                "src_md5": src_md5, "dst_md5": dst_md5,
-            }
-            journal[stem] = rec
-            jfh.write(json.dumps(rec) + "\n")
-            jfh.flush()
-            done += 1
-            op_counts[op] += 1
-            if idx % 2000 == 0:
-                print("  ... augmented %d/%d train images (skipped %d)"
-                      % (idx, len(names), skipped), flush=True)
+                if idx % 2000 == 0:
+                    print("  ... augmented %d/%d train images (skipped %d)"
+                          % (idx, len(names), skipped), flush=True)
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
     # compact rewrite (drops duplicate lines an interrupted run may have appended)
     save_journal(journal, state_path)

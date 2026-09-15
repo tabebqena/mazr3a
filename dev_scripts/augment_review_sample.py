@@ -3,7 +3,7 @@
 
 Runs the EXACT augmentation pipeline from augment_fire_train.py on a local sample of images, but
 KEEPS every original NEXT TO its augmented copy (``0001.jpeg`` / ``0001_aug.jpeg``) so you can
-flip between them. Production moves originals into ``train/images_aug`` (to never double the
+flip between them. Production moves originals into ``train_aug/images`` (to never double the
 disk); this REVIEW harness copies the original and never deletes, purely for human inspection.
 
 PROOF OF NO RACING (printed at the end and enforced by assertions):

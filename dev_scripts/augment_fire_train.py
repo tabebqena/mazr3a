@@ -22,11 +22,13 @@ at random, and the applied operation is recorded in <report>/augmentation_report
 NON-DESTRUCTIVE + RESUMABLE + REUSABLE (2026-09-15)
 ---------------------------------------------------
 The ORIGINAL train images (dedup output) live in ``<clean>/train/images`` and are NEVER
-overwritten. Each augmented image is written to the runtime store ``<clean>/train/images_aug``
-(and its re-derived boxes to ``<clean>/train/labels_aug``) via ``*.part`` + ``os.replace``; only
+overwritten. Each augmented image is written to the runtime store ``<clean>/train_aug/images``
+(and its re-derived boxes to ``<clean>/train_aug/labels``) via ``*.part`` + ``os.replace``; only
 AFTER the augmented file is fully written is the original image + label REMOVED, so disk usage
 never doubles (originals shrink as the augmented store grows). ``<clean>/data.yaml`` is updated to
-``train: train/images_aug`` at the end.
+``train: train_aug/images`` at the end. The store MUST keep the literal ``images``/``labels``
+names: ultralytics derives the label dir from the image dir by replacing ``/images/`` with
+``/labels/`` only, so a dir named ``images_aug`` would be treated as its own labels dir.
 
 Every finished image is journalled ONE LINE AT A TIME (append + flush) to
 ``<report>/augmentation_state.jsonl``, so a kill mid-run loses at most the in-flight image. Each
@@ -34,7 +36,7 @@ line records the stem, the chosen ``op`` + its parameters, and two md5s for audi
 (``src_md5`` = original bytes, ``dst_md5`` = augmented bytes).
 
   * RESUME  - the completion marker is the PRESENCE of the augmented file in the runtime store
-              (``train/images_aug/<stem>.<ext>``). A re-run skips any image whose augmented output
+              (``train_aug/images/<stem>.<ext>``). A re-run skips any image whose augmented output
               already exists (tidy-ing away a stale original left by a crash between write and
               remove); images whose original is still present are re-rendered. No md5 comparison
               is used for the skip decision.
@@ -45,7 +47,7 @@ line records the stem, the chosen ``op`` + its parameters, and two md5s for audi
 ``augmentation_report.csv`` and ``augmentation_summary.txt`` are re-derived from the journal, so
 they reflect the true final state even after a resume. There is deliberately NO ``--fresh``:
 augmentation consumes the originals, so "starting over" = re-run the dedup step (which re-copies
-the original bytes) and delete ``<clean>/train/images_aug`` + ``augmentation_state.jsonl``.
+the original bytes) and delete ``<clean>/train_aug`` + ``augmentation_state.jsonl``.
 
 USAGE
 -----
@@ -310,7 +312,7 @@ def rewrite_data_yaml(clean):
     lines = []
     for ln in open(yaml_path, encoding="utf-8"):
         if ln.startswith("train:"):
-            ln = "train: train/images_aug\n"
+            ln = "train: train_aug/images\n"
         lines.append(ln)
     tmp = yaml_path + ".part"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -422,8 +424,11 @@ def main():
 
     img_dir = os.path.join(clean, "train", "images")           # originals (dedup output)
     lbl_dir = os.path.join(clean, "train", "labels")
-    aug_img_dir = os.path.join(clean, "train", "images_aug")   # augmented runtime store
-    aug_lbl_dir = os.path.join(clean, "train", "labels_aug")
+    # NB: the store MUST use the literal ``images``/``labels`` names - ultralytics derives the
+    # label dir from the image dir by replacing ``/images/`` -> ``/labels/`` only, so a dir
+    # named ``images_aug`` would never resolve to ``labels_aug`` (=> "No labels found").
+    aug_img_dir = os.path.join(clean, "train_aug", "images")   # augmented runtime store
+    aug_lbl_dir = os.path.join(clean, "train_aug", "labels")
     if not os.path.isdir(img_dir):
         die("no train/images under --clean (%s)" % clean)
     os.makedirs(aug_img_dir, exist_ok=True)

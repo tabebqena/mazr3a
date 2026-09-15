@@ -49,7 +49,7 @@ import os
 DEFAULT_OUT = "model-training/scratch-model/scratch-v3/fire-scratch-train-colab.ipynb"
 
 # Bump on every notebook change (it is stamped into the notebook title + metadata).
-NOTEBOOK_VERSION = "1.9.0"
+NOTEBOOK_VERSION = "1.10.0"
 
 
 def md(source):
@@ -462,11 +462,13 @@ C_VERIFY = code([
     "EXT = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')\n",
     "with drive_log('07_verify'):\n",
     "    for split in ('train', 'val', 'test'):\n",
-    "        # train is consumed into images_aug/labels_aug by the augment step\n",
-    "        imsub = 'images_aug' if split == 'train' else 'images'\n",
-    "        lbsub = 'labels_aug' if split == 'train' else 'labels'\n",
-    "        idir = os.path.join(CLEAN, split, imsub)\n",
-    "        ldir = os.path.join(CLEAN, split, lbsub)\n",
+    "        # train was augmented into the train_aug split (literal images/labels names)\n",
+    "        if split == 'train':\n",
+    "            idir = os.path.join(CLEAN, 'train_aug', 'images')\n",
+    "            ldir = os.path.join(CLEAN, 'train_aug', 'labels')\n",
+    "        else:\n",
+    "            idir = os.path.join(CLEAN, split, 'images')\n",
+    "            ldir = os.path.join(CLEAN, split, 'labels')\n",
     "        if not os.path.isdir(idir):\n",
     "            print('[%s] (absent)' % split)\n",
     "            continue\n",
@@ -489,7 +491,7 @@ C_VERIFY = code([
     "              % (split, len(imgs), missing, empty,\n",
     "                 ', '.join('%s=%d' % (names.get(k, k), v) for k, v in sorted(cls.items())) or '-'))\n",
     "    # positive (any class) vs background balance of the CLEAN train split\n",
-    "    _ti, _tl = os.path.join(CLEAN, 'train', 'images_aug'), os.path.join(CLEAN, 'train', 'labels_aug')\n",
+    "    _ti, _tl = os.path.join(CLEAN, 'train_aug', 'images'), os.path.join(CLEAN, 'train_aug', 'labels')\n",
     "    _npos = _nbg = 0\n",
     "    for _f in os.listdir(_ti):\n",
     "        _lb = os.path.join(_tl, os.path.splitext(_f)[0] + '.txt')\n",

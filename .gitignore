@@ -1,8 +1,8 @@
 # Secrets - never commit camera credentials
 .env
 config/telegram.conf
-# Portal user credentials + session secret (example committed as portal.conf.example)
-config/portal.conf
+# The portal session secret now lives in the git-ignored portal/.env (covered by
+# the `.env` pattern above); config/portal.conf is a TRACKED default with no secrets.
 
 # Frigate media (recordings, snapshots, cache)
 media/

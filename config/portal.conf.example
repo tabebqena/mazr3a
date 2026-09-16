@@ -1,8 +1,10 @@
 # ============================================================
 # portal - web portal (FastAPI + SPA) tunables for the Frigate +
-# Firewatch stack. Copy to config/portal.conf (git-ignored) and
-# EDIT THE VALUES, then recreate the portal container:
-#     cp config/portal.conf.example config/portal.conf
+# Firewatch stack. config/portal.conf is the TRACKED default (no
+# secrets); this example documents the FULL option set. The session
+# SECRET_KEY is injected from the git-ignored portal/.env
+# (SECRET_KEY=...) via the portal service's env_file. To change
+# values copy this example over config/portal.conf and recreate:
 #     docker compose up -d --force-recreate portal
 #
 # Consumed read-only at /config/portal.conf by the `portal`
@@ -37,6 +39,9 @@ PORTAL_USERS_DB=/media/portal/users.db
 
 # Signs session cookies. REQUIRED - use a long random string:
 #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+# NOTE: this key is NOT kept in config/portal.conf - it is injected from the
+# git-ignored portal/.env (SECRET_KEY=...) via the portal service's env_file.
+# config/portal.conf is a tracked default with no secrets.
 SECRET_KEY=change-me-to-a-long-random-string
 
 # Session cookie lifetime (days) and whether the cookie is Secure-only.

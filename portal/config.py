@@ -8,15 +8,16 @@ with # comments, plus repeated `user` lines:
 Generate a hash line with:  python portal/genpass.py --username NAME
 
 Every option can be overridden by a same-named environment variable prefixed
-PORTAL_ (e.g. PORTAL_FRIGATE_API), which wins. The real file lives at
-/config/portal.conf (git-ignored); a committed example documents every option
-in config/portal.conf.example.
+PORTAL_ (e.g. PORTAL_FRIGATE_API), which wins. The config file lives at
+/config/portal.conf (tracked in git, no secrets). SECRET_KEY additionally
+honours the bare SECRET_KEY env var, injected from the git-ignored portal/.env
+via docker-compose `env_file`; config/portal.conf.example documents every option.
 """
 import os
 
 # Keys are uppercase (config file keys are upper-cased on load).
 DEFAULTS = {
-    "SECRET_KEY": "",                 # signs session cookies (must be set)
+    "SECRET_KEY": "",                 # signs session cookies (from portal/.env via env_file)
     # Runtime user accounts live in the portal's OWN SQLite DB (portal/
     # userstore.py) so add/edit/delete applies with NO container restart. The
     # `user` lines in portal.conf are only a first-run SEED (see parse_file).
@@ -55,8 +56,17 @@ DEFAULTS = {
 
 
 def _env_override(key, value):
-    """Allow PORTAL_<KEY> env to win (matches how firewatch/telegram confs work)."""
-    return os.environ.get("PORTAL_" + key.upper(), value)
+    """Allow PORTAL_<KEY> env to win (matches how firewatch/telegram confs work).
+
+    SECRET_KEY additionally honours the bare SECRET_KEY env var, which is what
+    docker-compose injects from the git-ignored portal/.env (env_file).
+    """
+    env = os.environ.get("PORTAL_" + key.upper())
+    if env is not None:
+        return env
+    if key.upper() == "SECRET_KEY":
+        return os.environ.get("SECRET_KEY", value)
+    return value
 
 
 def parse_file(path):

@@ -305,6 +305,8 @@ services:
                                        # `user` lines are only a first-run seed)
       - ./media:/media                 # firewatch evidence (rw for WAL read) +
                                        # the portal's own media/portal/{usage,users}.db
+    env_file:
+      - ./portal/.env   # SECRET_KEY (git-ignored; keeps the secret out of config/portal.conf)
     environment:
       - PORTAL_CONF=/config/portal.conf
       - PORTAL_LOGS_API=http://logs:8090   # read-only logs sidecar (Debug tab)

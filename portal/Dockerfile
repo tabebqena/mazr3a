@@ -7,7 +7,8 @@
 #
 # Mounts (see docker-compose.yml):
 #   ./portal -> /srv/app/portal:ro   (portal package + static SPA)
-#   ./config -> /config:ro           (portal.conf: users/secret/tunables)
+#   ./config -> /config:ro           (portal.conf: tunables; SECRET_KEY comes
+#                                     from portal/.env via docker-compose env_file)
 #   ./media  -> /media               (firewatch evidence; rw because SQLite WAL
 #                                     readers need -shm/-wal write access)
 # ============================================================

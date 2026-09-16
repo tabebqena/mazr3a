@@ -12,10 +12,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v44` |
-| Last updated | 2026-09-15 |
+| Summary version | `v45` |
+| Last updated | 2026-09-16 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.11.5` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.11.7` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 | Portal notifications | Server-side notification feed + **Notifications** tab with unread badge, browser-Notification gate, and a notification-only `/sw.js` (no fetch/cache handler). See [`plans/portal-notifications.md`](plans/portal-notifications.md) |
 
@@ -145,10 +145,10 @@ with `docker compose up -d` / `docker compose down`.
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
 | Purpose | Login (PBKDF2); **Live view** (MSE-over-WebSocket primary, HLS fallback); **Events** (large player fed by a clip strip with playlist auto-advance); **fire alerts** (cards/lightbox with portal-derived motion + burst-hits badges); **scenereader Episodes / Scenes / Scene log** (read-only via [`portal/eventstore.py`](portal/eventstore.py), plus a **Process now** caption trigger); admin **Debug** tab; runtime account management and per-user bandwidth **usage**. |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py), [`portal/notifstore.py`](portal/notifstore.py), [`portal/userstore.py`](portal/userstore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `sw.js`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
-| Config | [`config/portal.conf`](config/portal.conf) (git-ignored; template [`config/portal.conf.example`](config/portal.conf.example)) |
+| Config | [`config/portal.conf`](config/portal.conf) (tracked default, no secrets; full docs [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/{usage,users,notifications}.db`) |
-| Env | `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB`, `PORTAL_USAGE_DB`, `PORTAL_NOTIF_DB` (defaults under `/media/portal/`) |
+| Env | `SECRET_KEY` from `./portal/.env` (`env_file`, git-ignored); `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB`, `PORTAL_USAGE_DB`, `PORTAL_NOTIF_DB` (defaults under `/media/portal/`) |
 | Access model | Tabs are a set of grantable `tab_*` permissions; an **admin** has every tab implicitly. Accounts are **runtime** records in `media/portal/users.db` — changes apply immediately, **no restart** — seeded once from any `user` line in `portal.conf`. |
 | Quota | Each account carries a per-user egress **quota** (`quota_bytes`, default **5 GiB**, `0` = unlimited), editable in the admin **Manage** tab and shown as a used/quota bar (footer on large screens, collapsed menu on phones). |
 | PWA / Notifications | See the header table; details in [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) and [`plans/portal-notifications.md`](plans/portal-notifications.md). |
@@ -186,7 +186,7 @@ stopped `scenewatch`); the adaptive scene layer is in
 | `scenereader` | [`scenereader/`](scenereader/) (service + modules), [`config/scenereader.conf`](config/scenereader.conf), [`config/places.conf`](config/places.conf), [`models/scene/`](models/scene/) (git-ignored), [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](dev_scripts/deploy/prep_scene_model_llamacpp.sh) |
 | `telegram-bot` | [`scripts/telegram_bot.py`](scripts/telegram_bot.py), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
 | `logs` | [`scripts/container_logs.py`](scripts/container_logs.py) |
-| `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
+| `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf) (secret in git-ignored `portal/.env`); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
 
 ### 3.9 Resource limits (CPU / memory / OOM priority)
 
@@ -310,7 +310,8 @@ sudo apt install -y git python3
 | [`config/heartbeat.conf`](config/heartbeat.conf) | Disk heartbeat global cap (`FS_PATH`, `MIN_FREE_GB`, `RELIEF_FREE_GB`, …) |
 | [`config/stores/*.conf`](config/stores/) | Per-service cleanup profiles |
 | [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf) | MQTT broker |
-| [`config/portal.conf.example`](config/portal.conf.example) | Portal template (secret + tunables; `user` lines are a first-run seed) |
+| [`config/portal.conf`](config/portal.conf) | Portal default tunables (tracked, no secrets) |
+| [`config/portal.conf.example`](config/portal.conf.example) | Portal full option documentation (secret note + `user` seed lines) |
 | [`config/telegram.conf.example`](config/telegram.conf.example) | Telegram template (creds + tunables) |
 | [`config/cleanup_firewatch.conf`](config/cleanup_firewatch.conf) | firewatch store cleanup tunables (worker) |
 | [`config/cleanup_media.conf`](config/cleanup_media.conf) | **SUPERSEDED** reference only |
@@ -321,7 +322,7 @@ sudo apt install -y git python3
 |---|---|
 | `.env` | Camera RTSP credentials (`FRIGATE_*`) |
 | `config/telegram.conf` | Bot token + `CHAT_ID`(s) + tunables |
-| `config/portal.conf` | Portal `SECRET_KEY` + tunables (the `user` seed lines are optional now) |
+| `portal/.env` | Portal `SECRET_KEY` (injected via the portal service's `env_file`) |
 | `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the scenereader **text** store (`media/events/`) + the portal's own `media/portal/{usage,users,notifications}.db` + watchdog CSVs |
 | `mosquitto/data/`, `mosquitto/log/` | Broker runtime state |
 | `models/fire/versions/` | Versioned fire-model archive |
@@ -335,7 +336,9 @@ sudo apt install -y git python3
   `cam08` (Hikvision) uses separate `FRIGATE_HIK_RTSP_USER/PASS`.
 - **Telegram:** shared git-ignored `config/telegram.conf`; `CHAT_ID` accepts a
   comma-separated recipient list.
-- **Portal:** git-ignored `config/portal.conf` holds `SECRET_KEY` + tunables.
+- **Portal:** git-ignored `portal/.env` holds `SECRET_KEY` (injected via the
+  portal service's `env_file`); `config/portal.conf` is a tracked default that
+  holds the tunables.
   Accounts are **runtime** records in `media/portal/users.db`, managed from the
   portal **Account**/**Manage** tabs (no restart) and seeded once from a `user`
   line (`python portal/genpass.py --username NAME`). Each account carries a

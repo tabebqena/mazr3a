@@ -135,3 +135,13 @@ prompt.txt
 notebooks/
 models/firemodel-training/scratch-model/scratch-v3/uploads/*
 models/firemodel-training/scratch-model/*/*/scripts.zip
+
+# Fire-model training artifacts (large + machine-local, not deploy artifacts).
+# Removed from git tracking 2026-09-16 to shrink repo history growth:
+#   * pretrained checkpoints are re-downloadable,
+#   * training logs + dataset fingerprints are regenerable.
+# The ACTIVE deploy set (models/fire/best.* + models/coco/) stays TRACKED - the
+# git deploy (dev_scripts/deploy_all.sh) ships those via `git pull`.
+models/firemodel-training/pretrained/pretrained-models/*
+models/firemodel-training/scratch-model/**/*.log
+models/firemodel-training/scratch-model/fingerprints/

@@ -54,9 +54,14 @@ mqtt:
 # Registers each camera's low-res detect substream with go2rtc, which
 # enables: RTSP restream on 8554 (<cam>), the go2rtc UI (1984),
 # /api/go2rtc/streams, and MSE live for the web portal + Frigate UI.
-# go2rtc pulls a camera ONLY while a viewer is connected (on-demand)
-# and remuxes H.264 to the client (the browser decodes - no host
-# re-encode). Same detect substreams Frigate already decodes.
+# Since 2026-10-02 Frigate's own detect input points at these streams
+# (`rtsp://127.0.0.1:8554/<cam>`, see the cameras block), so each camera is
+# pulled continuously (one connection per camera, shared by Frigate and the
+# portal) instead of on-demand. A brief camera drop is reconnected by go2rtc
+# while Frigate's ffmpeg stays on the stable local stream. go2rtc is supervised
+# by s6 inside the Frigate image (s6-supervise go2rtc), so a crash self-restarts.
+# It remuxes H.264 to the client (the browser decodes - no host re-encode). Same
+# detect substreams Frigate already decodes.
 # Credentials: use python-str.format {FRIGATE_*} placeholders (matching the
 # ffmpeg input paths below). Frigate's /usr/local/go2rtc/create_config.py runs
 # stream.format(**FRIGATE_ENV_VARS) over this block, so go2rtc-style ${VAR}
@@ -306,17 +311,27 @@ motion:
 # Cameras - 10 total (detect-only; cam10 added 2026-09-06)
 # UNV:       detect substream /media/video2 (640x360@12)
 # Hikvision: detect substream /Streaming/Channels/102
-# RTSP user/pass come from .env -> container env -> the {FRIGATE_...}
-# placeholders in each path below (Frigate 0.17 str.format()).
-# Do NOT write plaintext credentials here; change them in .env only.
+#
+# SOURCE = LOCAL go2rtc RESTREAM (2026-10-02). Every camera's detect input is
+# `rtsp://127.0.0.1:8554/<cam>`, fed by the same-named stream in the
+# go2rtc.streams block above. go2rtc owns the single connection to each camera
+# and reconnects it on its own; Frigate reads a stable local stream, so a brief
+# camera drop no longer crashes Frigate's ffmpeg pipeline (the previous direct
+# `rtsp://...@192.168.1.20X` inputs did). `preset-rtsp-restream` is the matching
+# input preset (-rtsp_transport tcp). The camera URLs + the {FRIGATE_*}
+# credentials now live ONLY in go2rtc.streams.
+# The portal's Live view is unaffected: it uses the <cam>_portal variants, which
+# derive from these same base streams (portal/app.py LIVE_SOURCE_SUFFIX).
+# Do NOT write plaintext credentials here; they live in .env only.
 # Main streams are NOT pulled in Phase 0 (recording disabled).
 # ------------------------------------------------------------------
 cameras:
   cam01:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.200:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam01); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam01
+          input_args: preset-rtsp-restream
           roles: [detect]
     objects:
       track:
@@ -379,8 +394,9 @@ cameras:
   cam02:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.201:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam02); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam02
+          input_args: preset-rtsp-restream
           roles: [detect]
     objects:
       track:
@@ -419,8 +435,9 @@ cameras:
   cam03:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.202:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam03); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam03
+          input_args: preset-rtsp-restream
           roles: [detect]
     objects:
       track:
@@ -468,8 +485,9 @@ cameras:
   cam04:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.203:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam04); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam04
+          input_args: preset-rtsp-restream
           roles: [detect]
     # Farm view (cows/sheep normally present). Track the COCO farm animals so
     # they are LABELLED correctly instead of surfacing as `person`, and raise
@@ -531,8 +549,9 @@ cameras:
   cam05:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.204:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam05); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam05
+          input_args: preset-rtsp-restream
           roles: [detect]
     # Farm view (cows/sheep normally present). Track the COCO farm animals so
     # they are LABELLED correctly instead of surfacing as `person`, and raise
@@ -595,8 +614,9 @@ cameras:
   cam06:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.205:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam06); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam06
+          input_args: preset-rtsp-restream
           roles: [detect]
     # Farm view (cows/sheep normally present). Track the COCO farm animals so
     # they are LABELLED correctly instead of surfacing as `person`, and raise
@@ -655,8 +675,9 @@ cameras:
   cam07:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.206:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam07); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam07
+          input_args: preset-rtsp-restream
           roles: [detect]
     # Farm view (cows/sheep normally present). Track the COCO farm animals so
     # they are LABELLED correctly instead of surfacing as `person`, and raise
@@ -725,8 +746,9 @@ cameras:
   cam08:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_HIK_RTSP_USER}:{FRIGATE_HIK_RTSP_PASS}@192.168.1.207:554/Streaming/Channels/102
+        # via local go2rtc restream (go2rtc.streams.cam08); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam08
+          input_args: preset-rtsp-restream
           roles: [detect]
     objects:
       track:
@@ -752,8 +774,9 @@ cameras:
   cam09:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.208:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam09); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam09
+          input_args: preset-rtsp-restream
           roles: [detect]
     objects:
       track:
@@ -785,8 +808,9 @@ cameras:
   cam10:
     ffmpeg:
       inputs:
-        - path: 
-            rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASS}@192.168.1.209:554/media/video2
+        # via local go2rtc restream (go2rtc.streams.cam10); see the cameras header.
+        - path: rtsp://127.0.0.1:8554/cam10
+          input_args: preset-rtsp-restream
           roles: [detect]
     objects:
       track:

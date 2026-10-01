@@ -12,8 +12,8 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v45` |
-| Last updated | 2026-09-16 |
+| Summary version | `v46` |
+| Last updated | 2026-10-02 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.7` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
@@ -43,7 +43,8 @@ core, with purpose-built side services around it:
   events, fire alerts, scene descriptions) published via a Cloudflare Tunnel.
 - **mqtt** (Mosquitto) is the event broker.
 - Host **cron** runs the unified disk heartbeat, a CPU-temp + iGPU watchdog, a
-  daily health report and a state sampler.
+  per-camera offline watchdog, a daily health report, a daily Frigate restart
+  (memory sawtooth reset) and a state sampler.
 
 Roadmap context: this is **Phase 0/1a plus the event-driven episode narrator**
 (`scenereader`, §3.7). Still deferred: the portal Episodes digest, person
@@ -86,7 +87,7 @@ with `docker compose up -d` / `docker compose down`.
 | Volumes | `./config:/config` · `./media:/media/frigate` · `./models:/models:ro` · tmpfs `/tmp/cache` (1 GB) |
 | Device / limits | `/dev/dri/renderD128`; `shm_size: 256mb` |
 | Zones | **11 zone polygons** across cam01/cam02/cam03/cam06/cam09, drawn in the Frigate UI. `scenereader` maps them to sub-place names via `ZONE_PLACES` in [`config/places.conf`](config/places.conf). |
-| Notes | Event-only recording (detect substream); software decode. **`config/config.yaml` is the CANONICAL copy of the host file** — the Frigate UI rewrites it, so after ANY UI edit it must be re-adopted verbatim into the repo, or the next `git pull --ff-only` refuses to run. |
+| Notes | Event-only recording (detect substream); software decode. **Detect source = local go2rtc restream** (`rtsp://127.0.0.1:8554/<cam>`, `preset-rtsp-restream`) — go2rtc owns the single camera connection and reconnects brief drops; the portal's `<cam>_portal` sources are unaffected. **`config/config.yaml` is the CANONICAL copy of the host file** — the Frigate UI rewrites it, so after ANY UI edit it must be re-adopted verbatim into the repo, or the next `git pull --ff-only` refuses to run. |
 
 ### 3.2 `mqtt` — Mosquitto broker
 | | |
@@ -224,6 +225,8 @@ Set in [`docker-compose.yml`](docker-compose.yml). `cpus` is a hard CFS quota an
 | [`machine-monitor.py`](scripts/machine-monitor.py) | `dr` cron (1 min) | CPU-temp watchdog (CRITICAL + WARM tiers) → Telegram; reports live iGPU usage/temp |
 | [`machine-status.py`](scripts/machine-status.py) | `dr` cron (daily 08:00) | Daily host + Frigate health report → Telegram |
 | [`watchdog_baseline.py`](scripts/watchdog_baseline.py) | `dr` cron (1 min, `--cron`) | Machine/Frigate state sampler → size-capped CSV |
+| [`camera_monitor.py`](scripts/camera_monitor.py) | `dr` cron (2 min) | Per-camera offline/recovery watchdog → Telegram; flags all-cameras-offline (go2rtc/stack) + Frigate API outage |
+| [`restart_frigate.py`](scripts/restart_frigate.py) | `dr` cron (daily 04:00) | Daily Frigate restart to reset the CPython/THP memory sawtooth (quiet; Telegram on failure; optional `MAX_LOADAVG` gate) |
 | [`telegram_notify.py`](scripts/telegram_notify.py) | library | Shared Telegram Bot API helpers (all senders) |
 | [`telegram_bot.py`](scripts/telegram_bot.py) | `telegram-bot` service | On-demand `/status` command responder |
 | [`container_logs.py`](scripts/container_logs.py) | `logs` service | Read-only Docker-logs sidecar API |
@@ -255,6 +258,8 @@ crontab -l; sudo crontab -l                # confirm both
 | `* * * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/machine-monitor.py` | CPU-temp + iGPU watchdog (every-minute sampling is required for ~1-min hot spikes) |
 | `0 8 * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/machine-status.py` | Daily health report |
 | `* * * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre` | State sampler → bounded CSV |
+| `*/2 * * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/camera_monitor.py` | Per-camera offline/recovery watchdog |
+| `0 4 * * *` | `/usr/bin/python3 /home/dr/frigate/scripts/restart_frigate.py` | Daily Frigate restart (memory sawtooth reset) |
 
 > Adjust `/home/dr/frigate` if the host deploy dir differs. Each job logs/alerts
 > itself, so cron output is sent to `/dev/null`.

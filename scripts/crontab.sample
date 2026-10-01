@@ -35,3 +35,17 @@
 # quality change, then "after_bump" once it's applied. CSV rows are bounded by
 # --max-rows (default 20000).
 * * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre >> /dev/null 2>&1
+
+# Per-camera offline watchdog (python) - every 2 minutes
+# Alerts (Telegram) when a camera's Frigate camera_fps stays 0 for CAMERA_OFFLINE_HITS
+# runs (default 3), and reports recovery after CAMERA_ONLINE_HITS (default 2).
+# ALL cameras offline is flagged as a stack issue (Frigate/go2rtc/network), and a
+# Frigate API outage is alerted too. Debounced, so the 04:00 Frigate restart and
+# brief drops do not spam. See plans/camera-resilience-and-frigate-restart.md.
+*/2 * * * * /usr/bin/python3 /home/dr/frigate/scripts/camera_monitor.py >> /dev/null 2>&1
+
+# Daily Frigate restart (python) - 04:00
+# Resets the CPython/THP memory sawtooth (measured 2.90 -> 1.56 GiB). Quiet on
+# success; Telegram alert on failure. Set MAX_LOADAVG (env or telegram.conf) to
+# skip when the host is busy. Remove this line once THP=madvise is persistent.
+0 4 * * * /usr/bin/python3 /home/dr/frigate/scripts/restart_frigate.py >> /dev/null 2>&1

@@ -12,7 +12,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v46` |
+| Summary version | `v47` |
 | Last updated | 2026-10-02 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.7` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
@@ -246,6 +246,15 @@ sudo crontab scripts/crontab.root.sample   # ROOT  — disk heartbeat
 crontab scripts/crontab.sample             # dr    — monitor / report / sampler
 crontab -l; sudo crontab -l                # confirm both
 ```
+
+> **User ownership.** ALL non-root host jobs (CPU-temp/iGPU watchdog, camera
+> watchdog, daily health report, daily Frigate restart, state sampler) run as
+> **`dr`**, the deploy owner — not the `ai` edit user. The `ai` crontab must be
+> **EMPTY** (`sudo crontab -u ai -r`). One-time migration note: the state/CSV
+> files those scripts write may still be owned by `ai`, which `dr` cannot
+> overwrite — `chown` them to `dr` (or delete them). See the MIGRATION block in
+> [`scripts/crontab.sample`](scripts/crontab.sample). The ROOT heartbeat crontab
+> is separate and stays ROOT.
 
 ### 5.1 root crontab — [`scripts/crontab.root.sample`](scripts/crontab.root.sample)
 | Schedule | Command | Purpose |

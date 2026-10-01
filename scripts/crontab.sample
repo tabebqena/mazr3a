@@ -11,6 +11,19 @@
 # Each job handles its own logging/alerting, so cron output is
 # sent to /dev/null. Adjust /home/dr/frigate if the host deploy
 # dir differs.
+#
+# USER OWNERSHIP: every monitoring/report/sampler/restart job runs as dr (the
+# deploy owner) - NOT the `ai` edit user. The `ai` crontab must be EMPTY.
+# MIGRATION from the legacy `ai` crontab (2026-10-02):
+#   1. install as dr:        crontab /home/dr/frigate/scripts/crontab.sample
+#   2. empty the ai crontab:  sudo crontab -u ai -r
+#   3. state/CSV files these scripts write are still owned by `ai`; dr cannot
+#      write an ai-owned 664 file, so either chown (keeps history) or delete:
+#        sudo chown dr:dr /home/dr/frigate/machine-monitor.state \
+#          /home/dr/frigate/media/watchdog/watchdog_baseline_baseline_pre.csv \
+#          /home/dr/frigate/media/watchdog/watchdog_baseline_baseline_pre.stat
+#        # or: rm -f those files  (the CSV history is lost; dr recreates them)
+# The ROOT heartbeat crontab is separate and must stay ROOT.
 # ============================================================
 
 # CPU temperature watchdog (python) - EVERY MINUTE (was */10)
@@ -34,7 +47,7 @@
 # distinct --tag per comparison window - e.g. "baseline_pre" before a stream
 # quality change, then "after_bump" once it's applied. CSV rows are bounded by
 # --max-rows (default 20000).
-* * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre >> /dev/null 2>&1
+* * * * * /usr/bin/python3 /home/dr/frigate/scripts/watchdog_baseline.py --cron --tag baseline_pre --out /home/dr/frigate/media/watchdog >> /dev/null 2>&1
 
 # Per-camera offline watchdog (python) - every 2 minutes
 # Alerts (Telegram) when a camera's Frigate camera_fps stays 0 for CAMERA_OFFLINE_HITS

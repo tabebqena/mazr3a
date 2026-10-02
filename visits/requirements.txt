@@ -1,0 +1,6 @@
+# visits runtime dependencies (image only).
+# Deliberately tiny: there is NO model and NO VLM. Pillow decodes the
+# `-clean.webp` crop; numpy builds the clothing-colour histogram. Frigate REST
+# and the SQLite store use the Python standard library (urllib/sqlite3).
+numpy>=1.24,<3
+Pillow>=9.1,<12

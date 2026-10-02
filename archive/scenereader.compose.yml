@@ -1,0 +1,81 @@
+# ============================================================
+# ARCHIVED compose definition for the retired `scenereader` service.
+#
+# Removed from the root docker-compose.yml on 2026-10-02 so that a normal
+# `docker compose up -d --build` can never build or start it again by accident.
+# See archive/README.md for how to restore it.
+#
+# NOTE: volume paths below are written relative to the REPO ROOT (where the root
+# compose file lives) - this is a fragment meant to be merged back under the
+# root file's `services:` key, not run from inside archive/.
+# ============================================================
+services:
+  # ------------------------------------------------------------------
+  # scenereader - cross-camera episode narrator (see plans/event-scene-reader.md).
+  # REPLACES the stopped scenewatch (plans/scene-description.md), which
+  # over-subscribed the CPU with a 15 s per-camera sweep and held a 2B VLM in RAM.
+  #
+  # It does NOT re-detect and does NOT sweep frames. Frigate already detected, so
+  # this service only reads what Frigate produced:
+  #   * the snapshot JPEGs/WebPs in Frigate's OWN media tree - read IN PLACE and
+  #     never copied (host ./media IS Frigate's /media/frigate);
+  #   * the matching `event` row in ./config/frigate.db, joined by the EXACT
+  #     event id carried in the snapshot filename, opened READ-ONLY.
+  # From those it writes a per-camera sentence and links cameras into person
+  # episodes ("Person A entered Field 1 (cam04) at 22:36; then went to Store").
+  #
+  # COST: a tiny periodic disk scan, plus a small (<=500M GGUF) VLM caption batch
+  # that runs ONLY when the idle governor (host loadavg + CPU temp) is open and is
+  # bounded by MAX_EVENTS_PER_RUN/MAX_RUN_SECONDS. The model is NOT kept resident
+  # (MODEL_KEEP_LOADED=false): it is loaded only inside a caption batch and freed
+  # right after, to lower host RAM (restore true if caption latency matters more).
+  #
+  # MODEL SWITCHING: the previously-downloaded Qwen2-VL-2B OpenVINO IR stays in
+  # ./models/scene (git-ignored, KEPT - never deleted/re-downloaded) and is
+  # selected with MODEL_BACKEND=openvino, no re-download and no rebuild. The small
+  # GGUF + llama.cpp binaries are fetched by
+  # dev_scripts/prep_scene_model_llamacpp.sh.
+  #
+  # Code/config are mounted read-only so edits need only
+  # `docker compose restart scenereader`. It writes ONLY its text store under
+  # ./media/events (plus the portal's trigger/status/names files).
+  # NOTE: no /proc or /sys bind mount is needed. The container's own /proc/loadavg
+  # is host-wide, and its NATIVE read-only /sys/class/hwmon exposes coretemp -
+  # bind-mounting host /sys breaks hwmon's relative symlinks (see
+  # plans/telegram-bot-cpu-temp-n-a.md).
+  # ------------------------------------------------------------------
+  scenereader:
+    container_name: scenereader
+    build: ./scenereader
+    restart: unless-stopped
+    # 1 of 8 cores: a periodic disk scan plus a short, bounded caption batch -
+    # not a continuous sweep. Raise only if the drain is starved, never to 4.
+    cpus: "1.0"
+    # A CEILING, not a reservation: the small default model uses ~0.5-0.7 GB, so
+    # this costs nothing in normal operation - but 3g leaves room to switch to the
+    # RETAINED 2B OpenVINO backend (config/scenereader.conf MODEL_BACKEND=openvino,
+    # ~2 GB resident) without also having to edit compose. `oom_score_adj: 200`
+    # below still makes this the FIRST victim under real memory pressure, so the
+    # wider ceiling does not put Frigate at risk.
+    mem_limit: 3g
+    # Prefer this container over Frigate when memory really runs out (below
+    # Frigate's -500; the sidecar/portal defaults of 0 are between them).
+    oom_score_adj: 200
+    volumes:
+      - ./scenereader:/scenereader:ro   # scenereader.py + its modules
+      - ./config:/config:ro             # scenereader.conf, places.conf, frigate.db
+      - ./models:/models:ro             # small GGUF, llama.cpp bin, retained 2B IR
+      # Frigate's frames are read IN PLACE from this tree, and the TEXT store
+      # lives in its own subdir so it never mixes with Frigate media:
+      #   /media/events/{events.db,reader_status.json,.drain_request,names.json}
+      # rw is required for the SQLite WAL files and the portal's trigger file.
+      - ./media:/media
+    environment:
+      - SCENEREADER_CONF=/config/scenereader.conf
+      - PLACES_CONF=/config/places.conf
+      - FRIGATE_API=http://frigate:5000   # compose network: frigate service
+      - FRIGATE_DB=/config/frigate.db
+      - FRIGATE_MEDIA_DIR=/media
+      - STORE_DIR=/media/events
+    depends_on:
+      - frigate

@@ -12,7 +12,7 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v47` |
+| Summary version | `v48` |
 | Last updated | 2026-10-02 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.7` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
@@ -31,12 +31,14 @@ core, with purpose-built side services around it:
   **go2rtc** live restream, and publishes MQTT events.
 - **firewatch** runs an out-of-band fire/smoke model on Frigate's already-decoded
   detect frames and sends Telegram photo alerts + stores evidence.
-- **scenereader** (replaced `scenewatch`) reads the capture events Frigate
-  already produced — snapshots read **in place** from Frigate's media tree,
-  joined by **exact event id** to `config/frigate.db` (read-only) — writes a
-  deterministic per-camera sentence, links cameras into cross-camera **person
-  episodes** using a place map + adjacency, and optionally captions frames with
-  a **small (≤500M) GGUF** model during an **idle-gated, bounded** batch.
+- **visits** (replaced the archived `scenereader`) turns Frigate's person events
+  into **one text line per visit, per camera** (`Estraha (cam01)  Field West
+  person #2  14:32-14:36  4 min`) using **no model**: it reads Frigate through
+  its **REST API only** (never the DB), crops the person from the mounted media
+  tree for a cheap **clothing-colour histogram**, separates people by histogram
+  + motion direction, and retires an open presence after 4 h of no person
+  events. The old `scenereader` code is kept in `scenereader/`; its compose
+  definition is archived in `archive/scenereader.compose.yml`.
 - **telegram-bot** answers `/status`, `/help`, `/start` live from Telegram.
 - **logs** is a read-only Docker-logs sidecar for the portal's admin Debug tab.
 - **portal** is an authenticated FastAPI + vanilla-JS SPA (login, live view,
@@ -46,8 +48,9 @@ core, with purpose-built side services around it:
   per-camera offline watchdog, a daily health report, a daily Frigate restart
   (memory sawtooth reset) and a state sampler.
 
-Roadmap context: this is **Phase 0/1a plus the event-driven episode narrator**
-(`scenereader`, §3.7). Still deferred: the portal Episodes digest, person
+Roadmap context: this is **Phase 0/1a plus the per-camera visit log**
+(`visits`, §3.7). Still deferred: the day-summary digest, worker-vs-guest
+signalling, cross-camera person linking, person naming, the portal digest, person
 attributes, face names and gait (see [§12](#12-deferred--future-phases)).
 
 ---
@@ -86,7 +89,7 @@ with `docker compose up -d` / `docker compose down`.
 | Ports | `5000` HTTP UI/API · `8971` TLS UI · `8554` RTSP restream · `8555` tcp+udp WebRTC |
 | Volumes | `./config:/config` · `./media:/media/frigate` · `./models:/models:ro` · tmpfs `/tmp/cache` (1 GB) |
 | Device / limits | `/dev/dri/renderD128`; `shm_size: 256mb` |
-| Zones | **11 zone polygons** across cam01/cam02/cam03/cam06/cam09, drawn in the Frigate UI. `scenereader` maps them to sub-place names via `ZONE_PLACES` in [`config/places.conf`](config/places.conf). |
+| Zones | **11 zone polygons** across cam01/cam02/cam03/cam06/cam09, drawn in the Frigate UI. `visits` maps them to sub-place names via `ZONE_PLACES` in [`config/places.conf`](config/places.conf). |
 | Notes | Event-only recording (detect substream); software decode. **Detect source = local go2rtc restream** (`rtsp://127.0.0.1:8554/<cam>`, `preset-rtsp-restream`) — go2rtc owns the single camera connection and reconnects brief drops; the portal's `<cam>_portal` sources are unaffected. **`config/config.yaml` is the CANONICAL copy of the host file** — the Frigate UI rewrites it, so after ANY UI edit it must be re-adopted verbatim into the repo, or the next `git pull --ff-only` refuses to run. |
 
 ### 3.2 `mqtt` — Mosquitto broker
@@ -144,7 +147,7 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2); **Live view** (MSE-over-WebSocket primary, HLS fallback); **Events** (large player fed by a clip strip with playlist auto-advance); **fire alerts** (cards/lightbox with portal-derived motion + burst-hits badges); **scenereader Episodes / Scenes / Scene log** (read-only via [`portal/eventstore.py`](portal/eventstore.py), plus a **Process now** caption trigger); admin **Debug** tab; runtime account management and per-user bandwidth **usage**. |
+| Purpose | Login (PBKDF2); **Live view** (MSE-over-WebSocket primary, HLS fallback); **Events** (large player fed by a clip strip with playlist auto-advance); **fire alerts** (cards/lightbox with portal-derived motion + burst-hits badges); **legacy scenereader Episodes / Scenes / Scene log** (read-only via [`portal/eventstore.py`](portal/eventstore.py) — the archived store, no longer updated); admin **Debug** tab; runtime account management and per-user bandwidth **usage**. |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py), [`portal/notifstore.py`](portal/notifstore.py), [`portal/userstore.py`](portal/userstore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `sw.js`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
 | Config | [`config/portal.conf`](config/portal.conf) (tracked default, no secrets; full docs [`config/portal.conf.example`](config/portal.conf.example)) |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
@@ -155,28 +158,30 @@ with `docker compose up -d` / `docker compose down`.
 | PWA / Notifications | See the header table; details in [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) and [`plans/portal-notifications.md`](plans/portal-notifications.md). |
 | Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy forwards `Range` (relays `206`) so the player can seek. Responsive UI: phones collapse the nav into a `#nav-toggle` hamburger; landscape has dedicated Live/Events layouts; centre play/stop overlays on the video. |
 
-### 3.7 `scenereader` — cross-camera episode narrator
+### 3.7 `visits` — per-camera person-visit log
 
-See [`plans/event-scene-reader.md`](plans/event-scene-reader.md) (replaced the
-stopped `scenewatch`); the adaptive scene layer is in
-[`plans/adaptive-scene-narrative.md`](plans/adaptive-scene-narrative.md).
+See [`plans/visit-log.md`](plans/visit-log.md). Replaces the **archived**
+`scenereader` (its compose definition now lives in
+[`archive/scenereader.compose.yml`](archive/scenereader.compose.yml); the
+`scenereader/` code is retained but not built or started by a normal deploy —
+see [`archive/README.md`](archive/README.md)).
 
 | | |
 |---|---|
-| Container | `scenereader` |
-| Image | **built** from [`scenereader/Dockerfile`](scenereader/Dockerfile) (`python:3.11-slim` + `openvino-genai`, `numpy`, `Pillow`); unprivileged uid 1000 |
-| Purpose | Read Frigate's own captures (never re-detecting), write a deterministic per-camera sentence, then link cameras into anonymous **person episodes** with an EN + AR narrative. Groups events into per-camera **adaptive scenes** (L1) and uses each object's own trajectory to decide who MOVED. |
-| Dev files | [`scenereader/scenereader.py`](scenereader/scenereader.py) (service), [`frigate.py`](scenereader/frigate.py), [`store.py`](scenereader/store.py), [`episodes.py`](scenereader/episodes.py), [`scenes.py`](scenereader/scenes.py), [`describe.py`](scenereader/describe.py), [`captioners.py`](scenereader/captioners.py), models [`models/scene/`](models/scene/) (git-ignored) |
-| Config | [`config/scenereader.conf`](config/scenereader.conf) + [`config/places.conf`](config/places.conf) (episode shape, scene/movement tuning, caption cost, model backend) |
-| Frame source | Read **in place, never copied** — host `./media` IS Frigate's `/media/frigate`; snapshots are `clips/<camera>-<event_id>.jpg` with a `-clean.webp` sibling (no `media/snapshots/`). |
-| Metadata source | `FRIGATE_METADATA_SOURCE=db` (default): `config/frigate.db`, **read-only**, joined by the exact event id. `api`/`auto` fall back to `/api/events/<id>`. |
-| Model | **`MODEL_BACKEND` switch**: `llamacpp` (default) = small **SmolVLM2-500M GGUF + mmproj** captioned **load-per-batch** (`MODEL_KEEP_LOADED=false` → one-shot `llama-mtmd-cli`, ~0.5–0.7 GB only during a batch, not resident); `openvino` = the **retained** Qwen2-VL-2B INT4 IR (~2 GB). Config-only switch. |
-| Model prerequisite | **NOT deployed by git.** Small GGUF: [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](dev_scripts/deploy/prep_scene_model_llamacpp.sh) (add-only). Retained IR: [`dev_scripts/deploy/prep_scene_model.sh`](dev_scripts/deploy/prep_scene_model.sh). See [`models/scene/README.md`](models/scene/README.md). |
-| Store | `./media/events/` — **text only**: `events.db` (WAL: events + episodes + visits + aliases + scenes + scene_events), `reader_status.json`, `.drain_request`, `names.json`, `.scenereader-*.lock`. **No image copies anywhere.** |
-| Volumes | `./scenereader:/scenereader:ro` · `./config:/config:ro` · `./models:/models:ro` · `./media:/media` (rw) |
+| Container | `visits` |
+| Image | **built** from [`visits/Dockerfile`](visits/Dockerfile) (`python:3.11-slim` + `numpy`, `Pillow`); unprivileged uid 1000. **No model / no VLM / no OpenVINO.** |
+| Purpose | Turn Frigate's person events into **one text line per visit, per camera** with duration. Identity = a per-camera open presence, retired after `INACTIVITY_S` (4 h) of no person events; different people separated by a cheap clothing-colour **histogram + motion direction**. |
+| Dev files | [`visits/visits.py`](visits/visits.py) (service + CLI), [`visits/requirements.txt`](visits/requirements.txt) |
+| Config | [`config/visits.conf`](config/visits.conf) (poll/merge/identity/significance/retention) + [`config/places.conf`](config/places.conf) (camera/zone → place names) |
+| Metadata source | **Frigate REST only** (`/api/events`) — deliberately NOT the Frigate SQLite DB. |
+| Frame source | Read **in place, never copied** from `./media` (`<cam>-<event_id>-clean.webp`) to crop the person via `data.box`. |
+| Motion direction | Derived from Frigate `data.path_data` (first→last point); `data.velocity_angle` is always 0 for events and is unused. |
+| Load reduction | "Significant" is decided from metadata only (trajectory span / box near a frame edge). Significant events are histogrammed at once; insignificant ones are buffered and analysed once `INSIGNIFICANT_COUNT_THRESHOLD` accumulate. Stationary, non-edge visits are stored with `significant=0` and left out of the log. |
+| Store | `./media/visits/` — **text only**: `visits.db` (WAL: cached `events` + `visits` + `visit_events`) and `.cursor`. **No image copies.** |
+| Volumes | `./visits:/visits:ro` · `./config:/config:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
-| Concurrency | Short locks, one writer: a flock guard refuses a second `scheduler` (exit 3) and overlapping manual commands; the store write lock is held for milliseconds (per-item commit); `--check`/`--status` open the store read-only. |
-| Notes | Edits need only `docker compose restart scenereader`. No host cron — the in-container scheduler scans `clips/` and rebuilds episodes on fixed intervals (both rebuildable from `events`); the only expensive step (the VLM caption batch) is **idle-gated** (host loadavg + CPU temp) and bounded by `MAX_EVENTS_PER_RUN`/`MAX_RUN_SECONDS`. Every event is scored 0-100 into a `tier`. |
+| CLI | `--check` (read-only probe), `--once`, `--list [--day YYYY-MM-DD] [--all]`, `--status` |
+| Notes | Edits need only `docker compose restart visits`. No host cron — the in-container scheduler polls every `POLL_EVERY_S` (60 s). Everything derived is rebuildable from the cached `events`; histograms are cached per event, so threshold changes cost no re-crop. Cross-camera linking, naming, worker-vs-guest and the day-summary digest are **deferred**. |
 
 ### 3.8 Service → development-file map (quick lookup)
 | Service | Primary code / config in repo |
@@ -184,7 +189,8 @@ stopped `scenewatch`); the adaptive scene layer is in
 | `frigate` | [`config/config.yaml`](config/config.yaml), [`models/coco/`](models/coco/), `docker-compose.yml`, `.env` |
 | `mqtt` | [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf) |
 | `firewatch` | [`firewatch/firewatch.py`](firewatch/firewatch.py), [`config/firewatch.conf`](config/firewatch.conf), [`models/fire/`](models/fire/), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
-| `scenereader` | [`scenereader/`](scenereader/) (service + modules), [`config/scenereader.conf`](config/scenereader.conf), [`config/places.conf`](config/places.conf), [`models/scene/`](models/scene/) (git-ignored), [`dev_scripts/deploy/prep_scene_model_llamacpp.sh`](dev_scripts/deploy/prep_scene_model_llamacpp.sh) |
+| `visits` | [`visits/`](visits/) (service + CLI), [`config/visits.conf`](config/visits.conf), [`config/places.conf`](config/places.conf) |
+| `scenereader` *(archived)* | [`scenereader/`](scenereader/) (code kept, not built), [`archive/scenereader.compose.yml`](archive/scenereader.compose.yml), [`config/scenereader.conf`](config/scenereader.conf), [`models/scene/`](models/scene/) (git-ignored) |
 | `telegram-bot` | [`scripts/telegram_bot.py`](scripts/telegram_bot.py), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
 | `logs` | [`scripts/container_logs.py`](scripts/container_logs.py) |
 | `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf) (secret in git-ignored `portal/.env`); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
@@ -198,7 +204,7 @@ Set in [`docker-compose.yml`](docker-compose.yml). `cpus` is a hard CFS quota an
 | Service | `cpus` | `mem_limit` | `oom_score_adj` | Rationale |
 |---|---|---|---|---|
 | `frigate` | *(uncapped)* | 3 GiB | **-500** | Critical path — CFS throttling can drop decoded frames, so only memory is ceilinged. Its cgroup also holds the 1 GB tmpfs + 256 MB `/dev/shm`. |
-| `scenereader` | 1 | 1.5 GiB | **200** | ~0.5–0.7 GB resident with the small GGUF default; raise towards 3 GiB **only** if `MODEL_BACKEND=openvino` is selected. The preferred OOM victim. |
+| `visits` | 1 | 512 MiB | **200** | No model — a 60 s REST poll + a cheap numpy histogram pass (~50–100 MB). The preferred OOM victim. |
 | `firewatch` | 2 | 1 GiB | *(0)* | Small IR model at a low cadence. |
 | `portal` | 1 | 512 MiB | *(0)* | HTTP + proxying; HLS is streamed, not transcoded. |
 | `mqtt` | 0.5 | 256 MiB | *(0)* | Broker. |
@@ -206,9 +212,9 @@ Set in [`docker-compose.yml`](docker-compose.yml). `cpus` is a hard CFS quota an
 | `telegram-bot` | 0.5 | 256 MiB | *(0)* | Idle long-poll. |
 
 - **OOM priority is the real safety mechanism**: `oom_score_adj` makes
-  `scenereader` the preferred victim, so memory pressure restarts the episode
-  narrator rather than the NVR. The ceilings deliberately sum to more than the
-  host's RAM (backstops, not a hard partition).
+  `visits` the preferred victim, so memory pressure restarts the visit logger
+  rather than the NVR. The ceilings deliberately sum to more than the host's
+  RAM (backstops, not a hard partition).
 - Inspect: `docker stats`; validated with `docker compose config --format json`.
 
 ---
@@ -319,8 +325,9 @@ sudo apt install -y git python3
 |---|---|
 | [`config/config.yaml`](config/config.yaml) | Frigate 0.17 (cameras, zones, go2rtc, model, detector, record, motion). Kept byte-identical to the host file. |
 | [`config/firewatch.conf`](config/firewatch.conf) | firewatch tunables (motion gate, thresholds, store) |
-| [`config/scenereader.conf`](config/scenereader.conf) | scenereader tunables (Frigate access, scan/drain timing, idle governor, model backend, episodes, adaptive scenes, store) |
-| [`config/places.conf`](config/places.conf) | **The human layer**: camera/zone → place names + the `ADJACENCY` routes that link a person across cameras |
+| [`config/visits.conf`](config/visits.conf) | visits tunables (Frigate REST poll, merge/identity, significance/load reduction, retention) |
+| [`config/places.conf`](config/places.conf) | **The human layer**: camera/zone → place names (used by `visits`; the `ADJACENCY` routes are for the deferred cross-camera linking) |
+| [`config/scenereader.conf`](config/scenereader.conf) | **Archived** scenereader tunables (retained with the kept code) |
 | [`config/heartbeat.conf`](config/heartbeat.conf) | Disk heartbeat global cap (`FS_PATH`, `MIN_FREE_GB`, `RELIEF_FREE_GB`, …) |
 | [`config/stores/*.conf`](config/stores/) | Per-service cleanup profiles |
 | [`mosquitto/config/mosquitto.conf`](mosquitto/config/mosquitto.conf) | MQTT broker |
@@ -337,10 +344,10 @@ sudo apt install -y git python3
 | `.env` | Camera RTSP credentials (`FRIGATE_*`) |
 | `config/telegram.conf` | Bot token + `CHAT_ID`(s) + tunables |
 | `portal/.env` | Portal `SECRET_KEY` (injected via the portal service's `env_file`) |
-| `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the scenereader **text** store (`media/events/`) + the portal's own `media/portal/{usage,users,notifications}.db` + watchdog CSVs |
+| `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the `visits` **text** store (`media/visits/{visits.db,.cursor}`) + the archived scenereader store (`media/events/`) + the portal's own `media/portal/{usage,users,notifications}.db` + watchdog CSVs |
 | `mosquitto/data/`, `mosquitto/log/` | Broker runtime state |
 | `models/fire/versions/` | Versioned fire-model archive |
-| `models/scene/` | **TWO** git-ignored models: the small SmolVLM2-500M GGUF + mmproj and the RETAINED Qwen2-VL-2B OpenVINO INT4 IR; `MODEL_BACKEND` selects which runs |
+| `models/scene/` | **KEPT but unused** after the scenereader archive: the small SmolVLM2-500M GGUF + mmproj and the retained Qwen2-VL-2B OpenVINO INT4 IR (never deleted) |
 | `heartbeat-cleanup.log`, `machine-monitor.state`, `frigate.log` | Host runtime logs/state |
 | `plans/`, `prompt.txt`, `notebooks/`, `fire-model-training/*` | Local working docs / datasets |
 
@@ -447,9 +454,11 @@ to `ssh.mazr3a.garden` and does everything there as `dr`, the clone owner):
 > **Model prep and runtime checks run ON THE HOST** (they write to / read the
 > bind-mounted `models/`).
 >
-> **scenereader deploy prerequisite:** the models are **not** in git — fetch the
-> small default + llama.cpp binaries on the host and point the config at them.
-> Verify with `docker compose exec scenereader python /scenereader/scenereader.py --check`.
+> **visits has no model prerequisite** (no VLM). Optional smoke test on the host:
+> `docker compose exec visits python /visits/visits.py --check`, then
+> `--once` and `--list`. The archived scenereader also needs its models fetched
+> on the host (not in git) if ever restored — see
+> [`archive/README.md`](archive/README.md).
 >
 > **`config/places.conf` is an operator input:** without `CAMERA_PLACES` +
 > `ADJACENCY` the narrator describes cameras instead of places.
@@ -493,5 +502,5 @@ of the system:
 ## 12. Deferred / future phases
 
 - **Phase 1b** — native in-Frigate fire/smoke detection via a fire+smoke+person+car+animal union model (so fire appears in the Frigate UI / MQTT / recorded clips).
-- **Phase 2** — *partly done:* cross-camera episode narratives ship via `scenereader` (§3.7) with a deterministic sentence and anonymous person identity; the SQLite event/episode store is included. **Still deferred:** the portal **Episodes** digest + "name this person" assisted labeling, **person attributes** (CLIP zero-shot clothing, daylight-only), appearance ReID as a link tie-breaker, a tiny text LLM to polish the narrative, and a fine-tuned ≤500M captioner trained on the farm's own captures.
+- **Phase 2** — **in progress via `visits` (§3.7):** a per-camera person-visit text log with anonymous `person #` identity (histogram + motion direction, 4 h inactivity retire). **Still deferred:** the **day-summary digest**, **worker-vs-guest** signalling, **cross-camera** person linking (turns a walk into one presence and avoids double counting), **person naming** ("name this person" assisted labeling / face gallery), **person attributes** (CLIP zero-shot clothing, daylight-only), appearance ReID (OSNet) in place of the colour histogram, and the portal view. The archived `scenereader` (deterministic episodes + optional VLM caption) is kept in `scenereader/` for reference.
 - **Phase 3** — **real names** via face recognition (InsightFace SCRFD + ArcFace against a named gallery, assisted by manual naming first) and gait. Gait is not feasible on the 640×360 detect substream.

@@ -1532,6 +1532,7 @@ function resetZoom() { setZoom(ZOOM_MIN); }
    pointer capture keeps the drag smooth even when it leaves the stage. */
 function onPanStart(e) {
   if (zoom.s <= ZOOM_MIN || !zoomable()) return;
+  if (pinch || stagePts.size > 1) return;   // a two-finger pinch owns the gesture
   if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
   const st = liveStage(); if (!st) return;
   st.classList.add('panning');
@@ -1541,6 +1542,7 @@ function onPanStart(e) {
 }
 function onPanMove(e) {
   if (!panPt || panPt.id !== e.pointerId) return;
+  if (pinch || stagePts.size > 1) return;   // ignore stray moves during a pinch
   zoom.tx += e.clientX - panPt.x;
   zoom.ty += e.clientY - panPt.y;
   panPt.x = e.clientX; panPt.y = e.clientY;
@@ -1602,9 +1604,112 @@ $('#zoom-in').addEventListener('click', zoomIn);
 $('#zoom-out').addEventListener('click', zoomOut);
 $('#zoom-reset').addEventListener('click', resetZoom);
 const SWIPE_MIN = 45;   // px horizontal travel to count as a camera swipe
-let liveSwipe = null;   // { id, x, y, dx, dy } while a phone swipe is tracked
+let liveSwipe = null;   // { id, x, y, dx, dy } while a one-finger swipe is tracked
+const stagePts = new Map();  // pointerId -> { x, y }: active stage touches
+let pinch = null;       // { dist, mid, s, tx, ty, cx, cy } while two fingers zoom
 const stageEl = liveStage();
 if (stageEl) {
+  /* ---- touch gestures on small & medium screens: swipe + two-finger pinch ----
+     Unity of the two is why these run BEFORE the pan/wheel handlers: they keep
+     `stagePts` current so onPanStart/onPanMove can bail while a pinch is live.
+     - one finger, not zoomed  -> camera swipe (left next / right prev, no wrap)
+     - two fingers             -> pinch zoom + two-finger pan
+     - one finger, zoomed      -> pan (onPanStart/onPanMove)
+     Vertical page scroll stays native: .stage is `touch-action: pan-y`, so the
+     browser owns vertical panning and still delivers the horizontal drags. */
+  function twoStagePts() {
+    const it = stagePts.values();
+    return [it.next().value, it.next().value];
+  }
+  function stageCenterPx() {
+    const r = stageEl.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  // Snapshot the gesture so every move scales/pans from the SAME start state.
+  function beginPinch() {
+    const p = twoStagePts();
+    if (!p[0] || !p[1]) return;
+    const c = stageCenterPx();
+    pinch = {
+      dist: Math.max(1, Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)),
+      mid: { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 },
+      s: zoom.s, tx: zoom.tx, ty: zoom.ty, cx: c.x, cy: c.y,
+    };
+  }
+  function onStageDown(e) {
+    if (!smallMedScreen()) return;
+    if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
+    stagePts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (stagePts.size === 1) {
+      liveSwipe = zoom.s > ZOOM_MIN ? null
+        : { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
+    } else if (stagePts.size === 2) {
+      liveSwipe = null;                       // a pinch is never a swipe
+      if (zoomable()) beginPinch();
+    }
+  }
+  function onStageMove(e) {
+    if (!stagePts.has(e.pointerId)) return;
+    stagePts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && stagePts.size >= 2) {
+      const p = twoStagePts();
+      const dist = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) || 1;
+      const mid = { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 };
+      const s = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinch.s * (dist / pinch.dist)));
+      const ratio = s / pinch.s;
+      if (s <= ZOOM_MIN) { zoom.s = 1; zoom.tx = 0; zoom.ty = 0; }
+      else {
+        zoom.s = s;
+        // Keep the content under the START midpoint under the current midpoint,
+        // which combines pinch zoom-about-a-point with a two-finger drag pan.
+        // (Derived from  screen = c + t + s*(content - c).)
+        zoom.tx = (mid.x - pinch.mid.x)
+                  + (pinch.mid.x - pinch.cx) * (1 - ratio) + ratio * pinch.tx;
+        zoom.ty = (mid.y - pinch.mid.y)
+                  + (pinch.mid.y - pinch.cy) * (1 - ratio) + ratio * pinch.ty;
+        constrainZoomPan();
+      }
+      applyZoom();
+      liveTapMoved = true;                    // a pinch must not toggle the center
+      e.preventDefault();
+      return;
+    }
+    if (liveSwipe && liveSwipe.id === e.pointerId) {
+      liveSwipe.dx = e.clientX - liveSwipe.x;
+      liveSwipe.dy = e.clientY - liveSwipe.y;
+    }
+  }
+  function onStageUp(e) {
+    if (!stagePts.has(e.pointerId)) return;
+    stagePts.delete(e.pointerId);
+    if (stagePts.size < 2) pinch = null;
+    if (stagePts.size === 0) {
+      if (liveSwipe && liveSwipe.id === e.pointerId) {
+        const s = liveSwipe;
+        if (Math.abs(s.dx) >= SWIPE_MIN &&
+            Math.abs(s.dx) >= Math.abs(s.dy) * 1.5) {
+          const cam = adjacentCam(s.dx < 0 ? 1 : -1);
+          if (cam) selectCam(cam);
+        }
+      }
+      liveSwipe = null;
+    }
+  }
+  function onStageCancel(e) {
+    if (!stagePts.has(e.pointerId)) return;
+    stagePts.delete(e.pointerId);
+    if (stagePts.size < 2) pinch = null;
+    if (stagePts.size === 0) liveSwipe = null;
+  }
+  stageEl.addEventListener('pointerdown', onStageDown);
+  stageEl.addEventListener('pointermove', onStageMove);
+  // Up/cancel on WINDOW: a finger that lifts OFF the frame must still be removed
+  // from stagePts (we do not pointer-capture, so native vertical scroll keeps
+  // working), otherwise a stale entry would fake a pinch on the next gesture.
+  // Events bubble from the stage, so stage-originated ups are handled here too.
+  window.addEventListener('pointerup', onStageUp);
+  window.addEventListener('pointercancel', onStageCancel);
+
   stageEl.addEventListener('pointerdown', onPanStart);
   stageEl.addEventListener('pointermove', onPanMove);
   stageEl.addEventListener('pointerup', onPanEnd);
@@ -1614,29 +1719,6 @@ if (stageEl) {
     e.preventDefault();
     setZoom(zoom.s * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
   }, { passive: false });
-  // Phone-only: a horizontal swipe on the frame shifts to the prev/next camera
-  // (no wrap - an end-of-list swipe does nothing). Vertical/diagonal gestures
-  // are left to the native page scroll: .stage is `touch-action: pan-y`, so the
-  // browser owns vertical panning and still delivers horizontal drags to JS.
-  // While zoomed the drag is the pan control, so camera switching is disabled.
-  stageEl.addEventListener('pointerdown', (e) => {
-    if (!smallScreen() || zoom.s > ZOOM_MIN) { liveSwipe = null; return; }
-    if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
-    liveSwipe = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
-  });
-  stageEl.addEventListener('pointermove', (e) => {
-    if (!liveSwipe || liveSwipe.id !== e.pointerId) return;
-    liveSwipe.dx = e.clientX - liveSwipe.x;
-    liveSwipe.dy = e.clientY - liveSwipe.y;
-  });
-  stageEl.addEventListener('pointerup', (e) => {
-    if (!liveSwipe || liveSwipe.id !== e.pointerId) return;
-    const s = liveSwipe; liveSwipe = null;
-    if (Math.abs(s.dx) < SWIPE_MIN || Math.abs(s.dx) < Math.abs(s.dy) * 1.5) return;
-    const cam = adjacentCam(s.dx < 0 ? 1 : -1);
-    if (cam) selectCam(cam);
-  });
-  stageEl.addEventListener('pointercancel', () => { liveSwipe = null; });
 }
 
 /* Tap the live frame -> a YouTube-style center play/stop button appears; tapping
@@ -1682,11 +1764,13 @@ syncLiveTools();   // initial state: no frame/no audio yet -> row tools disabled
 function camNames() {
   return state.cameras.map(c => c.name).filter(n => n);
 }
-/* Phone layout = the breakpoint where .cam-strip is hidden and the nav is
-   collapsed (see style.css). Re-evaluated per gesture so orientation changes
-   take effect without a reload. */
-function smallScreen() {
-  try { return !window.matchMedia('(min-width: 640px) and (min-height: 560px)').matches; }
+/* Small & medium screens = every layout EXCEPT desktop, i.e. not
+   `(min-width: 1024px) and (min-height: 560px)` (see the DESKTOP block in
+   style.css). On phones and tablets the frame is a touch surface, so it owns
+   the swipe-to-switch and two-finger pinch gestures. Re-evaluated per gesture
+   so an orientation/size change takes effect without a reload. */
+function smallMedScreen() {
+  try { return !window.matchMedia('(min-width: 1024px) and (min-height: 560px)').matches; }
   catch (e) { return true; }
 }
 /* The camera `dir` steps away (+1 next / -1 prev); null at either end (no wrap),

@@ -1601,6 +1601,8 @@ $('#live-shot').addEventListener('click', saveLiveImage);
 $('#zoom-in').addEventListener('click', zoomIn);
 $('#zoom-out').addEventListener('click', zoomOut);
 $('#zoom-reset').addEventListener('click', resetZoom);
+const SWIPE_MIN = 45;   // px horizontal travel to count as a camera swipe
+let liveSwipe = null;   // { id, x, y, dx, dy } while a phone swipe is tracked
 const stageEl = liveStage();
 if (stageEl) {
   stageEl.addEventListener('pointerdown', onPanStart);
@@ -1612,6 +1614,29 @@ if (stageEl) {
     e.preventDefault();
     setZoom(zoom.s * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
   }, { passive: false });
+  // Phone-only: a horizontal swipe on the frame shifts to the prev/next camera
+  // (no wrap - an end-of-list swipe does nothing). Vertical/diagonal gestures
+  // are left to the native page scroll: .stage is `touch-action: pan-y`, so the
+  // browser owns vertical panning and still delivers horizontal drags to JS.
+  // While zoomed the drag is the pan control, so camera switching is disabled.
+  stageEl.addEventListener('pointerdown', (e) => {
+    if (!smallScreen() || zoom.s > ZOOM_MIN) { liveSwipe = null; return; }
+    if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
+    liveSwipe = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
+  });
+  stageEl.addEventListener('pointermove', (e) => {
+    if (!liveSwipe || liveSwipe.id !== e.pointerId) return;
+    liveSwipe.dx = e.clientX - liveSwipe.x;
+    liveSwipe.dy = e.clientY - liveSwipe.y;
+  });
+  stageEl.addEventListener('pointerup', (e) => {
+    if (!liveSwipe || liveSwipe.id !== e.pointerId) return;
+    const s = liveSwipe; liveSwipe = null;
+    if (Math.abs(s.dx) < SWIPE_MIN || Math.abs(s.dx) < Math.abs(s.dy) * 1.5) return;
+    const cam = adjacentCam(s.dx < 0 ? 1 : -1);
+    if (cam) selectCam(cam);
+  });
+  stageEl.addEventListener('pointercancel', () => { liveSwipe = null; });
 }
 
 /* Tap the live frame -> a YouTube-style center play/stop button appears; tapping
@@ -1656,6 +1681,21 @@ syncLiveTools();   // initial state: no frame/no audio yet -> row tools disabled
 /* -------- camera switching: thumbnail row / modal ------------------------- */
 function camNames() {
   return state.cameras.map(c => c.name).filter(n => n);
+}
+/* Phone layout = the breakpoint where .cam-strip is hidden and the nav is
+   collapsed (see style.css). Re-evaluated per gesture so orientation changes
+   take effect without a reload. */
+function smallScreen() {
+  try { return !window.matchMedia('(min-width: 640px) and (min-height: 560px)').matches; }
+  catch (e) { return true; }
+}
+/* The camera `dir` steps away (+1 next / -1 prev); null at either end (no wrap),
+   so a swipe there does nothing. */
+function adjacentCam(dir) {
+  const names = camNames();
+  const i = names.indexOf(state.live.cam);
+  const j = i < 0 ? -1 : i + dir;
+  return (j >= 0 && j < names.length) ? names[j] : null;
 }
 function rememberCam(cam) {
   state.live.cam = cam;                 // startStream also sets it (idempotent)

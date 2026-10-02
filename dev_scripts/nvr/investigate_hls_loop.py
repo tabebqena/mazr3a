@@ -128,11 +128,11 @@ def login(d):
     f.find_element(By.CSS_SELECTOR, "button[type=submit]").click()
     WebDriverWait(d, 40).until(
         lambda x: not _cls_has(d.find_element(By.ID, "app"), "hidden"))
-    # stay on Live view (boot defaults there); wait for the camera strip
+    # stay on Live view (boot defaults there); wait for the camera grid
     if not _cls_has(d.find_element(By.ID, "view-live"), "hidden"):
         d.execute_script("location.hash = '#/live';")
     WebDriverWait(d, 45).until(
-        lambda x: x.find_elements(By.CSS_SELECTOR, "#cam-strip .cam-item"))
+        lambda x: x.find_elements(By.CSS_SELECTOR, "#cam-grid .cam-item"))
     time.sleep(0.5)
 
 
@@ -149,15 +149,10 @@ def sample(d):
 
 def select_cam(d, cam):
     wait = WebDriverWait(d, 45)
-    sel_strip = '#cam-strip .cam-item[data-cam="%s"]' % cam
-    try:
-        cell = wait.until(
-            lambda x: x.find_element(By.CSS_SELECTOR, sel_strip))
-    except Exception:
-        picker = wait.until(lambda x: x.find_element(By.ID, "cam-picker"))
-        d.execute_script("arguments[0].click();", picker)
-        sel_grid = '#cam-grid .cam-item[data-cam="%s"]' % cam
-        cell = wait.until(lambda x: x.find_element(By.CSS_SELECTOR, sel_grid))
+    picker = wait.until(lambda x: x.find_element(By.ID, "cam-picker"))
+    d.execute_script("arguments[0].click();", picker)
+    sel_grid = '#cam-grid .cam-item[data-cam="%s"]' % cam
+    cell = wait.until(lambda x: x.find_element(By.CSS_SELECTOR, sel_grid))
     d.execute_script(
         "arguments[0].scrollIntoView({block:'center'});"
         "arguments[0].click();", cell)

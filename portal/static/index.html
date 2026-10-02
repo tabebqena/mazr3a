@@ -122,9 +122,9 @@
       <section id="view-live" class="view hidden">
         <div class="live-ctl">
           <!-- Toolbar above the frame. The CURRENT CAMERA NAME is the FIRST
-               control: this button shows it and opens the picker (inline strip
-               on tablet/desktop, modal sheet on phones). It flexes to fill the
-               spare width, pushing the .live-tools group to the far end.
+               control: this button shows it and opens the camera picker modal.
+               It flexes to fill the spare width, pushing the .live-tools group
+               to the far end.
                Buttons are never forced full width on phones - they size to
                their content and, on very narrow screens, the whole .live-tools
                group wraps BELOW the camera name as ONE unit (never scattered). -->
@@ -177,10 +177,10 @@
 
             <!-- Fullscreen on the WHOLE Live view (NOT the <video>), mirroring
                  the Events #ev-fs: #live-fs fullscreens #view-live so the camera
-                 toolbar, the frame's overlays (spinner / cam-tag / center button
-                 / idle Resume) and the camera strip all STAY VISIBLE. A native
-                 <video> fullscreen would hide them (the idle Resume overlay is a
-                 sibling inside #live-stage). App.js keeps the glyph in step via
+                 toolbar and the frame's overlays (spinner / cam-tag / center
+                 button / idle Resume) all STAY VISIBLE. A native <video>
+                 fullscreen would hide them (the idle Resume overlay is a sibling
+                 inside #live-stage). App.js keeps the glyph in step via
                  fullscreenchange. -->
             <button id="live-fs" type="button" aria-pressed="false"
                     title="Fullscreen" aria-label="Fullscreen">&#9974;</button>
@@ -202,13 +202,10 @@
           <button id="live-center" class="vid-center hidden" type="button"
                   aria-label="Play or stop the live stream"></button>
         </div>
-        <!-- Inline camera row (thumbnail per camera). Phones keep this hidden
-             and pick cameras from the modal below instead. -->
-        <div id="cam-strip" class="cam-strip"></div>
         <div id="live-status" class="status"></div>
 
-        <!-- Camera picker modal: a grid of camera thumbnails; on small screens
-             this is how cameras are chosen (opened by the picker button). -->
+        <!-- Camera picker modal: a grid of camera thumbnails; opened by the
+             picker button and the only way to choose a camera. -->
         <div id="cam-modal" class="cam-modal hidden" role="dialog"
              aria-modal="true" aria-label="Select camera">
           <div class="cam-backdrop" data-cam-close></div>

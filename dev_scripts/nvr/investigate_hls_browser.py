@@ -192,7 +192,7 @@ def login_cookie(d):
     WebDriverWait(d, 45).until(
         lambda x: not _cls_has(x.find_element(By.ID, "app"), "hidden"))
     WebDriverWait(d, 45).until(
-        lambda x: x.find_elements(By.CSS_SELECTOR, "#cam-strip .cam-item"))
+        lambda x: x.find_elements(By.CSS_SELECTOR, "#cam-grid .cam-item"))
     time.sleep(1.0)
 
 
@@ -208,14 +208,10 @@ def sample(d):
 
 def select_cam(d, cam):
     wait = WebDriverWait(d, 45)
-    sel_strip = '#cam-strip .cam-item[data-cam="%s"]' % cam
-    try:
-        cell = wait.until(lambda x: x.find_element(By.CSS_SELECTOR, sel_strip))
-    except Exception:
-        picker = wait.until(lambda x: x.find_element(By.ID, "cam-picker"))
-        d.execute_script("arguments[0].click();", picker)
-        sel_grid = '#cam-grid .cam-item[data-cam="%s"]' % cam
-        cell = wait.until(lambda x: x.find_element(By.CSS_SELECTOR, sel_grid))
+    picker = wait.until(lambda x: x.find_element(By.ID, "cam-picker"))
+    d.execute_script("arguments[0].click();", picker)
+    sel_grid = '#cam-grid .cam-item[data-cam="%s"]' % cam
+    cell = wait.until(lambda x: x.find_element(By.CSS_SELECTOR, sel_grid))
     d.execute_script(
         "arguments[0].scrollIntoView({block:'center'}); arguments[0].click();",
         cell)

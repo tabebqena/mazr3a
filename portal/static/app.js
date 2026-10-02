@@ -640,11 +640,11 @@ async function loadCameras() {
       || (state.cameras.find(c => c.enabled) || {}).name || camNames()[0];
   }
   state.live.cam = camNames().indexOf(def) >= 0 ? def : camNames()[0] || null;
-  renderCamPicker();                   // thumbnail row + modal grid + labels
+  renderCamPicker();                   // modal grid + labels
 }
 
 /* Fill the Events/Fire camera <select>s from state.cameras. The Live view no
-   longer uses a <select> - cameras are picked from the thumbnail row/modal.
+   longer uses a <select> - cameras are picked from the thumbnail modal.
    The current choice is PRESERVED when the options are rebuilt (a periodic
    /api/cameras refresh must never silently reset an Events filter). */
 function refreshCamSelects() {
@@ -718,7 +718,7 @@ async function decideAfterHlsFail(cam, tok) {
 }
 
 /* Refresh the camera list / online flags from the portal (/api/cameras).
-   Re-renders the thumbnail row/modal only when the list really changed
+   Re-renders the picker modal only when the list really changed
    (names/enabled/online) so frequent re-checks do not reload thumbnails. */
 async function fetchCameras() {
   try {
@@ -1760,7 +1760,7 @@ $('#live-center').addEventListener('click', (e) => {
 });
 syncLiveTools();   // initial state: no frame/no audio yet -> row tools disabled
 
-/* -------- camera switching: thumbnail row / modal ------------------------- */
+/* -------- camera switching: picker modal ---------------------------------- */
 function camNames() {
   return state.cameras.map(c => c.name).filter(n => n);
 }
@@ -1785,8 +1785,8 @@ function rememberCam(cam) {
   state.live.cam = cam;                 // startStream also sets it (idempotent)
   try { localStorage.setItem('portal.lastCam', cam); } catch (e) { /* ignore */ }
 }
-/* Pick a camera from the thumbnail row / modal. Clicking the camera that is
-   already streaming just closes the picker (no restart). */
+/* Pick a camera from the picker modal. Clicking the camera that is already
+   streaming just closes the picker (no restart). */
 function selectCam(cam) {
   if (!cam || camNames().indexOf(cam) < 0) return;
   closeCamModal();
@@ -1796,7 +1796,7 @@ function selectCam(cam) {
   syncCamUI();
 }
 
-/* -------- camera thumbnail cells (inline row + modal grid) -------- */
+/* -------- camera thumbnail cells (picker modal grid) -------- */
 let thumbTs = 0;                       // bumped to refresh the latest.jpg thumbs
 function camThumbSrc(cam) {
   return '/api/live/' + encodeURIComponent(cam) + '/latest.jpg?t=' + thumbTs;
@@ -1823,9 +1823,7 @@ function bindCamThumbErrors(root) {
 }
 function renderCamPicker() {
   thumbTs = Date.now();                 // fresh detect-frame thumbnails
-  $('#cam-strip').innerHTML = camCells();
   $('#cam-grid').innerHTML = camCells();
-  bindCamThumbErrors($('#cam-strip'));
   bindCamThumbErrors($('#cam-grid'));
   syncCamUI();
 }
@@ -1857,11 +1855,7 @@ $('#cam-modal').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeCamModal();
 });
-// Clicking a camera thumbnail in the inline row or the modal picks it.
-$('#cam-strip').addEventListener('click', (e) => {
-  const b = e.target.closest('.cam-item');
-  if (b && b.dataset.cam) selectCam(b.dataset.cam);
-});
+// Clicking a camera thumbnail in the modal picks it.
 $('#cam-grid').addEventListener('click', (e) => {
   const b = e.target.closest('.cam-item');
   if (b && b.dataset.cam) selectCam(b.dataset.cam);

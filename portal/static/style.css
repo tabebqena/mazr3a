@@ -5,7 +5,7 @@
    Larger screens are progressively enhanced with width+height
    media queries (>=640x560 tablet, >=1024x560 desktop): a phone
    held in LANDSCAPE is wide but short, so the min-height guard
-   keeps it in the mobile layout (no inline camera strip).
+   keeps it in the mobile layout.
    ============================================================ */
 :root {
   --bg: #0b0e12;
@@ -375,8 +375,8 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
 
 /* ============ LIVE FULLSCREEN (whole Live view fills the screen) ============
    #live-fs fullscreens the #view-live SECTION (never the <video>): the camera
-   toolbar, the frame's overlays (spinner / cam-tag / center button / idle/paused
-   Resume) AND the camera strip all stay visible - the Live analogue of the Events
+   toolbar and the frame's overlays (spinner / cam-tag / center button /
+   idle/paused Resume) all stay visible - the Live analogue of the Events
    stage fullscreen (plans/portal-events-stage-fullscreen.md). In fullscreen the
    element is the rendering root and the ancestor `body.live-full` layout (which
    normally sizes it) no longer applies, so it must carry its OWN size + padding.
@@ -406,7 +406,7 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
   color: var(--accent);
 }
 
-/* ============ LIVE CAMERA PICKER (row of thumbnails + modal) ============ */
+/* ============ LIVE CAMERA PICKER (modal grid of thumbnails) ============ */
 /* The control row + zoom/pan styles now live in the LIVE CONTROL ROW section
    above; this section only styles the frame overlay label and the picker. */
 /* Current camera name, overlaid top-left on the live frame. */
@@ -416,16 +416,7 @@ body.live-full #view-live .status { flex: 0 0 auto; margin: 0; }
   background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.22);
   color: #fff; letter-spacing: .3px; pointer-events: none;
 }
-/* Inline camera row: hidden on phones (cameras are picked via the modal);
-   shown as a horizontal scroll strip on >=640px. */
-.cam-strip {
-  display: none;
-  flex: 0 0 auto; min-width: 0;
-  gap: 8px; margin-top: 10px; padding: 2px 2px 8px; overflow-x: auto;
-}
-.cam-strip .cam-item { flex: 0 0 auto; width: 132px; }
-
-/* One camera thumbnail cell (used in the inline row and the modal grid). */
+/* One camera thumbnail cell (used in the picker modal grid). */
 .cam-item {
   display: flex; flex-direction: column; padding: 0; overflow: hidden;
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
@@ -945,8 +936,8 @@ nav .nav-install:hover { background: rgba(53,194,111,.12); }
    Controls flow into a row; grids get 2 columns; the nav is
    restored to an INLINE row and the hamburger is hidden.
    min-height guard: a phone held in landscape is wide but short,
-   so it must NOT reach this block (else the inline camera strip
-   shows and the full-bleed live stage collapses to a tiny band).
+   so it must NOT reach this block (else the full-bleed live stage
+   collapses to a tiny band).
    ============================================================ */
 @media (min-width: 640px) and (min-height: 560px) {
   body { font-size: 15px; }
@@ -1024,8 +1015,7 @@ nav .nav-install:hover { background: rgba(53,194,111,.12); }
   input, select, button { min-height: auto; padding: 9px 11px; }
   button { min-height: auto; }
 
-  /* Camera row is inline from tablet up; the picker/modal stays available. */
-  .cam-strip { display: flex; }
+  /* Camera picker modal: centered card from tablet up. */
   .cam-modal { align-items: center; padding: 20px; }
   .cam-modal-card { border-radius: 16px; border-bottom: 1px solid var(--line); }
   .cam-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }

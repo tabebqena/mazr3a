@@ -1039,6 +1039,12 @@ nav .nav-install:hover { background: rgba(53,194,111,.12); }
   main { padding: 22px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
   .toast { left: 50%; right: auto; transform: translateX(-50%); }
+  /* DESKTOP: no bottom camera thumbnail bar. Cameras are chosen from the top
+     #cam-picker (grid modal), so the inline strip is redundant here and only
+     costs vertical space. It stays visible on tablet/medium (the >=640px
+     block sets display:flex); this rule wins on desktop because it comes
+     later at equal specificity. Phones already hide it in the base rules. */
+  .cam-strip { display: none; }
 }
 
 /* ============ EPISODES TAB (scenereader cross-camera stories) ============

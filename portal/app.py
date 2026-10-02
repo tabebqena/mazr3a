@@ -23,7 +23,7 @@ from fastapi.responses import (
 
 from portal import (
     auth, config as pconf, eventstore, firestore, frigate, notifstore, usage,
-    userstore,
+    userstore, visitstore,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.10"
+APP_VERSION = "0.11.11"
 _HTMX = None
 
 
@@ -1347,6 +1347,58 @@ async def scene_image_compat(scene_id: int, request: Request,
     if not item or not item.get("image_url"):
         raise HTTPException(status_code=404, detail="image not found")
     return RedirectResponse(url=item["image_url"], status_code=307)
+
+
+# --------------------------------------------------------------------------
+# visits - the per-camera person-visit log
+#
+# visits (visits/visits.py) is the single writer of a WAL SQLite DB in its own
+# store dir (default ./media/visits/ on the host, seen here as /media/visits).
+# The portal only ever READS it (visitstore.py uses PRAGMA query_only). Every
+# visit carries its representative Frigate event id, and the frame is served by
+# the EXISTING Frigate proxy defined above (/api/events/<id>/snapshot.jpg), so
+# the portal never reads an image path out of a DB row.
+# --------------------------------------------------------------------------
+def _visits_path(request: Request):
+    """The visits store DB path resolved from portal.conf.
+
+    Defaults match the compose service's STORE_DIR/STORE_DB so no portal.conf
+    change is required; VISITS_DB can override it.
+    """
+    cfg = _cfg(request)
+    return pconf.get(cfg, "VISITS_DB", "/media/visits/visits.db")
+
+
+@app.get("/api/visits")
+async def visits(request: Request, user: dict = Depends(current_user),
+                 day: Optional[str] = None, camera: Optional[str] = None,
+                 after: Optional[float] = None, before: Optional[float] = None,
+                 show: Optional[str] = None,
+                 limit: int = 50, offset: int = 0):
+    """The per-camera person-visit log, newest first.
+
+    `show` = "all" lists every visit; the default (or "significant") keeps only
+    the visits the service itself would log (moved or touched a frame edge).
+    """
+    db = _visits_path(request)
+    significant = None if (show or "").lower() == "all" else True
+    result = visitstore.list_visits(
+        db, day=day or None, camera=camera or None,
+        after=after, before=before, significant=significant,
+        limit=limit, offset=offset)
+    result["days"] = visitstore.days(db)
+    result["cameras"] = visitstore.cameras(db)
+    return result
+
+
+@app.get("/api/visits/{visit_id}")
+async def visit_detail(visit_id: int, request: Request,
+                       user: dict = Depends(current_user)):
+    """One visit WITH its ordered Frigate captures (snapshot proxy URLs)."""
+    item = visitstore.get_visit(_visits_path(request), visit_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="visit not found")
+    return item
 
 
 # --------------------------------------------------------------------------

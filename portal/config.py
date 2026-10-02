@@ -48,6 +48,10 @@ DEFAULTS = {
     "FIREWATCH_DB": "/media/firewatch.db",
     "FIREWATCH_JPG_PREFIX": "/media/firewatch/",
     "FIREWATCH_JPG_REPLACE": "/media/",
+    # visits store: the per-camera person-visit log (portal/visitstore.py), the
+    # single writer being the `visits` compose service. The portal only reads it
+    # (PRAGMA query_only) from the same rw ./media mount.
+    "VISITS_DB": "/media/visits/visits.db",
     # Admin Debug tab: read-only Docker-logs sidecar (compose service `logs`).
     # Reached only server-side on the internal compose network; overridden by
     # the PORTAL_LOGS_API env set in docker-compose.yml.

@@ -592,7 +592,7 @@ async function continueBoot() {
 function onRoute() {
   setNavOpen(false);   // a route change always dismisses the collapsed menu
   const raw = (location.hash || '#/live').replace(/^#\//, '');
-  const VIEWS = ['live', 'events', 'fire', 'episodes', 'adaptive', 'scenes',
+  const VIEWS = ['live', 'events', 'fire', 'visits',
                  'notifications', 'debug', 'manage', 'user'];
   let view = VIEWS.indexOf(raw) >= 0 ? raw : 'live';
   if (raw === 'usage') view = 'user';   // the Usage tab was removed
@@ -617,9 +617,7 @@ function onRoute() {
   if (view === 'live') ensureLive();
   else if (view === 'events') loadEvents();
   else if (view === 'fire') reloadFire();   // page-based: reset to page 1 on entry
-  else if (view === 'episodes') reloadEpisodes();  // page-based: reset to page 1
-  else if (view === 'adaptive') reloadAdaptiveScenes();  // page-based: reset to page 1
-  else if (view === 'scenes') reloadScenes();  // page-based: reset to page 1
+  else if (view === 'visits') reloadVisits();  // page-based: reset to page 1 on entry
   else if (view === 'notifications') loadNotifications();  // refresh the feed
   else if (view === 'debug') loadDebug();   // pull the idle sidecar on tab open
   else if (view === 'manage') loadManage(); // admin: users + tab_* permissions
@@ -654,7 +652,7 @@ function refreshCamSelects() {
     return '<option value="' + esc(n) + '">' + esc(n) + tag + '</option>';
   }).join('');
   const all = '<option value="">all cameras</option>' + opts;
-  ['#ev-cam', '#ev-fs-cam', '#fw-cam', '#sc-cam', '#ep-cam', '#as-cam'].forEach(id => {
+  ['#ev-cam', '#ev-fs-cam', '#fw-cam', '#vs-cam'].forEach(id => {
     const sel = $(id);
     const prev = sel.value;
     sel.innerHTML = all;
@@ -1937,7 +1935,7 @@ function fillTimeSelect(sel) {
 
 // Wire one view's Time preset select + custom From/To row; any change auto-refreshes.
 // `defaultKey` (optional) selects an initial preset - the Events tab passes '24h'
-// so it opens on the last day instead of "All time"; Fire/Scenes keep the default.
+// so it opens on the last day instead of "All time"; Fire/Visits keep the default.
 function wireTimeControls(prefix, onApply, defaultKey) {
   const timeSel = $('#' + prefix + '-time');
   const wrap = $('#' + prefix + '-custom-wrap');
@@ -2678,57 +2676,33 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeFireLightbox();
 });
 
-/* ------------- scenereader EPISODES (cross-camera person stories) ----------
-   One card per episode: the narrative in English AND the same narrative in
-   Arabic. Both are composed DETERMINISTICALLY by scenereader from the same
-   facts (no model), so the two languages can never disagree. Underneath are the
-   ordered supporting captures, served by the EXISTING Frigate snapshot proxy.
-   "Process now" only ASKS the service for a caption batch; the service still
-   applies its idle governor, so the button can never force a hot host to work. */
-const EP_LIMIT = 20;
-let epPage = 1;
-let epPages = 1;
+/* ------------- Visits (per-camera person-visit log) -------------------------
+   One card per PERSON VISIT: the `visits` service merges Frigate person events
+   into a single presence per camera (place, person #, time range, duration),
+   with human place names from config/places.conf. The representative frame is
+   served by the EXISTING Frigate snapshot proxy, so the portal never reads an
+   image path out of a DB row. See plans/visit-log.md. */
+const VS_LIMIT = 20;
+let vsPage = 1;
+let vsPages = 1;
 
-function epClock(epoch) {
+function vsClock(epoch) {
   if (!epoch) return '';
   return new Date(epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function reloadEpisodes() {
-  epPage = 1;
-  loadEpisodes();
+function vsDuration(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  if (s < 60) return Math.max(1, s) + 's';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + ' min';
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? h + 'h ' + rem + 'min' : h + 'h';
 }
-$('#ep-refresh').addEventListener('click', reloadEpisodes);
-$('#ep-cam').addEventListener('change', reloadEpisodes);
-$('#ep-day').addEventListener('change', reloadEpisodes);
-$('#ep-prev').addEventListener('click', () => {
-  if (epPage > 1) { epPage--; loadEpisodes(); }
-});
-$('#ep-next').addEventListener('click', () => {
-  if (epPage < epPages) { epPage++; loadEpisodes(); }
-});
-$('#ep-drain').addEventListener('click', async () => {
-  const st = $('#ep-status');
-  const btn = $('#ep-drain');
-  btn.disabled = true;
-  try {
-    // Plain fetch (POST + cookie) so this does not depend on the api() helper's
-    // option signature.
-    const r = await fetch('/api/scenereader/drain', {
-      method: 'POST', credentials: 'same-origin',
-    });
-    st.textContent = r.ok
-      ? 'Caption batch requested - it runs as soon as the host is idle.'
-      : 'Could not request a batch (HTTP ' + r.status + ').';
-  } catch (err) {
-    st.textContent = 'Could not request a batch: ' + err;
-  } finally {
-    setTimeout(() => { btn.disabled = false; }, 3000);
-  }
-});
 
-function fillEpisodeDays(days) {
-  const sel = $('#ep-day');
+function fillVisitDays(days) {
+  const sel = $('#vs-day');
   const cur = sel.value;
   const html = '<option value="">all days</option>' +
     days.map(d => '<option value="' + esc(d) + '">' + esc(d) + '</option>').join('');
@@ -2739,328 +2713,84 @@ function fillEpisodeDays(days) {
   }
 }
 
-function episodeCard(e) {
-  const visits = (e.visits || []).map(v => {
-    const mins = v.duration_s ? Math.max(1, Math.round(v.duration_s / 60)) : 0;
-    return '<a class="ep-visit" href="' + esc(v.image_url || '#') + '" '
-      + 'target="_blank" rel="noopener">'
-      + (v.image_url ? '<img src="' + esc(v.image_url) + '" alt="" loading="lazy">' : '')
-      + '<span class="ep-visit-meta">' + esc(v.place || v.camera || '')
-      + ' &middot; ' + esc(v.camera || '') + ' &middot; ' + esc(epClock(v.enter_time))
-      + (mins ? ' &middot; ' + mins + ' min' : '') + '</span>'
-      + (v.description_vlm
-        ? '<span class="ep-visit-cap">' + esc(v.description_vlm) + '</span>' : '')
-      + '</a>';
-  }).join('');
-  const tags = '<span class="tag">' + esc(e.anon_name || '') + '</span>'
-    + (e.person_name ? '<span class="tag">' + esc(e.person_name) + '</span>' : '')
-    + '<span class="tag">' + esc(e.day || '') + '</span>'
-    + ((typeof e.link_confidence === 'number' && e.link_confidence < 0.99)
-      ? '<span class="tag" title="confidence that this is one person across cameras">'
-        + 'link ' + Math.round(e.link_confidence * 100) + '%</span>'
-      : '');
+function visitCard(v) {
+  const tags = '<span class="tag">' + esc(v.display_name || v.camera || '') + '</span>'
+    + ((v.place && v.place !== v.display_name)
+      ? '<span class="tag">' + esc(v.place) + '</span>' : '')
+    + '<span class="tag">person #' + Number(v.person_no || 0) + '</span>'
+    + (v.moved ? '<span class="tag">moved</span>' : '')
+    + (v.edge ? '<span class="tag">edge</span>' : '')
+    + (v.significant ? '' : '<span class="tag">quiet</span>');
+  const range = vsClock(v.enter_time) + '–' + vsClock(v.leave_time)
+    + ' &middot; ' + vsDuration(v.duration_s)
+    + ' &middot; ' + Number(v.n_events || 0) + ' event(s)';
+  const frame = v.image_url
+    ? '<a class="ep-visit" href="' + esc(v.image_url) + '" target="_blank" '
+      + 'rel="noopener"><img src="' + esc(v.image_url) + '" alt="" loading="lazy">'
+      + '<span class="ep-visit-meta">' + range + '</span></a>'
+    : '<div class="ep-visit"><span class="ep-visit-meta">' + range + '</span></div>';
   return '<div class="card ep-card">'
     + '<div class="ep-head">' + tags + '</div>'
-    + '<div class="ep-narrative">' + esc(e.narrative || '') + '</div>'
-    + (e.narrative_ar
-      ? '<div class="ep-narrative ep-ar" dir="rtl" lang="ar">'
-        + esc(e.narrative_ar) + '</div>'
-      : '')
-    + '<div class="ep-visits">' + visits + '</div>'
+    + '<div class="ep-visits">' + frame + '</div>'
     + '</div>';
 }
 
-async function loadEpisodes() {
-  const box = $('#ep-list');
-  const st = $('#ep-status');
-  const pager = $('#ep-pager');
+function reloadVisits() {
+  vsPage = 1;
+  loadVisits();
+}
+
+$('#vs-refresh').addEventListener('click', reloadVisits);
+$('#vs-cam').addEventListener('change', reloadVisits);
+$('#vs-show').addEventListener('change', reloadVisits);
+$('#vs-day').addEventListener('change', reloadVisits);
+wireTimeControls('vs', reloadVisits);
+$('#vs-prev').addEventListener('click', () => {
+  if (vsPage > 1) { vsPage--; loadVisits(); }
+});
+$('#vs-next').addEventListener('click', () => {
+  if (vsPage < vsPages) { vsPage++; loadVisits(); }
+});
+
+async function loadVisits() {
+  const box = $('#vs-list');
+  const st = $('#vs-status');
+  const pager = $('#vs-pager');
   st.textContent = 'Loading…';
   const p = new URLSearchParams({
-    limit: String(EP_LIMIT),
-    offset: String((epPage - 1) * EP_LIMIT),
-    with_visits: '1',
+    limit: String(VS_LIMIT),
+    offset: String((vsPage - 1) * VS_LIMIT),
+    show: $('#vs-show').value || 'significant',
   });
-  const cam = $('#ep-cam').value; if (cam) p.set('camera', cam);
-  const day = $('#ep-day').value; if (day) p.set('day', day);
+  const cam = $('#vs-cam').value; if (cam) p.set('camera', cam);
+  const day = $('#vs-day').value; if (day) p.set('day', day);
+  const { after, before } = timeRange($('#vs-time'), $('#vs-from'), $('#vs-to'));
+  if (after) p.set('after', String(after));
+  if (before) p.set('before', String(before));
   try {
-    const data = await api('/api/episodes?' + p.toString());
+    const data = await api('/api/visits?' + p.toString());
     const total = data.total || 0;
-    epPages = Math.max(1, Math.ceil(total / EP_LIMIT));
-    if (epPage > epPages) epPage = epPages;
-    fillEpisodeDays(data.days || []);
-    st.textContent = (total ? total + ' episode(s)' : '')
+    vsPages = Math.max(1, Math.ceil(total / VS_LIMIT));
+    if (vsPage > vsPages) vsPage = vsPages;
+    fillVisitDays(data.days || []);
+    st.textContent = (total ? total + ' visit(s)' : '')
       + (data.note ? ' — ' + data.note : '');
     if (!data.items || !data.items.length) {
-      box.innerHTML = '<div class="empty">No episodes yet. They appear once '
-        + 'person captures are linked across cameras — check that '
-        + '<b>CAMERA_PLACES</b> and <b>ADJACENCY</b> are filled in '
-        + '<code>config/places.conf</code>.</div>';
+      box.innerHTML = '<div class="empty">No visits yet. They appear once the '
+        + '<code>visits</code> service has analysed Frigate person events; '
+        + 'widen <b>Show</b> to &ldquo;everything&rdquo; to include quiet ones.</div>';
       pager.classList.add('hidden');
       return;
     }
     pager.classList.remove('hidden');
-    $('#ep-pageno').textContent = 'Page ' + epPage + ' of ' + epPages;
-    box.innerHTML = data.items.map(episodeCard).join('');
+    $('#vs-pageno').textContent = 'Page ' + vsPage + ' of ' + vsPages;
+    box.innerHTML = data.items.map(visitCard).join('');
   } catch (err) {
     st.textContent = 'Failed: ' + err;
     box.innerHTML = '';
     pager.classList.add('hidden');
   }
 }
-
-/* ------------- scenereader ADAPTIVE SCENES (L1) ------------------------------
-   One card per SCENE: a camera's burst of activity, the objects that coexisted
-   in it, and which of them MOVED (from each object's own Frigate trajectory).
-   The narrative is composed DETERMINISTICALLY from those facts, in English and
-   Arabic - no model. This is the level that keeps a moving dog/cow/truck in a
-   crowded frame from being narrated as a person's journey.
-   See plans/adaptive-scene-narrative.md. */
-const AS_LIMIT = 20;
-let asPage = 1;
-let asPages = 1;
-
-function reloadAdaptiveScenes() {
-  asPage = 1;
-  loadAdaptiveScenes();
-}
-
-function fillSceneDays(days) {
-  const sel = $('#as-day');
-  const cur = sel.value;
-  const html = '<option value="">all days</option>' +
-    days.map(d => '<option value="' + esc(d) + '">' + esc(d) + '</option>').join('');
-  if (sel.dataset.filled !== html) {
-    sel.innerHTML = html;
-    sel.dataset.filled = html;
-    sel.value = cur;
-  }
-}
-
-function adaptiveSceneCard(s) {
-  const objects = (s.objects || []).map(o =>
-    '<span class="tag" title="own displacement ' + (Number(o.disp) || 0).toFixed(3) + '">'
-    + esc(o.label || '') + (o.moved ? ' ● moved' : '') + '</span>').join('');
-  const frames = (s.events || []).map(v =>
-    '<a class="ep-visit" href="' + esc(v.image_url || '#') + '" target="_blank" rel="noopener">'
-    + (v.image_url ? '<img src="' + esc(v.image_url) + '" alt="" loading="lazy">' : '')
-    + '<span class="ep-visit-meta">' + esc(v.label || '') + ' &middot; '
-    + esc(v.camera || '') + ' &middot; ' + esc(epClock(v.start_time)) + '</span></a>').join('');
-  const movers = (s.movers || []).length
-    ? '<span class="tag">moving: ' + esc(s.movers.join(', ')) + '</span>'
-    : '<span class="tag">no movement</span>';
-  return '<div class="card ep-card">'
-    + '<div class="ep-head">'
-    + '<span class="tag">' + esc(s.camera || '') + '</span>'
-    + (s.place && s.place !== s.camera ? '<span class="tag">' + esc(s.place) + '</span>' : '')
-    + '<span class="tag">' + esc(s.day || '') + '</span>'
-    + movers
-    + '</div>'
-    + '<div class="ep-narrative">' + esc(s.narrative || '') + '</div>'
-    + (s.narrative_ar
-      ? '<div class="ep-narrative ep-ar" dir="rtl" lang="ar">' + esc(s.narrative_ar) + '</div>'
-      : '')
-    + '<div class="ep-head">' + objects + '</div>'
-    + '<div class="ep-visits">' + frames + '</div>'
-    + '</div>';
-}
-
-async function loadAdaptiveScenes() {
-  const box = $('#as-list');
-  const st = $('#as-status');
-  const pager = $('#as-pager');
-  st.textContent = 'Loading…';
-  const p = new URLSearchParams({
-    limit: String(AS_LIMIT),
-    offset: String((asPage - 1) * AS_LIMIT),
-    with_events: '1',
-  });
-  const cam = $('#as-cam').value; if (cam) p.set('camera', cam);
-  const day = $('#as-day').value; if (day) p.set('day', day);
-  try {
-    const data = await api('/api/scenereader/scenes?' + p.toString());
-    const total = data.total || 0;
-    asPages = Math.max(1, Math.ceil(total / AS_LIMIT));
-    if (asPage > asPages) asPage = asPages;
-    fillSceneDays(data.days || []);
-    st.textContent = (total ? total + ' scene(s)' : '')
-      + (data.note ? ' — ' + data.note : '');
-    if (!data.items || !data.items.length) {
-      box.innerHTML = '<div class="empty">No scenes yet. They are rebuilt from '
-        + 'Frigate captures automatically; run <code>--rebuild-scenes</code> to '
-        + 'derive them now.</div>';
-      pager.classList.add('hidden');
-      return;
-    }
-    pager.classList.remove('hidden');
-    $('#as-pageno').textContent = 'Page ' + asPage + ' of ' + asPages;
-    box.innerHTML = data.items.map(adaptiveSceneCard).join('');
-  } catch (err) {
-    st.textContent = 'Failed: ' + err;
-    box.innerHTML = '';
-    pager.classList.add('hidden');
-  }
-}
-
-$('#as-refresh').addEventListener('click', reloadAdaptiveScenes);
-$('#as-cam').addEventListener('change', reloadAdaptiveScenes);
-$('#as-day').addEventListener('change', reloadAdaptiveScenes);
-$('#as-prev').addEventListener('click', () => {
-  if (asPage > 1) { asPage--; loadAdaptiveScenes(); }
-});
-$('#as-next').addEventListener('click', () => {
-  if (asPage < asPages) { asPage++; loadAdaptiveScenes(); }
-});
-
-/* ------------- scenewatch scene descriptions (paged + time-filtered) ---------
-   One row per captioned frame (scenewatch's two-frame motion gate; `reason`
-   says whether motion or the periodic baseline triggered it). The tab lists the
-   description + camera + time; the stored frame is the card image and opens in
-   a lightbox. Rows captured while STORE_IMAGES=false carry no image. */
-const SC_PAGE = 24;
-let scPage = 1;
-let scPages = 1;
-let scMeta = {};              // scene id -> full record (for the lightbox)
-
-function reloadScenes() {
-  scPage = 1;
-  scMeta = {};
-  loadScenes();
-}
-$('#sc-refresh').addEventListener('click', reloadScenes);
-$('#sc-cam').addEventListener('change', reloadScenes);
-$('#sc-reason').addEventListener('change', reloadScenes);
-$('#sc-tier').addEventListener('change', reloadScenes);
-$('#sc-sort').addEventListener('change', reloadScenes);
-wireTimeControls('sc', reloadScenes);
-$('#sc-prev').addEventListener('click', () => {
-  if (scPage > 1) { scPage--; loadScenes(); }
-});
-$('#sc-next').addEventListener('click', () => {
-  if (scPage < scPages) { scPage++; loadScenes(); }
-});
-
-async function loadScenes() {
-  const box = $('#sc-list');
-  const st = $('#sc-status');
-  st.textContent = 'Loading…';
-  hidePager('sc');
-  try {
-    const { after, before } = timeRange($('#sc-time'), $('#sc-from'), $('#sc-to'));
-    const p = new URLSearchParams({
-      limit: String(SC_PAGE),
-      offset: String((scPage - 1) * SC_PAGE),
-    });
-    const cam = $('#sc-cam').value; if (cam) p.set('camera', cam);
-    const rsn = $('#sc-reason').value; if (rsn) p.set('reason', rsn);
-    // "Show" = how important a scene must be. Default 'high' keeps the tab on
-    // the handful of rows worth seeing; 'all' is the "dig deeper" escape.
-    const tier = $('#sc-tier').value;
-    if (tier && tier !== 'all') p.set('min_tier', tier);
-    p.set('sort', $('#sc-sort').value || 'importance');
-    if (after) p.set('after', String(after));
-    if (before) p.set('before', String(before));
-    const data = await api('/api/scenes?' + p.toString());
-    const total = data.total || 0;
-    scPages = Math.max(1, Math.ceil(total / SC_PAGE));
-    if (scPage > scPages) scPage = scPages;
-    // `note` explains an empty list (DB missing, or scenewatch never captioned).
-    st.textContent = (total ? total + ' description(s)' : '') +
-      (data.note ? (total ? ' — ' : '') + data.note : '');
-    box.innerHTML = '';
-    if (!data.items.length) {
-      // Spell out the way out when the importance filter is the reason the
-      // list is empty - otherwise a quiet window looks like a broken tab.
-      const hint = ($('#sc-tier').value === 'high')
-        ? '<br>No <b>important</b> scenes in this range. Set <b>Show</b> to '
-          + '&ldquo;important + normal&rdquo; or &ldquo;everything&rdquo; '
-          + 'to dig deeper.'
-        : '';
-      box.innerHTML = '<div class="empty">No scene descriptions.' + hint + '</div>';
-      hidePager('sc');
-      return;
-    }
-    const frag = document.createElement('div');
-    frag.innerHTML = data.items.map(sceneCard).join('');
-    $$('.card', frag).forEach(c => box.appendChild(c));
-    renderPager('sc', scPage, scPages);
-  } catch (e) {
-    st.textContent = '';
-    box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
-    hidePager('sc');
-  }
-}
-
-/* Importance (writer-side, see score_importance in scenewatch.py): `tier` is
-   high/normal/low and `importance` the 0-100 score behind it. */
-function sceneTags(s) {
-  const tier = s.tier || 'normal';
-  const label = tier === 'high' ? 'important' : tier;
-  return '<span class="tag tier-' + esc(tier) + '" title="Importance score ' +
-      Number(s.importance || 0) + '/100 (scored when the caption was written)">' +
-      esc(label) + ' ' + Number(s.importance || 0) + '</span>' +
-    '<span class="tag ' + (s.reason === 'baseline' ? 'baseline' : 'motion') + '">' +
-      esc(s.reason || '') + '</span>';
-}
-
-function sceneCard(s) {
-  scMeta[s.id] = s;
-  const img = s.has_image
-    ? '<div class="sc-imgwrap"><img class="sc-img" data-id="' + s.id + '" ' +
-      'src="' + esc(s.image_url) + '" alt="scene frame" loading="lazy"></div>'
-    : '<div class="sc-imgwrap noimg">no image stored</div>';
-  return '<div class="card">' +
-    '<div class="thumb">' + img + '</div>' +
-    '<div class="scene-desc">' + esc(s.description || '') + '</div>' +
-    '<div class="meta">' +
-      sceneTags(s) +
-      '<span class="tag">' + esc(s.camera) + '</span>' +
-      '<span class="muted">' + esc(fmtDT(s.captured_at)) + '</span>' +
-      (s.motion_frac ? '<span class="muted">motion ' +
-        (Number(s.motion_frac) * 100).toFixed(2) + '%</span>' : '') +
-      (s.latency_ms ? '<span class="muted">' + Number(s.latency_ms) + ' ms</span>' : '') +
-    '</div>' +
-  '</div>';
-}
-
-/* -------- scene lightbox: click a card image to view the frame larger ------ */
-function openSceneLightbox(id) {
-  const s = scMeta[id];
-  if (!s || !s.has_image) return;
-  const img = $('#sc-lb-img');
-  $('#sc-lb-title').textContent = 'Scene #' + id;
-  $('#sc-lb-meta').innerHTML =
-    sceneTags(s) +
-    '<span class="tag">' + esc(s.camera || '') + '</span>' +
-    '<span class="muted">' + esc(fmtDT(s.captured_at)) + '</span>' +
-    '<div class="lb-desc">' + esc(s.description || '') + '</div>';
-  img.onerror = () => { img.onerror = null; };
-  $('#sc-lightbox').classList.remove('hidden');
-  document.body.classList.add('lb-open');
-  img.src = s.image_url;
-}
-
-function closeSceneLightbox() {
-  const lb = $('#sc-lightbox');
-  if (!lb || lb.classList.contains('hidden')) return;
-  lb.classList.add('hidden');
-  document.body.classList.remove('lb-open');
-  const img = $('#sc-lb-img');
-  img.onerror = null;
-  img.removeAttribute('src');
-}
-
-// Delegated so it survives every re-render (cards are replaced on each load).
-$('#sc-list').addEventListener('click', (e) => {
-  const el = e.target.closest('.sc-img');
-  if (el && el.dataset.id) openSceneLightbox(el.dataset.id);
-});
-$('#sc-lb-close').addEventListener('click', closeSceneLightbox);
-$('#sc-lightbox').addEventListener('click', (e) => {
-  if (e.target.closest('[data-sc-close]')) closeSceneLightbox();   // backdrop tap
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeSceneLightbox();
-});
 
 /* ---------------- bandwidth usage (self + embedded admin view) ----------------
    The portal counts the REAL bytes it sends each logged-in user (Live video,
@@ -3193,8 +2923,7 @@ async function loadAllUsage() {
    portal's own users DB (portal/userstore.py), so changes apply at once with NO
    container restart. Keep TABS in sync with AVAILABLE_TABS in userstore.py. */
 const TABS = [['live', 'Live'], ['events', 'Events'], ['fire', 'Fire alerts'],
-              ['episodes', 'Episodes'], ['adaptive', 'Scenes'],
-              ['scenes', 'Scene log'], ['notifications', 'Notifications']];
+              ['visits', 'Visits'], ['notifications', 'Notifications']];
 const USER_VIEWS = TABS.map(t => t[0]);
 function tabKey(v) { return 'tab_' + v; }
 

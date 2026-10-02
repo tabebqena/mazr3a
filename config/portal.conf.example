@@ -133,3 +133,12 @@ FIREWATCH_JPG_REPLACE=/media/
 # ------------------------------------------------------------------
 SCENE_DB=/media/scenewatch/scenewatch.db
 SCENE_JPG_ROOT=/media/scenewatch
+
+# ------------------------------------------------------------------
+# visits store (read-only consumer, "Visits" tab). The `visits` compose
+# service writes ONLY this text store (visits.db + .cursor) under the same
+# host ./media tree this container mounts at /media. The portal reads it with
+# PRAGMA query_only and proxies each visit's representative frame through
+# Frigate's own snapshot endpoint - no image copies, no DB image paths.
+# ------------------------------------------------------------------
+VISITS_DB=/media/visits/visits.db

@@ -44,8 +44,7 @@ import time
 # - so an admin's access never depends on these keys. A non-admin gets exactly
 # the stored keys (an EMPTY list = no tabs). Keep AVAILABLE_TABS in sync with
 # TABS in portal/static/app.js.
-AVAILABLE_TABS = ("live", "events", "fire", "episodes", "adaptive", "scenes",
-                  "notifications")
+AVAILABLE_TABS = ("live", "events", "fire", "visits", "notifications")
 ALLOWED_PERMISSIONS = tuple("tab_" + t for t in AVAILABLE_TABS)
 
 # Usernames are path-safe (used in /api/users/<name>) and modest in length.

@@ -623,35 +623,32 @@ body.ev-clips-collapsed .ev-strip { display: none; }
 .ev-clips-count { color: var(--muted); font-size: 13px; white-space: nowrap; }
 /* The strip sits just under the header (no big gap of its own). */
 .ev-clips .ev-strip { margin-top: 6px; }
-/* Trailing control at the end of the clip list. "Load more" while events
-   remain; "No more videos" once every event is shown. Sized for BOTH the
-   horizontal strip (phones/tablet) and the vertical strip (phone landscape). */
-.ev-loadmore {
-  flex: 0 0 auto; align-self: center;
-  width: auto; min-width: 132px; margin: 4px 6px; padding: 8px 16px;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
-  color: var(--accent); font-weight: 600;
-}
+/* Trailing element at the end of the gallery. While events remain this is an
+   invisible sentinel the auto-loader watches (see evObserveSentinel); once every
+   event is shown it becomes the terminal "No more videos" note. */
+.ev-sentinel { grid-column: 1 / -1; height: 1px; }
 .ev-end {
-  flex: 0 0 auto; align-self: center;
+  grid-column: 1 / -1; justify-self: center; align-self: center;
   margin: 4px 6px; padding: 8px 12px;
   color: var(--muted); font-size: 12px; white-space: nowrap;
 }
 
-/* Lower horizontal navigation: one button per clip in the current page. */
+/* Event gallery: a responsive grid of clip buttons that fills the width and
+   grows downward; the tail sentinel triggers the next window on scroll. */
 .ev-strip {
-  display: flex; gap: 8px; margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px; margin-top: 12px;
   padding: 4px 2px 8px;
-  overflow-x: auto; overflow-y: hidden;
-  scroll-snap-type: x proximity;
-  -webkit-overflow-scrolling: touch;
+  align-content: start;
 }
+.ev-strip .empty { grid-column: 1 / -1; }
 .ev-clip {
-  flex: 0 0 auto; width: 150px; padding: 0;
+  width: 100%; padding: 0;
   display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; overflow: hidden; cursor: pointer;
-  scroll-snap-align: start; text-align: left;
+  text-align: left;
 }
 .ev-clip:hover { border-color: var(--accent); }
 .ev-clip.active {
@@ -994,7 +991,7 @@ nav .nav-install:hover { background: rgba(53,194,111,.12); }
   /* Large screens always show the clip strip: hide its phone-only toggle and
      ignore any collapsed state left over from a phone layout. */
   .ev-clips-toggle { display: none; }
-  body.ev-clips-collapsed .ev-strip { display: flex; }
+  body.ev-clips-collapsed .ev-strip { display: grid; }
 
   .controls { gap: 10px 14px; }
   .controls label { font-size: 12px; }
@@ -1004,9 +1001,9 @@ nav .nav-install:hover { background: rgba(53,194,111,.12); }
 
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 
-  /* Events player: a slightly shorter frame, wider strip cells. */
+  /* Events player: a slightly shorter frame, wider gallery cells. */
   .ev-stage { max-height: 58vh; }
-  .ev-clip { width: 168px; }
+  .ev-strip { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); }
 
   .pager { align-items: center; }
   .pager button { flex: 0 0 auto; width: auto; padding: 6px 14px; }
@@ -1234,18 +1231,19 @@ nav .nav-install:hover { background: rgba(53,194,111,.12); }
   body.events-full #view-events .ev-clips-toggle .ev-clips-icon { font-size: 15px; }
   body.events-full #view-events .ev-strip {
     flex: 1 1 auto;
-    flex-direction: column; flex-wrap: nowrap;
+    grid-template-columns: 1fr;
     margin: 0; padding: 2px;
     min-height: 0;
     overflow-x: hidden; overflow-y: auto;
-    scroll-snap-type: y proximity;
+    align-content: start;
     -webkit-overflow-scrolling: touch;
   }
   body.events-full #view-events .ev-clip { width: 100%; }
-  /* Trailing Load more / No more videos: full column width. */
-  body.events-full #view-events .ev-loadmore,
+  /* Trailing sentinel / No more videos: full column width. */
+  body.events-full #view-events .ev-sentinel,
   body.events-full #view-events .ev-end {
-    width: 100%; min-width: 0; align-self: stretch; margin: 6px 0; text-align: center;
+    grid-column: 1 / -1; justify-self: center;
+    width: 100%; min-width: 0; margin: 6px 0; text-align: center;
   }
   /* Collapsed: hide the strip; the toggle becomes a slim vertical handle. */
   body.ev-clips-collapsed #view-events .ev-strip { display: none; }
@@ -1466,29 +1464,29 @@ body #ev-stage.ev-stage:-webkit-full-screen .ev-clips-toggle {
 }
 body #ev-stage.ev-stage:fullscreen .ev-clips-toggle .ev-clips-name,
 body #ev-stage.ev-stage:-webkit-full-screen .ev-clips-toggle .ev-clips-name { display: inline; }
-/* The strip stays HORIZONTAL and full-width ABOVE the chip (order 1 places it
-   over the header because the container is column-reverse). */
+/* The gallery is full-width ABOVE the chip (order 1 places it over the header
+   because the container is column-reverse) as a scrollable grid. */
 body #ev-stage.ev-stage:fullscreen .ev-strip,
 body #ev-stage.ev-stage:-webkit-full-screen .ev-strip {
   order: 1;
   align-self: stretch;
-  display: flex; flex-direction: row; flex-wrap: nowrap;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   margin: 0 0 6px; padding: 6px; min-height: 0; max-height: 100%;
-  overflow-x: auto; overflow-y: hidden;
-  scroll-snap-type: x proximity;
+  overflow-x: hidden; overflow-y: auto;
+  align-content: start;
   -webkit-overflow-scrolling: touch;
   background: rgba(0,0,0,.82); border-radius: 10px;
   pointer-events: auto;
 }
 body #ev-stage.ev-stage:fullscreen .ev-strip .ev-clip,
-body #ev-stage.ev-stage:-webkit-full-screen .ev-strip .ev-clip { width: 150px; }
-body #ev-stage.ev-stage:fullscreen .ev-loadmore,
-body #ev-stage.ev-stage:-webkit-full-screen .ev-loadmore {
-  width: auto; min-width: 132px; align-self: center; margin: 0 6px;
+body #ev-stage.ev-stage:-webkit-full-screen .ev-strip .ev-clip { width: 100%; }
+body #ev-stage.ev-stage:fullscreen .ev-sentinel,
+body #ev-stage.ev-stage:-webkit-full-screen .ev-sentinel {
+  grid-column: 1 / -1; height: 1px;
 }
 body #ev-stage.ev-stage:fullscreen .ev-end,
 body #ev-stage.ev-stage:-webkit-full-screen .ev-end {
-  width: auto; align-self: center; margin: 0 6px;
+  grid-column: 1 / -1; width: auto; justify-self: center; margin: 0 6px;
 }
 /* Collapsed = the strip is gone (space freed); only the corner chip remains, so
    the sheet is always reachable by tapping "Clips" or the video. */

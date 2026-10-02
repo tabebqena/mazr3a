@@ -1986,10 +1986,10 @@ function renderPager(prefix, page, pages) {
   if (pn) pn.textContent = 'Page ' + page + ' / ' + pages;
 }
 
-/* ---------------- Frigate events: large player + clip strip + playlist --------
+/* ---------------- Frigate events: large player + clip gallery + playlist -----
    The filter bar (Camera/Class/Time/Refresh) is UNCHANGED; it feeds ONE large
-   <video> (#ev-video) through a horizontally scrolling strip of clip buttons
-   (#ev-strip). Replaces the old grid of per-card inline videos.
+   <video> (#ev-video) through a gallery of clip buttons (#ev-strip) that
+   infinite-scrolls as the user reaches its end.
      - evAll      : the filtered events (newest first) = the playlist order.
      - evSelIdx   : index into evAll of the clip in the stage (-1 = none).
      - evPlaylist : the auto-advance switch (ON -> play the next clip on 'ended').
@@ -2004,9 +2004,9 @@ const EV_IDLE_MS = 300000;  // idle stop: 5 minutes (fixed; Live uses STREAM_IDL
 const EV_STORE = { cam: 'portal.evCam', label: 'portal.evLabel' };
 
 let evAll = [];             // current filter's full event array (newest first)
-let evShown = 0;            // how many clips are in the strip (grows on Load more)
+let evShown = 0;            // how many clips are in the gallery (grows on scroll)
 let evSelIdx = -1;          // index into evAll of the clip in the stage
-let evPlaylist = false;     // auto-advance switch
+let evPlaylist = true;      // auto-advance switch (ON by default)
 let evPlaylistResume = false;  // playlist was ON when the idle stop fired
 let evIdleTimer = null;
 
@@ -2018,8 +2018,11 @@ function loadEventsPrefs() {
     if (cam != null && sel && $$('option', sel).some(o => o.value === cam)) {
       sel.value = cam;
     }
+    const lsel = $('#ev-label');
     const lab = localStorage.getItem(EV_STORE.label);
-    if (lab != null) $('#ev-label').value = lab;
+    if (lab != null && lsel && $$('option', lsel).some(o => o.value === lab)) {
+      lsel.value = lab;
+    }
   } catch (e) { /* localStorage unavailable - filters just stay at defaults */ }
   syncEvFsCam();
 }
@@ -2171,12 +2174,13 @@ function markEvActive() {
 // Stop the player and drop the selection (leaving the tab / changing filters).
 function evTeardown() {
   clearEvIdle();
+  if (evSentinelObs) evSentinelObs.disconnect();
   // A filter / camera change also lands here and MUST keep fullscreen (onRoute
   // exits it when LEAVING the tab). Restore the clip sheet only when windowed.
   if (!evStageFullscreen()) evUnmountFsClips();
   hideEvOverlay();
   hideEvCenter();
-  evPlaylist = false;
+  evPlaylist = true;              // default ON again for the next selection
   evPlaylistResume = false;
   evSelIdx = -1;
   if (evClipsAuto) { evClipsAuto = false; setEvClipsCollapsed(false); }
@@ -2321,11 +2325,9 @@ $('#ev-video').addEventListener('ended', () => { if (evPlaylist) evAdvance(); })
 // Any interaction inside the tab is a user present: (re)arm the idle stop.
 ['pointerdown', 'keydown', 'wheel'].forEach(evt =>
   $('#view-events').addEventListener(evt, armEvIdle, { passive: true }));
-// Click a clip in the strip: select + play it in the large frame. The trailing
-// "Load more" button appends the next window of clips - the SAME behaviour
-// whether the strip is horizontal (phones/tablet) or vertical (phone landscape).
+// Click a clip in the gallery: select + play it in the large frame. Reaching the
+// end of the gallery appends the next window automatically (see evObserveSentinel).
 $('#ev-strip').addEventListener('click', (e) => {
-  if (e.target.closest('#ev-loadmore')) { loadMoreEvClips(); return; }
   const btn = e.target.closest('.ev-clip');
   if (!btn) return;
   evPlaylistResume = false;
@@ -2407,6 +2409,7 @@ async function loadEvents() {
     const first = evAll.findIndex(x => x && x.has_clip);
     if (first >= 0) evSelect(first, false);
     else if (evAll.length) evSelect(0, false);   // snapshots only
+    armEvIdle();   // the default-ON playlist must still stop after the idle window
   } catch (e) {
     evAll = [];
     evShown = 0;
@@ -2417,10 +2420,9 @@ async function loadEvents() {
   }
 }
 
-// Render the clip list: the first evShown events plus a trailing control -
-// "Load more" while events remain, or "No more videos" once all are shown.
-// evShown grows by EV_PAGE per click; ONE rendering serves both the horizontal
-// strip (phones/tablet) and the vertical strip (phone landscape).
+// Render the gallery: the first evShown events plus a trailing element -
+// a sentinel while events remain, or "No more videos" once all are shown.
+// evShown grows by EV_PAGE per auto-load; ONE rendering serves every layout.
 function renderEvClips() {
   if (evShown > evAll.length) evShown = evAll.length;
   if (evShown <= 0) evShown = Math.min(evAll.length, EV_PAGE);
@@ -2434,7 +2436,7 @@ function renderEvClips() {
   renderEvStrip(evAll.slice(0, evShown), 0);
 }
 
-// One clip button (shared by the first render and the "Load more" append).
+// One clip button (shared by the first render and each auto-load append).
 function evClipHtml(ev, idx) {
   const glyph = ev.has_clip ? '<span class="ev-playglyph">&#9654;</span>' : '';
   const thumb = ev.has_snapshot
@@ -2450,14 +2452,14 @@ function evClipHtml(ev, idx) {
     '</span>' +
   '</button>';
 }
-// The trailing control: "Load more" while events remain, else "No more videos"
-// (uniform for the horizontal strip and the vertical landscape strip).
+// The trailing element: a sentinel the auto-loader watches while events remain,
+// else a terminal note (uniform for every gallery layout).
 function evTailHtml() {
   return evShown < evAll.length
-    ? '<button id="ev-loadmore" class="ev-loadmore" type="button">Load more</button>'
+    ? '<div id="ev-sentinel" class="ev-sentinel" aria-hidden="true"></div>'
     : '<div class="ev-end">No more videos</div>';
 }
-// The lower navigation: one button per clip, then the trailing control.
+// The gallery: one button per clip, then the trailing element.
 function renderEvStrip(events, baseIdx) {
   const box = $('#ev-strip');
   if (!Array.isArray(events) || !events.length) {
@@ -2467,11 +2469,12 @@ function renderEvStrip(events, baseIdx) {
   box.innerHTML = events.map((ev, i) => evClipHtml(ev, baseIdx + i)).join('') +
     evTailHtml();
   markEvActive();
+  evObserveSentinel();
 }
-// "Load more": APPEND the next window (preserving the scroll position) by
-// replacing the old trailing control with the new clips + a fresh control. The
-// already-active clip is left untouched (so nothing scrolls out from under the
-// user - do NOT call markEvActive here).
+// APPEND the next window (preserving the scroll position) by replacing the old
+// trailing sentinel with the new clips + a fresh sentinel. The already-active
+// clip is left untouched (so nothing scrolls out from under the user - do NOT
+// call markEvActive here).
 function loadMoreEvClips() {
   if (evShown >= evAll.length) return;
   const box = $('#ev-strip');
@@ -2479,9 +2482,27 @@ function loadMoreEvClips() {
   evShown = Math.min(evAll.length, evShown + EV_PAGE);
   const html = evAll.slice(from, evShown)
     .map((ev, i) => evClipHtml(ev, from + i)).join('') + evTailHtml();
-  const tail = $('#ev-loadmore', box) || $('.ev-end', box);
+  const tail = $('#ev-sentinel', box) || $('.ev-end', box);
   if (tail) tail.outerHTML = html;
   else box.insertAdjacentHTML('beforeend', html);
+  evObserveSentinel();
+}
+// Infinite scroll: watch the tail sentinel and auto-append the next window as
+// the user reaches the end of the gallery. The events are already in evAll, so
+// this only reveals them; each render re-arms the observer for the new sentinel.
+let evSentinelObs = null;
+function evObserveSentinel() {
+  if (typeof IntersectionObserver === 'undefined') return;
+  if (!evSentinelObs) {
+    evSentinelObs = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting) && evShown < evAll.length) {
+        loadMoreEvClips();
+      }
+    }, { rootMargin: '300px' });
+  }
+  evSentinelObs.disconnect();
+  const s = $('#ev-sentinel');
+  if (s) evSentinelObs.observe(s);
 }
 
 /* ---------------- Firewatch fire detections & alerts (paged + time-filtered) -- */

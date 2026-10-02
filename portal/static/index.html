@@ -223,13 +223,22 @@
       <section id="view-events" class="view hidden">
         <div class="controls">
           <label>Camera <select id="ev-cam"></select></label>
-          <label>Class <input id="ev-label" list="ev-label-list" placeholder="all"></label>
-          <datalist id="ev-label-list">
-            <option value="person"><option value="car"><option value="motorcycle">
-            <option value="truck"><option value="dog"><option value="cat">
-            <option value="horse"><option value="sheep"><option value="cow">
-            <option value="bird"><option value="knife">
-          </datalist>
+          <label>Class
+            <select id="ev-label">
+              <option value="">all</option>
+              <option value="person">person</option>
+              <option value="car">car</option>
+              <option value="motorcycle">motorcycle</option>
+              <option value="truck">truck</option>
+              <option value="dog">dog</option>
+              <option value="cat">cat</option>
+              <option value="horse">horse</option>
+              <option value="sheep">sheep</option>
+              <option value="cow">cow</option>
+              <option value="bird">bird</option>
+              <option value="knife">knife</option>
+            </select>
+          </label>
           <label>Time <select id="ev-time"></select></label>
           <div id="ev-custom-wrap" class="time-custom hidden" data-preset-sel="ev-time">
             <label>From <input id="ev-from" type="datetime-local"></label>
@@ -262,8 +271,8 @@
             <span id="ev-now" class="ev-now"></span>
             <!-- Playlist switch: when ON, the next clip starts automatically as
                  soon as the current one ends. Disabled with no playable clip. -->
-            <button id="ev-playlist" type="button" aria-pressed="false" disabled
-                    title="Play the next clip automatically">Playlist: off</button>
+            <button id="ev-playlist" type="button" aria-pressed="true" disabled
+                    title="Play the next clip automatically">Playlist: on</button>
             <!-- Fullscreen on the STAGE (not the <video>), so the idle-stop
                  Resume overlay stays visible inside the fullscreen view. -->
             <button id="ev-fs" type="button" aria-pressed="false"

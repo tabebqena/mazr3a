@@ -688,6 +688,7 @@ body.ev-clips-collapsed .ev-strip { display: none; }
 .tag.fire { background: #5c1d1d; color: var(--red); }
 .tag.smoke { background: #5c461d; color: var(--amber); }
 .tag.alerted { background: #4a1f1f; color: #ff9d9d; border: 1px solid var(--red); }
+.tag.review { background: #4a3a12; color: #ffd479; border: 1px solid #8a6a1f; }
 /* Derived fire-evidence tags (inferred portal-side, see portal/firestore.py):
    motion = a box sat near motion; hits = consecutive evidence frames in a burst. */
 .tag.motion { background: #10303a; color: #63c8e8; }

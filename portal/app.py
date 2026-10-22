@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.12"
+APP_VERSION = "0.11.13"
 _HTMX = None
 
 
@@ -1373,18 +1373,21 @@ def _visits_path(request: Request):
 async def visits(request: Request, user: dict = Depends(current_user),
                  day: Optional[str] = None, camera: Optional[str] = None,
                  after: Optional[float] = None, before: Optional[float] = None,
-                 show: Optional[str] = None,
+                 show: Optional[str] = None, review: Optional[str] = None,
                  limit: int = 50, offset: int = 0):
     """The per-camera person-visit log, newest first.
 
     `show` = "all" lists every visit; the default (or "significant") keeps only
     the visits the service itself would log (moved or touched a frame edge).
+    `review=only` keeps visits flagged by the v2 merge engine for review.
     """
     db = _visits_path(request)
     significant = None if (show or "").lower() == "all" else True
+    needs_review = True if (review or "").lower() in ("1", "true", "only") else None
     result = visitstore.list_visits(
         db, day=day or None, camera=camera or None,
         after=after, before=before, significant=significant,
+        needs_review=needs_review,
         limit=limit, offset=offset)
     result["days"] = visitstore.days(db)
     result["cameras"] = visitstore.cameras(db)

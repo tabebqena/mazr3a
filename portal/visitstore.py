@@ -79,6 +79,11 @@ def _visit_dict(row):
         "moved": bool(_col(row, "moved")),
         "edge": bool(_col(row, "edge")),
         "significant": bool(_col(row, "significant")),
+        "state": _col(row, "state"),
+        "confidence": (float(_col(row, "confidence"))
+                       if _col(row, "confidence") is not None else None),
+        "needs_review": bool(_col(row, "needs_review")),
+        "review_reason": _col(row, "review_reason"),
         "image_url": _image_url(rep),
     }
 
@@ -96,7 +101,7 @@ def _visit_events(conn, visit_id):
 
 
 def list_visits(db_path, *, day=None, camera=None, after=None, before=None,
-                significant=None, limit=50, offset=0):
+                significant=None, needs_review=None, limit=50, offset=0):
     """Visits, newest first. `{items, total}` or `{items: [], note: ...}`.
 
     `significant` (None = every visit, True/False = filter) mirrors the
@@ -127,6 +132,9 @@ def list_visits(db_path, *, day=None, camera=None, after=None, before=None,
         if significant is not None:
             clauses.append("significant = ?")
             params.append(1 if significant else 0)
+        if needs_review is not None:
+            clauses.append("needs_review = ?")
+            params.append(1 if needs_review else 0)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         total = conn.execute("SELECT COUNT(*) FROM visits " + where,
                              params).fetchone()[0]

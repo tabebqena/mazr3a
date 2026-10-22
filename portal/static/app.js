@@ -2741,6 +2741,10 @@ function visitCard(v) {
     + '<span class="tag">person #' + Number(v.person_no || 0) + '</span>'
     + (v.moved ? '<span class="tag">moved</span>' : '')
     + (v.edge ? '<span class="tag">edge</span>' : '')
+    + (v.state ? '<span class="tag">' + esc(v.state) + '</span>' : '')
+    + (v.needs_review
+      ? '<span class="tag review" title="' + esc(v.review_reason || '')
+        + '">needs review</span>' : '')
     + (v.significant ? '' : '<span class="tag">quiet</span>');
   const range = vsClock(v.enter_time) + '–' + vsClock(v.leave_time)
     + ' &middot; ' + vsDuration(v.duration_s)
@@ -2778,11 +2782,13 @@ async function loadVisits() {
   const st = $('#vs-status');
   const pager = $('#vs-pager');
   st.textContent = 'Loading…';
+  const show = $('#vs-show').value || 'significant';
   const p = new URLSearchParams({
     limit: String(VS_LIMIT),
     offset: String((vsPage - 1) * VS_LIMIT),
-    show: $('#vs-show').value || 'significant',
+    show: show === 'review' ? 'all' : show,
   });
+  if (show === 'review') p.set('review', 'only');
   const cam = $('#vs-cam').value; if (cam) p.set('camera', cam);
   const day = $('#vs-day').value; if (day) p.set('day', day);
   const { after, before } = timeRange($('#vs-time'), $('#vs-from'), $('#vs-to'));

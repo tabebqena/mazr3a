@@ -146,8 +146,10 @@ services:
   # SQLite DB - it queries Frigate's REST API only (/api/events) and crops the
   # person from the mounted media tree (<cam>-<event_id>-clean.webp) for a cheap
   # clothing-colour histogram. Identity is a per-camera OPEN PRESENCE, retired
-  # after INACTIVITY_S (4 h) with no person events; different people separate by
-  # histogram + motion direction.
+  # after INACTIVITY_S (4 h) with no person events; a state-aware score (time +
+  # exit->entry continuity + histogram, with direction only as a soft cue) groups
+  # A1-A6. Ambiguous links stay separate and are flagged (visits.needs_review).
+  # MERGE_ENGINE=legacy restores the old hard-gate merge.
   #
   # Code/config are mounted read-only so edits need only
   # `docker compose restart visits`. It writes ONLY its own text store under

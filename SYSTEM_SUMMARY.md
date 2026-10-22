@@ -12,10 +12,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v48` |
-| Last updated | 2026-10-02 |
+| Summary version | `v49` |
+| Last updated | 2026-10-22 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.11.7` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.11.13` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 | Portal notifications | Server-side notification feed + **Notifications** tab with unread badge, browser-Notification gate, and a notification-only `/sw.js` (no fetch/cache handler). See [`plans/portal-notifications.md`](plans/portal-notifications.md) |
 
@@ -35,9 +35,10 @@ core, with purpose-built side services around it:
   into **one text line per visit, per camera** (`Estraha (cam01)  Field West
   person #2  14:32-14:36  4 min`) using **no model**: it reads Frigate through
   its **REST API only** (never the DB), crops the person from the mounted media
-  tree for a cheap **clothing-colour histogram**, separates people by histogram
-  + motion direction, and retires an open presence after 4 h of no person
-  events. The old `scenereader` code is kept in `scenereader/`; its compose
+  tree for a cheap **clothing-colour histogram**, and uses a state-aware merge
+  (time + spatial continuity + histogram, with direction only as a soft cue) to
+  group A1–A6 within-camera cases. Ambiguous links are kept separate and flagged
+  for review. The old `scenereader` code is kept in `scenereader/`; its compose
   definition is archived in `archive/scenereader.compose.yml`.
 - **telegram-bot** answers `/status`, `/help`, `/start` live from Telegram.
 - **logs** is a read-only Docker-logs sidecar for the portal's admin Debug tab.
@@ -170,18 +171,18 @@ see [`archive/README.md`](archive/README.md)).
 |---|---|
 | Container | `visits` |
 | Image | **built** from [`visits/Dockerfile`](visits/Dockerfile) (`python:3.11-slim` + `numpy`, `Pillow`); unprivileged uid 1000. **No model / no VLM / no OpenVINO.** |
-| Purpose | Turn Frigate's person events into **one text line per visit, per camera** with duration. Identity = a per-camera open presence, retired after `INACTIVITY_S` (4 h) of no person events; different people separated by a cheap clothing-colour **histogram + motion direction**. |
+| Purpose | Turn Frigate's person events into **one text line per visit, per camera** with duration. Identity = a per-camera open presence, retired after `INACTIVITY_S` (4 h) of no person events; a state-aware score (time + spatial continuity + clothing histogram, with direction only when trustworthy) groups A1–A6; ambiguous candidates stay separate and are flagged. |
 | Dev files | [`visits/visits.py`](visits/visits.py) (service + CLI), [`visits/requirements.txt`](visits/requirements.txt) |
-| Config | [`config/visits.conf`](config/visits.conf) (poll/merge/identity/significance/retention) + [`config/places.conf`](config/places.conf) (camera/zone → place names) |
+| Config | [`config/visits.conf`](config/visits.conf) (poll/state-aware merge/identity/significance/retention) + [`config/places.conf`](config/places.conf) (camera/zone → place names) |
 | Metadata source | **Frigate REST only** (`/api/events`) — deliberately NOT the Frigate SQLite DB. |
 | Frame source | Read **in place, never copied** from `./media` (`<cam>-<event_id>-clean.webp`) to crop the person via `data.box`. |
-| Motion direction | Derived from Frigate `data.path_data` (first→last point); `data.velocity_angle` is always 0 for events and is unused. |
+| Motion direction | Derived from Frigate `data.path_data` (head/tail segments), used only when displacement + straightness make it trustworthy; `data.velocity_angle` is always 0 for events and is unused. |
 | Load reduction | "Significant" is decided from metadata only (trajectory span / box near a frame edge). Significant events are histogrammed at once; insignificant ones are buffered and analysed once `INSIGNIFICANT_COUNT_THRESHOLD` accumulate. Stationary, non-edge visits are stored with `significant=0` and left out of the log. |
-| Store | `./media/visits/` — **text only**: `visits.db` (WAL: cached `events` + `visits` + `visit_events`) and `.cursor`. **No image copies.** |
+| Store | `./media/visits/` — **text only**: `visits.db` (WAL: cached `events` + `visits` + `visit_events` + `visit_links`) and `.cursor`. **No image copies.** |
 | Volumes | `./visits:/visits:ro` · `./config:/config:ro` · `./media:/media` (rw) |
 | Ports | none (outbound only) |
-| CLI | `--check` (read-only probe), `--once`, `--list [--day YYYY-MM-DD] [--all]`, `--status` |
-| Notes | Edits need only `docker compose restart visits`. No host cron — the in-container scheduler polls every `POLL_EVERY_S` (60 s). Everything derived is rebuildable from the cached `events`; histograms are cached per event, so threshold changes cost no re-crop. Cross-camera linking, naming, worker-vs-guest and the day-summary digest are **deferred**. |
+| CLI | `--check` (read-only probe), `--once`, `--backfill` (7-day path/feature refetch), `--list [--day YYYY-MM-DD] [--all]`, `--status` |
+| Notes | Edits need only `docker compose restart visits`. No host cron — the in-container scheduler polls every `POLL_EVERY_S` (60 s). Everything derived is rebuildable from the cached `events`; raw paths and histograms are cached per event, so threshold changes cost no re-crop/re-fetch. `MERGE_ENGINE=legacy` restores the old hard-gate engine. Cross-camera linking, naming, worker-vs-guest and the day-summary digest are **deferred**. |
 
 ### 3.8 Service → development-file map (quick lookup)
 | Service | Primary code / config in repo |
@@ -502,5 +503,5 @@ of the system:
 ## 12. Deferred / future phases
 
 - **Phase 1b** — native in-Frigate fire/smoke detection via a fire+smoke+person+car+animal union model (so fire appears in the Frigate UI / MQTT / recorded clips).
-- **Phase 2** — **in progress via `visits` (§3.7):** a per-camera person-visit text log with anonymous `person #` identity (histogram + motion direction, 4 h inactivity retire). **Still deferred:** the **day-summary digest**, **worker-vs-guest** signalling, **cross-camera** person linking (turns a walk into one presence and avoids double counting), **person naming** ("name this person" assisted labeling / face gallery), **person attributes** (CLIP zero-shot clothing, daylight-only), appearance ReID (OSNet) in place of the colour histogram, and the portal view. The archived `scenereader` (deterministic episodes + optional VLM caption) is kept in `scenereader/` for reference.
+- **Phase 2** — **in progress via `visits` (§3.7):** a per-camera person-visit text log with anonymous `person #` identity (state-aware time/spatial/histogram merge, 4 h inactivity retire) and a read-only portal Visits tab. **Still deferred:** the **day-summary digest**, **worker-vs-guest** signalling, **cross-camera** person linking (turns a walk into one presence and avoids double counting), **person naming** ("name this person" assisted labeling / face gallery), **person attributes** (CLIP zero-shot clothing, daylight-only), appearance ReID (OSNet) in place of the colour histogram. The archived `scenereader` (deterministic episodes + optional VLM caption) is kept in `scenereader/` for reference.
 - **Phase 3** — **real names** via face recognition (InsightFace SCRFD + ArcFace against a named gallery, assisted by manual naming first) and gait. Gait is not feasible on the 640×360 detect substream.

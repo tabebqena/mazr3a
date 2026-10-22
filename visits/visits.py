@@ -14,13 +14,18 @@ crop the person for a cheap clothing-colour histogram.
 
 HOW IDENTITY WORKS
 ------------------
-Per camera we keep a set of OPEN PRESENCES. A new event joins an open presence
-when the time gap is small (`MERGE_GAP_S`), the motion direction is compatible
-(`ANGLE_TOL_DEG`, derived from Frigate's `data.path_data`), and the clothing
-histogram is similar enough (`HIST_THRESHOLD`). Otherwise it starts a NEW
-presence with the next `person #`. A presence is RETIRED after `INACTIVITY_S`
-with no person events (4 h by default -> the overnight gap closes it, so each
-morning starts a fresh person #).
+Per camera we keep a set of OPEN PRESENCES. Each event is classified from its
+Frigate path + final box as in_place / stopped / lost (or exited when clipped on
+the left/right/top edge). A new event joins an open presence by a WEIGHTED SCORE
+over time gap, exit->entry spatial continuity, clothing histogram and (only when
+both fragments have trustworthy motion) direction. State-specific resume windows
+implement A1-A6: continuous/turn, move-stop-move (180 s), stop-and-end, in-place
+(one visit for the whole presence), and brief occlusion (60 s). Direction is
+never a hard gate. Ambiguous candidates stay SEPARATE and are flagged in
+`visit_links` / `visits.needs_review`.
+
+A presence is RETIRED after `INACTIVITY_S` with no person events (4 h by
+default -> the overnight gap closes it, so each morning starts a fresh person #).
 
 LOAD REDUCTION (the "drop until count" gate)
 --------------------------------------------
@@ -34,12 +39,14 @@ whole batch is analysed once. A visit whose whole presence never really moved
 text log.
 
 Everything derived is REBUILDABLE from the cached `events` table, so changing a
-threshold costs no re-capture and no re-crop (histograms are cached per event).
+threshold costs no re-capture and no re-crop (raw paths and histograms are cached
+per event).
 
 Usage:
   python visits.py                 # run the scheduler loop
-  python visits.py --check         # READ-ONLY config/API/store probe
+  python visits.py --check         # config/API/store probe
   python visits.py --once          # one poll/analyse/rebuild, exit
+  python visits.py --backfill      # re-fetch lookback and rebuild path features
   python visits.py --list [--day YYYY-MM-DD] [--all]
   python visits.py --status
 """
@@ -70,11 +77,13 @@ DEFAULTS = {
     "PLACES_CONF": "/config/places.conf",
     "POLL_EVERY_S": "60",
     "HEARTBEAT_S": "300",
+    "MERGE_ENGINE": "v2",
     "MERGE_GAP_S": "30",
     "INACTIVITY_S": "14400",
     "ANGLE_TOL_DEG": "45",
     "MOTION_MIN_DISP": "0.05",
     "EDGE_MARGIN": "0.05",
+    "EXIT_MARGIN": "0.02",
     "INSIGNIFICANT_COUNT_THRESHOLD": "5",
     "MIN_DURATION_S": "8",
     "HIST_THRESHOLD": "0.6",
@@ -85,6 +94,37 @@ DEFAULTS = {
     "RESCAN_OVERLAP_S": "300",
     "FETCH_LIMIT": "1000",
     "TZ_OFFSET_H": "0",
+    # --- v2 state-aware merge -------------------------------------------------
+    # State-specific resume windows. A5 stationary presences may resume for the
+    # whole visit inactivity window; A3 stops are limited to STOP_GAP_S.
+    "CONT_GAP_S": "30",
+    "STOP_GAP_S": "180",
+    "OCCLUSION_GAP_S": "60",
+    "STATIONARY_GAP_S": "14400",
+    # Motion classification / direction trust.
+    "DETECT_ASPECT": "0.5625",          # detect height / width (640x360)
+    "MOVING_DISP": "0.05",
+    "DIR_MIN_DISP": "0.05",
+    "DIR_MIN_STRAIGHTNESS": "0.5",
+    "TAIL_STATIONARY_DIST": "0.02",
+    "TAIL_STATIONARY_MIN_GAP_S": "2",
+    # Spatial tolerances (aspect-corrected frame-width units).
+    "CONT_RADIUS": "0.08",
+    "STOP_RADIUS": "0.06",
+    "OCCLUSION_RADIUS": "0.15",
+    "IN_PLACE_RADIUS": "0.05",
+    # Appearance gates.
+    "HIST_MIN": "0.60",
+    "HIST_MISSING_TIGHT_SPACE": "0.80",
+    "HIST_MISSING_MAX_GAP_S": "10",
+    # Decision thresholds / score weights.
+    "MERGE_SCORE": "0.70",
+    "AMBIG_SCORE": "0.50",
+    "ASSIGN_MARGIN": "0.05",
+    "W_TIME": "0.25",
+    "W_SPACE": "0.40",
+    "W_HIST": "0.30",
+    "W_DIR": "0.05",
 }
 
 SCHEMA = """
@@ -99,6 +139,20 @@ CREATE TABLE IF NOT EXISTS events (
     angle            REAL,
     entry_xy         TEXT,
     exit_xy          TEXT,
+    path_json        TEXT,
+    end_xy           TEXT,
+    net_disp         REAL NOT NULL DEFAULT 0,
+    path_len         REAL NOT NULL DEFAULT 0,
+    straightness     REAL,
+    head_angle       REAL,
+    tail_angle       REAL,
+    tail_gap_s       REAL,
+    tail_stationary  INTEGER NOT NULL DEFAULT 0,
+    dir_trusted      INTEGER NOT NULL DEFAULT 0,
+    edge_exit        INTEGER NOT NULL DEFAULT 0,
+    speed            REAL,
+    vel_xy           TEXT,
+    state            TEXT,
     significant      INTEGER NOT NULL DEFAULT 0,
     analyzed         INTEGER NOT NULL DEFAULT 0,
     hist_ok          INTEGER NOT NULL DEFAULT 0,
@@ -124,6 +178,12 @@ CREATE TABLE IF NOT EXISTS visits (
     moved         INTEGER NOT NULL DEFAULT 0,
     edge          INTEGER NOT NULL DEFAULT 0,
     significant   INTEGER NOT NULL DEFAULT 1,
+    state         TEXT,
+    confidence    REAL,
+    needs_review  INTEGER NOT NULL DEFAULT 0,
+    review_reason TEXT,
+    first_event_id TEXT,
+    last_event_id  TEXT,
     created_at    REAL NOT NULL DEFAULT 0,
     updated_at    REAL NOT NULL DEFAULT 0
 );
@@ -136,7 +196,51 @@ CREATE TABLE IF NOT EXISTS visit_events (
     PRIMARY KEY (visit_id, frigate_event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_visit_events_e ON visit_events(frigate_event_id);
+
+CREATE TABLE IF NOT EXISTS visit_links (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera        TEXT NOT NULL,
+    prev_event_id TEXT NOT NULL,
+    next_event_id TEXT NOT NULL,
+    dt            REAL,
+    dist          REAL,
+    hist_sim      REAL,
+    angle_delta   REAL,
+    score         REAL,
+    decision      TEXT NOT NULL,
+    reason        TEXT,
+    created_at    REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_visit_links_e ON visit_links(camera, next_event_id);
+CREATE INDEX IF NOT EXISTS idx_visit_links_d ON visit_links(decision);
 """
+
+# Columns added after the first store version. `CREATE TABLE IF NOT EXISTS`
+# never alters an existing table, so open_store() applies these idempotently.
+EVENT_EXTRA_COLUMNS = {
+    "path_json": "TEXT",
+    "end_xy": "TEXT",
+    "net_disp": "REAL NOT NULL DEFAULT 0",
+    "path_len": "REAL NOT NULL DEFAULT 0",
+    "straightness": "REAL",
+    "head_angle": "REAL",
+    "tail_angle": "REAL",
+    "tail_gap_s": "REAL",
+    "tail_stationary": "INTEGER NOT NULL DEFAULT 0",
+    "dir_trusted": "INTEGER NOT NULL DEFAULT 0",
+    "edge_exit": "INTEGER NOT NULL DEFAULT 0",
+    "speed": "REAL",
+    "vel_xy": "TEXT",
+    "state": "TEXT",
+}
+VISIT_EXTRA_COLUMNS = {
+    "state": "TEXT",
+    "confidence": "REAL",
+    "needs_review": "INTEGER NOT NULL DEFAULT 0",
+    "review_reason": "TEXT",
+    "first_event_id": "TEXT",
+    "last_event_id": "TEXT",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +343,18 @@ class Places:
 # ---------------------------------------------------------------------------
 # store
 # ---------------------------------------------------------------------------
+def _migrate_store(conn):
+    """Add columns introduced after the first store version (idempotent)."""
+    for table, columns in (("events", EVENT_EXTRA_COLUMNS),
+                           ("visits", VISIT_EXTRA_COLUMNS)):
+        present = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+        for name, decl in columns.items():
+            if name not in present:
+                conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_review"
+                 " ON visits(needs_review, enter_time)")
+
+
 def open_store(path):
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -248,6 +364,7 @@ def open_store(path):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    _migrate_store(conn)
     conn.commit()
     return conn
 
@@ -373,26 +490,148 @@ def angle_compatible(a, b, tol_deg):
 # ---------------------------------------------------------------------------
 # event normalization + analysis
 # ---------------------------------------------------------------------------
-def _path_features(path_data):
-    """(disp, angle_deg, entry_xy, exit_xy) from Frigate data.path_data."""
-    pts = []
+def _parse_path(path_data):
+    """Frigate data.path_data -> [(x, y, timestamp|None), ...].
+
+    Frigate 0.17 stores ``[[x, y], timestamp]``; tolerate a bare ``[x, y]``.
+    """
+    points = []
     for entry in path_data or ():
         try:
-            xy = entry[0]
-            pts.append((float(xy[0]), float(xy[1])))
+            if (isinstance(entry, (list, tuple)) and entry
+                    and isinstance(entry[0], (list, tuple))):
+                xy = entry[0]
+                ts = entry[1] if len(entry) > 1 else None
+            else:
+                xy = entry
+                ts = None
+            x, y = float(xy[0]), float(xy[1])
         except (TypeError, ValueError, IndexError):
             continue
-    if not pts:
-        return 0.0, None, None, None
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    disp = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
-    angle = None
-    if len(pts) >= 2:
-        dx, dy = pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]
-        if abs(dx) + abs(dy) > 1e-6:
-            angle = math.degrees(math.atan2(dy, dx))
-    return disp, angle, pts[0], pts[-1]
+        try:
+            ts = float(ts) if ts is not None else None
+        except (TypeError, ValueError):
+            ts = None
+        points.append((x, y, ts))
+    return points
+
+
+def _dist_xy(a, b, aspect):
+    if a is None or b is None:
+        return None
+    return math.hypot(a[0] - b[0], (a[1] - b[1]) * aspect)
+
+
+def _angle_xy(a, b, aspect):
+    if a is None or b is None:
+        return None
+    dx = b[0] - a[0]
+    dy = (b[1] - a[1]) * aspect
+    if abs(dx) + abs(dy) <= 1e-9:
+        return None
+    return math.degrees(math.atan2(dy, dx))
+
+
+def _box_end_xy(box):
+    """Final box bottom-centre, matching Frigate's path point convention."""
+    try:
+        x, y, w, h = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    return (x + w / 2.0, y + h)
+
+
+def _event_features(path_data, box, start_time, end_time, settings):
+    """Geometry/state features derived from one event's path and final box."""
+    aspect = settings.f("DETECT_ASPECT")
+    pts = _parse_path(path_data)
+    entry = pts[0][:2] if pts else None
+    tail = pts[-1][:2] if pts else None
+    end_xy = _box_end_xy(box)
+    box_ok = end_xy is not None
+    if end_xy is None and tail is not None:
+        end_xy = tail
+
+    if pts:
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        disp = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    else:
+        disp = 0.0
+
+    net_disp = _dist_xy(entry, end_xy, aspect) or 0.0
+    path_len = 0.0
+    for a, b in zip(pts, pts[1:]):
+        path_len += _dist_xy(a, b, aspect) or 0.0
+    straightness = (net_disp / path_len) if path_len > 0 else 0.0
+
+    head_angle = _angle_xy(pts[0], pts[1], aspect) if len(pts) >= 2 else None
+    tail_angle = _angle_xy(pts[-2], pts[-1], aspect) if len(pts) >= 2 else None
+    legacy_angle = _angle_xy(entry, tail, aspect) if len(pts) >= 2 else None
+
+    tail_gap = None
+    if end_time is not None and pts and pts[-1][2] is not None:
+        tail_gap = max(0.0, float(end_time) - pts[-1][2])
+    tail_stationary = False
+    if box_ok and tail is not None:
+        close = ((_dist_xy(tail, end_xy, aspect) or 0.0)
+                 <= settings.f("TAIL_STATIONARY_DIST"))
+        # A moving event usually has its last path point right at end_time.
+        # Only call it stationary when no point was sampled for a while.
+        if tail_gap is None:
+            tail_stationary = close
+        else:
+            tail_stationary = close and tail_gap >= settings.f("TAIL_STATIONARY_MIN_GAP_S")
+
+    dir_trusted = (len(pts) >= 2
+                   and net_disp >= settings.f("DIR_MIN_DISP")
+                   and straightness >= settings.f("DIR_MIN_STRAIGHTNESS"))
+
+    speed = None
+    vel_xy = None
+    if len(pts) >= 2 and pts[-1][2] is not None and pts[-2][2] is not None:
+        dt = pts[-1][2] - pts[-2][2]
+        if dt > 0:
+            speed = (_dist_xy(pts[-2], pts[-1], aspect) or 0.0) / dt
+            vel_xy = ((pts[-1][0] - pts[-2][0]) / dt,
+                      (pts[-1][1] - pts[-2][1]) / dt)
+    if speed is None and end_time is not None and start_time is not None:
+        duration = max(0.0, float(end_time) - float(start_time))
+        if duration > 0:
+            speed = net_disp / duration
+
+    edge = box_near_edge(box, settings.f("EDGE_MARGIN"))
+    exit_edge = box_exit_edge(box, settings.f("EXIT_MARGIN"))
+    moving_disp = settings.f("MOVING_DISP")
+    if exit_edge:
+        state = "exited"
+    elif tail_stationary and net_disp >= moving_disp:
+        state = "stopped"
+    elif net_disp < moving_disp:
+        state = "in_place"
+    else:
+        state = "lost"
+
+    return {
+        "disp": disp,
+        "entry": entry,
+        "tail": tail,
+        "end_xy": end_xy,
+        "net_disp": net_disp,
+        "path_len": path_len,
+        "straightness": straightness,
+        "head_angle": head_angle,
+        "tail_angle": tail_angle,
+        "legacy_angle": legacy_angle,
+        "tail_gap_s": tail_gap,
+        "tail_stationary": tail_stationary,
+        "dir_trusted": dir_trusted,
+        "edge": edge,
+        "edge_exit": exit_edge,
+        "speed": speed,
+        "vel_xy": vel_xy,
+        "state": state,
+    }
 
 
 def box_near_edge(box, margin):
@@ -404,6 +643,19 @@ def box_near_edge(box, margin):
             or (x + w) >= (1.0 - margin) or (y + h) >= (1.0 - margin))
 
 
+def box_exit_edge(box, margin):
+    """Exit candidate: clipped on left/right/top, NOT the bottom edge.
+
+    Frigate's path y is the box bottom; people standing/walking on the ground
+    routinely sit at y+h ~= 1.0, so the bottom edge is not a usable exit signal.
+    """
+    try:
+        x, y, w, h = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return False
+    return (x <= margin or y <= margin or (x + w) >= (1.0 - margin))
+
+
 def normalize_event(event, settings):
     data = event.get("data") or {}
     if not isinstance(data, dict):
@@ -412,20 +664,37 @@ def normalize_event(event, settings):
     if not isinstance(zones, list):
         zones = []
     box = data.get("box")
-    disp, angle, entry, exit_ = _path_features(data.get("path_data"))
-    edge = box_near_edge(box, settings.f("EDGE_MARGIN"))
-    significant = (disp >= settings.f("MOTION_MIN_DISP")) or edge
+    start = float(event.get("start_time") or 0)
+    end = float(event["end_time"]) if event.get("end_time") else None
+    path_data = data.get("path_data")
+    feat = _event_features(path_data, box, start, end, settings)
+    edge = feat["edge"]
+    significant = (feat["disp"] >= settings.f("MOTION_MIN_DISP")) or edge
     return {
         "frigate_event_id": event.get("id"),
         "camera": event.get("camera") or "",
-        "start_time": float(event.get("start_time") or 0),
-        "end_time": float(event["end_time"]) if event.get("end_time") else None,
+        "start_time": start,
+        "end_time": end,
         "zones": json.dumps(zones),
         "box": json.dumps(box) if box else None,
-        "motion_disp": disp,
-        "angle": angle,
-        "entry_xy": json.dumps(entry) if entry else None,
-        "exit_xy": json.dumps(exit_) if exit_ else None,
+        "motion_disp": feat["disp"],
+        "angle": feat["legacy_angle"],
+        "entry_xy": json.dumps(feat["entry"]) if feat["entry"] else None,
+        "exit_xy": json.dumps(feat["tail"]) if feat["tail"] else None,
+        "path_json": json.dumps(path_data) if path_data else None,
+        "end_xy": json.dumps(feat["end_xy"]) if feat["end_xy"] else None,
+        "net_disp": feat["net_disp"],
+        "path_len": feat["path_len"],
+        "straightness": feat["straightness"],
+        "head_angle": feat["head_angle"],
+        "tail_angle": feat["tail_angle"],
+        "tail_gap_s": feat["tail_gap_s"],
+        "tail_stationary": 1 if feat["tail_stationary"] else 0,
+        "dir_trusted": 1 if feat["dir_trusted"] else 0,
+        "edge_exit": 1 if feat["edge_exit"] else 0,
+        "speed": feat["speed"],
+        "vel_xy": json.dumps(feat["vel_xy"]) if feat["vel_xy"] else None,
+        "state": feat["state"],
         "significant": 1 if significant else 0,
     }
 
@@ -503,13 +772,310 @@ def _new_presence(row, camera, hist):
     }
 
 
-def build_visits(rows, settings, places):
-    """Deterministic per-camera presence merge. Pure function of `rows`."""
+def _json_point(value):
+    try:
+        point = json.loads(value)
+        return (float(point[0]), float(point[1]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _row_features(row, settings):
+    """Reconstruct one event's features, preferring the stored raw path."""
+    path = None
+    if row["path_json"]:
+        try:
+            path = json.loads(row["path_json"])
+        except (TypeError, ValueError):
+            path = None
+    box = json.loads(row["box"]) if row["box"] else None
+    start = float(row["start_time"] or 0)
+    end = float(row["end_time"]) if row["end_time"] else start
+    end = max(start, end)
+
+    if path:
+        feat = _event_features(path, box, start, end, settings)
+    else:
+        # Rows written before path_json existed: use the cached summary fields.
+        aspect = settings.f("DETECT_ASPECT")
+        entry = _json_point(row["entry_xy"])
+        tail = _json_point(row["exit_xy"])
+        end_xy = _box_end_xy(box) or tail
+        net_disp = _dist_xy(entry, end_xy, aspect) or 0.0
+        tail_stationary = False
+        if end_xy is not None and tail is not None:
+            tail_stationary = ((_dist_xy(tail, end_xy, aspect) or 0.0)
+                               <= settings.f("TAIL_STATIONARY_DIST"))
+        edge = box_near_edge(box, settings.f("EDGE_MARGIN"))
+        exit_edge = box_exit_edge(box, settings.f("EXIT_MARGIN"))
+        moving_disp = settings.f("MOVING_DISP")
+        if exit_edge:
+            state = "exited"
+        elif tail_stationary and net_disp >= moving_disp:
+            state = "stopped"
+        elif net_disp < moving_disp:
+            state = "in_place"
+        else:
+            state = "lost"
+        duration = max(0.0, end - start)
+        feat = {
+            "disp": float(row["motion_disp"] or 0.0),
+            "entry": entry,
+            "tail": tail,
+            "end_xy": end_xy,
+            "net_disp": net_disp,
+            "path_len": net_disp,
+            "straightness": 1.0 if net_disp > 0 else 0.0,
+            "head_angle": None,
+            "tail_angle": row["angle"],
+            "legacy_angle": row["angle"],
+            "tail_gap_s": None,
+            "tail_stationary": tail_stationary,
+            "dir_trusted": (row["angle"] is not None
+                            and net_disp >= settings.f("DIR_MIN_DISP")),
+            "edge": edge,
+            "edge_exit": exit_edge,
+            "speed": (net_disp / duration) if duration > 0 else None,
+            "vel_xy": None,
+            "state": state,
+        }
+
+    hist = blob_to_hist(row["hist"]) if row["hist_ok"] == 1 else None
+    zones = json.loads(row["zones"]) if row["zones"] else []
+    return {
+        "id": row["frigate_event_id"],
+        "camera": row["camera"],
+        "start": start,
+        "end": end,
+        "duration": max(0.0, end - start),
+        "zones": zones,
+        "hist": hist,
+        "box": box,
+        **feat,
+    }
+
+
+def _review_mark(p, reason):
+    p["needs_review"] = 1
+    if not reason:
+        return
+    old = p.get("review_reason") or ""
+    parts = [x for x in old.split(",") if x]
+    if reason not in parts:
+        parts.append(reason)
+    p["review_reason"] = ",".join(parts[:6])
+
+
+def _new_presence_v2(feat, camera):
+    return {
+        "camera": camera,
+        "enter": feat["start"],
+        "leave": feat["end"],
+        "events": [feat["id"]],
+        "zones": set(feat["zones"] or []),
+        "disp": feat["disp"],
+        "edge": bool(feat["edge"]),
+        "angle": feat["tail_angle"],
+        "hist": feat["hist"],
+        "rep": feat["id"],
+        "rep_dur": feat["duration"],
+        "n": 1,
+        "state": feat["state"],
+        "confidence": 1.0,
+        "needs_review": 0,
+        "review_reason": None,
+        "first_event_id": feat["id"],
+        "last_event_id": feat["id"],
+        "last_pos": feat["end_xy"],
+        "last_tail_angle": feat["tail_angle"],
+        "last_speed": feat["speed"],
+        "last_vel_xy": feat["vel_xy"],
+        "last_dir_trusted": bool(feat["dir_trusted"]),
+    }
+
+
+def _merge_into(p, feat, score):
+    p["leave"] = max(p["leave"], feat["end"])
+    p["n"] += 1
+    p["events"].append(feat["id"])
+    p["disp"] = max(p["disp"], feat["disp"])
+    p["edge"] = p["edge"] or bool(feat["edge"])
+    if feat["hist"] is not None:
+        p["hist"] = feat["hist"]
+    if feat["tail_angle"] is not None:
+        p["angle"] = feat["tail_angle"]
+    if feat["duration"] > p["rep_dur"]:
+        p["rep"], p["rep_dur"] = feat["id"], feat["duration"]
+    if feat["zones"]:
+        p["zones"].update(feat["zones"])
+    p["state"] = feat["state"]
+    p["confidence"] = min(float(p.get("confidence") or 1.0), float(score))
+    p["last_event_id"] = feat["id"]
+    p["last_pos"] = feat["end_xy"] or p["last_pos"]
+    p["last_tail_angle"] = feat["tail_angle"]
+    p["last_speed"] = feat["speed"]
+    p["last_vel_xy"] = feat["vel_xy"]
+    p["last_dir_trusted"] = bool(feat["dir_trusted"])
+
+
+def _allowed_gap(p, feat, settings):
+    prev = p["state"]
+    if prev == "exited":
+        return 0.0
+    if prev == "stopped":
+        if feat["state"] in ("stopped", "in_place"):
+            return settings.f("STATIONARY_GAP_S")
+        return settings.f("STOP_GAP_S")
+    if prev == "in_place":
+        return settings.f("STATIONARY_GAP_S")
+    if prev == "lost":
+        return settings.f("OCCLUSION_GAP_S")
+    return settings.f("CONT_GAP_S")
+
+
+def _radius_for(p, settings):
+    prev = p["state"]
+    if prev == "stopped":
+        return settings.f("STOP_RADIUS")
+    if prev == "in_place":
+        return settings.f("IN_PLACE_RADIUS")
+    if prev == "lost":
+        return settings.f("OCCLUSION_RADIUS")
+    return settings.f("CONT_RADIUS")
+
+
+def _candidate_distance(p, feat, settings):
+    aspect = settings.f("DETECT_ASPECT")
+    target = feat["entry"] or feat["end_xy"]
+    if target is None or p.get("last_pos") is None:
+        return None
+    d_last = _dist_xy(p["last_pos"], target, aspect)
+    d = d_last
+    if p["state"] == "lost" and p.get("last_vel_xy") is not None:
+        dt = max(0.0, feat["start"] - p["leave"])
+        vx, vy = p["last_vel_xy"]
+        predicted = (p["last_pos"][0] + vx * dt,
+                     p["last_pos"][1] + vy * dt)
+        d_pred = _dist_xy(predicted, target, aspect)
+        if d_pred is not None and (d is None or d_pred < d):
+            d = d_pred
+    return d
+
+
+def _candidate_score(p, feat, settings, dt, allowed):
+    radius = _radius_for(p, settings)
+    d = _candidate_distance(p, feat, settings)
+    if d is None or radius <= 0:
+        return None
+    if d > radius * 1.5:
+        return None
+    if dt > allowed:
+        return None
+
+    time_score = 1.0 - 0.5 * (dt / allowed) if allowed > 0 else 0.0
+    space_score = max(0.0, 1.0 - (d / radius))
+    h = None
+    if p.get("hist") is not None and feat["hist"] is not None:
+        h = float(np.dot(p["hist"], feat["hist"]))
+    hist_score = 0.5 if h is None else h
+
+    angle_delta = None
+    dir_score = 0.5
+    if (p.get("last_dir_trusted") and feat["dir_trusted"]
+            and p.get("last_tail_angle") is not None
+            and feat["head_angle"] is not None):
+        angle_delta = abs((float(p["last_tail_angle"])
+                           - float(feat["head_angle"]) + 180.0) % 360.0 - 180.0)
+        dir_score = max(0.0, math.cos(math.radians(angle_delta)))
+
+    score = (settings.f("W_TIME") * time_score
+             + settings.f("W_SPACE") * space_score
+             + settings.f("W_HIST") * hist_score
+             + settings.f("W_DIR") * dir_score)
+
+    reasons = []
+    hard_ok = True
+    if d > radius:
+        hard_ok = False
+        reasons.append("distance")
+    if h is not None and h < settings.f("HIST_MIN"):
+        hard_ok = False
+        reasons.append("hist")
+    if h is None and not (space_score >= settings.f("HIST_MISSING_TIGHT_SPACE")
+                          and dt <= settings.f("HIST_MISSING_MAX_GAP_S")):
+        hard_ok = False
+        reasons.append("hist_missing")
+
+    # A6 shares the "lost" state with ordinary A1/A2 fragmentation. Gaps past
+    # the normal continuation window must therefore clear a higher bar.
+    if (p["state"] == "lost" and dt > settings.f("CONT_GAP_S")
+            and score < settings.f("MERGE_SCORE") + settings.f("ASSIGN_MARGIN")):
+        hard_ok = False
+        reasons.append("occlusion_low_confidence")
+
+    return {
+        "prev": p,
+        "dt": dt,
+        "allowed": allowed,
+        "dist": d,
+        "hist": h,
+        "angle_delta": angle_delta,
+        "score": score,
+        "hard_ok": hard_ok,
+        "reasons": reasons,
+    }
+
+
+def _add_link(links, camera, prev_id, next_id, cand, decision, reason):
+    links.append({
+        "camera": camera,
+        "prev_event_id": prev_id,
+        "next_event_id": next_id,
+        "dt": cand["dt"] if cand else None,
+        "dist": cand["dist"] if cand else None,
+        "hist_sim": cand["hist"] if cand else None,
+        "angle_delta": cand["angle_delta"] if cand else None,
+        "score": cand["score"] if cand else None,
+        "decision": decision,
+        "reason": reason,
+    })
+
+
+def _finalize_presences(presences, settings, places):
+    presences.sort(key=lambda p: (p["camera"], p["enter"]))
+    min_duration = settings.f("MIN_DURATION_S")
+    motion_min = settings.f("MOTION_MIN_DISP")
+    kept = []
+    counters = {}
+    for p in presences:
+        p["duration"] = max(0.0, p["leave"] - p["enter"])
+        if p["duration"] < min_duration:
+            continue
+        day = utc_day(p["enter"])
+        key = (p["camera"], day)
+        counters[key] = counters.get(key, 0) + 1
+        p["day"] = day
+        p["person_no"] = counters[key]
+        p["moved"] = p["disp"] >= motion_min
+        p["significant"] = p["moved"] or bool(p["edge"])
+        p["place"] = places.resolve(p["camera"], sorted(p["zones"]))
+        p["display_name"] = places.display_name(p["camera"])
+        p.setdefault("state", "in_place")
+        p.setdefault("confidence", None)
+        p.setdefault("needs_review", 0)
+        p.setdefault("review_reason", None)
+        p.setdefault("first_event_id", p["events"][0] if p["events"] else None)
+        p.setdefault("last_event_id", p["events"][-1] if p["events"] else None)
+        kept.append(p)
+    return kept
+
+
+def _build_visits_legacy(rows, settings):
+    """Pre-v2 merge, retained as MERGE_ENGINE=legacy for rollback."""
     gap_max = settings.f("MERGE_GAP_S")
     inactivity = settings.f("INACTIVITY_S")
     angle_tol = settings.f("ANGLE_TOL_DEG")
     hist_thr = settings.f("HIST_THRESHOLD")
-    motion_min = settings.f("MOTION_MIN_DISP")
     edge_margin = settings.f("EDGE_MARGIN")
 
     by_camera = {}
@@ -569,29 +1135,142 @@ def build_visits(rows, settings, places):
                     json.loads(row["box"]) if row["box"] else None, edge_margin)
                 open_p.append(p)
         presences.extend(open_p)
-
-    presences.sort(key=lambda p: (p["camera"], p["enter"]))
-    counters = {}
-    for p in presences:
-        day = utc_day(p["enter"])
-        key = (p["camera"], day)
-        counters[key] = counters.get(key, 0) + 1
-        p["day"] = day
-        p["person_no"] = counters[key]
-        p["duration"] = max(0.0, p["leave"] - p["enter"])
-        p["moved"] = p["disp"] >= motion_min
-        p["significant"] = p["moved"] or p["edge"]
-        p["place"] = places.resolve(p["camera"], sorted(p["zones"]))
-        p["display_name"] = places.display_name(p["camera"])
     return presences
 
 
-def write_visits(conn, presences):
+def build_visits_v2(rows, settings, places):
+    """State-aware per-camera merge; returns (visits, candidate links)."""
+    inactivity = settings.f("INACTIVITY_S")
+    merge_score = settings.f("MERGE_SCORE")
+    ambig_score = settings.f("AMBIG_SCORE")
+    assign_margin = settings.f("ASSIGN_MARGIN")
+
+    by_camera = {}
+    for row in rows:
+        by_camera.setdefault(row["camera"], []).append(row)
+
+    presences = []
+    links = []
+    for camera, events in by_camera.items():
+        open_p = []
+        for row in events:
+            feat = _row_features(row, settings)
+            start = feat["start"]
+
+            still = []
+            for p in open_p:
+                if start - p["leave"] >= inactivity:
+                    presences.append(p)
+                else:
+                    still.append(p)
+            open_p = still
+
+            candidates = []
+            overlap_p = None
+            for p in open_p:
+                dt = start - p["leave"]
+                if dt < 0:
+                    if overlap_p is None or p["leave"] > overlap_p["leave"]:
+                        overlap_p = p
+                    continue
+                allowed = _allowed_gap(p, feat, settings)
+                if allowed <= 0 or dt > allowed:
+                    continue
+                cand = _candidate_score(p, feat, settings, dt, allowed)
+                if cand is not None:
+                    candidates.append(cand)
+
+            chosen = None
+            if candidates:
+                candidates.sort(key=lambda c: -c["score"])
+                mergeable = [c for c in candidates
+                             if c["hard_ok"] and c["score"] >= merge_score]
+                ambiguous = [c for c in candidates
+                             if c["score"] >= ambig_score
+                             and c["dist"] <= _radius_for(c["prev"], settings) * 1.2]
+                if mergeable:
+                    best = mergeable[0]
+                    conflict = (len(mergeable) > 1
+                                and best["score"] - mergeable[1]["score"] < assign_margin)
+                    if conflict:
+                        newp = _new_presence_v2(feat, camera)
+                        _review_mark(newp, "ambiguous_assignment:%s" % feat["id"])
+                        for c in mergeable[:2]:
+                            _review_mark(c["prev"], "ambiguous_assignment:%s" % feat["id"])
+                            _add_link(links, camera, c["prev"]["last_event_id"],
+                                      feat["id"], c, "ambiguous",
+                                      "assignment_conflict")
+                        for c in candidates:
+                            if c not in mergeable[:2]:
+                                _add_link(links, camera, c["prev"]["last_event_id"],
+                                          feat["id"], c, "separate", "not_best")
+                        open_p.append(newp)
+                    else:
+                        chosen = best
+                        prev_event_id = chosen["prev"]["last_event_id"]
+                        prev_state = chosen["prev"]["state"]
+                        hist_missing = feat["hist"] is None
+                        _merge_into(chosen["prev"], feat, chosen["score"])
+                        if hist_missing:
+                            _review_mark(chosen["prev"],
+                                         "appearance_unconfirmed:%s" % feat["id"])
+                        if prev_state == "lost" and chosen["dt"] > settings.f("CONT_GAP_S"):
+                            _review_mark(chosen["prev"],
+                                         "occlusion_resume:%s" % feat["id"])
+                        if chosen["dt"] > settings.f("STOP_GAP_S"):
+                            _review_mark(chosen["prev"],
+                                         "long_resume:%s" % feat["id"])
+                        _add_link(links, camera, prev_event_id,
+                                  feat["id"], chosen, "merged",
+                                  ",".join(chosen["reasons"]) or "score")
+                        for c in candidates:
+                            if c is not chosen:
+                                _add_link(links, camera, c["prev"]["last_event_id"],
+                                          feat["id"], c, "separate", "not_best")
+                elif ambiguous:
+                    best = ambiguous[0]
+                    newp = _new_presence_v2(feat, camera)
+                    _review_mark(newp, "ambiguous:%s" % feat["id"])
+                    _review_mark(best["prev"], "ambiguous:%s" % feat["id"])
+                    _add_link(links, camera, best["prev"]["last_event_id"],
+                              feat["id"], best, "ambiguous",
+                              ",".join(best["reasons"]) or "low_score")
+                    for c in candidates:
+                        if c is not best:
+                            _add_link(links, camera, c["prev"]["last_event_id"],
+                                      feat["id"], c, "separate", "not_best")
+                    open_p.append(newp)
+                else:
+                    for c in candidates:
+                        _add_link(links, camera, c["prev"]["last_event_id"],
+                                  feat["id"], c, "separate",
+                                  ",".join(c["reasons"]) or "low_score")
+                    open_p.append(_new_presence_v2(feat, camera))
+            else:
+                if overlap_p is not None:
+                    _add_link(links, camera, overlap_p["last_event_id"],
+                              feat["id"], None, "overlap", "overlap_unsupported")
+                open_p.append(_new_presence_v2(feat, camera))
+        presences.extend(open_p)
+
+    return _finalize_presences(presences, settings, places), links
+
+
+def build_visits(rows, settings, places):
+    """Dispatch to the configured merge engine; always returns (visits, links)."""
+    if settings.s("MERGE_ENGINE").lower() == "legacy":
+        return _finalize_presences(_build_visits_legacy(rows, settings),
+                                   settings, places), []
+    return build_visits_v2(rows, settings, places)
+
+
+def write_visits(conn, presences, links=None):
     """Replace the derived visits; return the list of NEW significant visits."""
     old = {(r["camera"], float(r["enter_time"]), int(r["person_no"]))
            for r in conn.execute(
                "SELECT camera, enter_time, person_no FROM visits")}
     conn.execute("DELETE FROM visit_events")
+    conn.execute("DELETE FROM visit_links")
     conn.execute("DELETE FROM visits")
     now = time.time()
     new_visits = []
@@ -599,12 +1278,16 @@ def write_visits(conn, presences):
         cur = conn.execute(
             "INSERT INTO visits (camera, day, display_name, place, person_no,"
             " enter_time, leave_time, duration_s, n_events, rep_event_id, moved,"
-            " edge, significant, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " edge, significant, state, confidence, needs_review, review_reason,"
+            " first_event_id, last_event_id, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (p["camera"], p["day"], p["display_name"], p["place"], p["person_no"],
              p["enter"], p["leave"], p["duration"], p["n"], p["rep"],
              1 if p["moved"] else 0, 1 if p["edge"] else 0,
-             1 if p["significant"] else 0, now, now))
+             1 if p["significant"] else 0, p.get("state"),
+             p.get("confidence"), 1 if p.get("needs_review") else 0,
+             p.get("review_reason"), p.get("first_event_id"),
+             p.get("last_event_id"), now, now))
         visit_id = cur.lastrowid
         for ev_id in p["events"]:
             conn.execute(
@@ -612,7 +1295,25 @@ def write_visits(conn, presences):
                 " VALUES (?,?)", (visit_id, ev_id))
         key = (p["camera"], p["enter"], p["person_no"])
         if key not in old and p["significant"]:
-            new_visits.append(p)
+            new_visits.append({
+                "display_name": p["display_name"],
+                "camera": p["camera"],
+                "place": p["place"],
+                "person_no": p["person_no"],
+                "enter_time": p["enter"],
+                "leave_time": p["leave"],
+                "duration_s": p["duration"],
+            })
+
+    for link in links or ():
+        conn.execute(
+            "INSERT INTO visit_links (camera, prev_event_id, next_event_id, dt,"
+            " dist, hist_sim, angle_delta, score, decision, reason, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (link["camera"], link["prev_event_id"], link["next_event_id"],
+             link.get("dt"), link.get("dist"), link.get("hist_sim"),
+             link.get("angle_delta"), link.get("score"), link["decision"],
+             link.get("reason"), now))
     return new_visits
 
 
@@ -678,6 +1379,62 @@ def _save_cursor(settings, cursor):
         pass
 
 
+def _upsert_events(conn, events, settings):
+    """Normalise + upsert API events. Returns (changed, max_start)."""
+    changed = 0
+    max_start = 0.0
+    for event in events:
+        norm = normalize_event(event, settings)
+        if not norm["frigate_event_id"]:
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM events WHERE frigate_event_id=?",
+            (norm["frigate_event_id"],)).fetchone()
+        now = time.time()
+        values = (
+            norm["camera"], norm["start_time"], norm["end_time"], norm["zones"],
+            norm["box"], norm["motion_disp"], norm["angle"], norm["entry_xy"],
+            norm["exit_xy"], norm["path_json"], norm["end_xy"], norm["net_disp"],
+            norm["path_len"], norm["straightness"], norm["head_angle"],
+            norm["tail_angle"], norm["tail_gap_s"], norm["tail_stationary"],
+            norm["dir_trusted"], norm["edge_exit"], norm["speed"],
+            norm["vel_xy"], norm["state"], norm["significant"],
+        )
+        if exists is None:
+            conn.execute(
+                "INSERT INTO events (camera, start_time, end_time, zones, box,"
+                " motion_disp, angle, entry_xy, exit_xy, path_json, end_xy,"
+                " net_disp, path_len, straightness, head_angle, tail_angle,"
+                " tail_gap_s, tail_stationary, dir_trusted, edge_exit, speed,"
+                " vel_xy, state, significant, frigate_event_id, created_at,"
+                " updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                values + (norm["frigate_event_id"], now, now))
+            changed += 1
+        else:
+            conn.execute(
+                "UPDATE events SET camera=?, start_time=?, end_time=?, zones=?,"
+                " box=?, motion_disp=?, angle=?, entry_xy=?, exit_xy=?,"
+                " path_json=?, end_xy=?, net_disp=?, path_len=?, straightness=?,"
+                " head_angle=?, tail_angle=?, tail_gap_s=?, tail_stationary=?,"
+                " dir_trusted=?, edge_exit=?, speed=?, vel_xy=?, state=?,"
+                " significant=?, updated_at=? WHERE frigate_event_id=?",
+                values + (now, norm["frigate_event_id"]))
+        max_start = max(max_start, norm["start_time"])
+    conn.commit()
+    return changed, max_start
+
+
+def _rebuild_visits(conn, settings, places):
+    rows = conn.execute(
+        "SELECT * FROM events WHERE start_time > 0"
+        " ORDER BY camera ASC, start_time ASC").fetchall()
+    presences, links = build_visits(rows, settings, places)
+    new = write_visits(conn, presences, links)
+    prune(conn, settings.i("VISITS_RETENTION_DAYS"))
+    conn.commit()
+    return new, len(rows)
+
+
 def cycle(settings, conn, places):
     now = time.time()
     cursor = _load_cursor(settings)
@@ -691,52 +1448,31 @@ def cycle(settings, conn, places):
     except Exception as exc:  # noqa: BLE001 - Frigate down must not kill the loop
         _log("WARNING: Frigate API fetch failed: {}".format(exc))
         return
-    changed = 0
-    max_start = cursor
-    for event in events:
-        norm = normalize_event(event, settings)
-        if not norm["frigate_event_id"]:
-            continue
-        exists = conn.execute(
-            "SELECT 1 FROM events WHERE frigate_event_id=?",
-            (norm["frigate_event_id"],)).fetchone()
-        now2 = time.time()
-        if exists is None:
-            conn.execute(
-                "INSERT INTO events (frigate_event_id, camera, start_time, end_time,"
-                " zones, box, motion_disp, angle, entry_xy, exit_xy, significant,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (norm["frigate_event_id"], norm["camera"], norm["start_time"],
-                 norm["end_time"], norm["zones"], norm["box"], norm["motion_disp"],
-                 norm["angle"], norm["entry_xy"], norm["exit_xy"],
-                 norm["significant"], now2, now2))
-            changed += 1
-        else:
-            conn.execute(
-                "UPDATE events SET camera=?, start_time=?, end_time=?, zones=?, box=?,"
-                " motion_disp=?, angle=?, entry_xy=?, exit_xy=?, significant=?,"
-                " updated_at=? WHERE frigate_event_id=?",
-                (norm["camera"], norm["start_time"], norm["end_time"], norm["zones"],
-                 norm["box"], norm["motion_disp"], norm["angle"], norm["entry_xy"],
-                 norm["exit_xy"], norm["significant"], now2,
-                 norm["frigate_event_id"]))
-        max_start = max(max_start, norm["start_time"])
-    conn.commit()
+
+    changed, max_start = _upsert_events(conn, events, settings)
     if max_start > cursor:
         _save_cursor(settings, max_start)
 
     analyze_pending(conn, settings)
-    rows = conn.execute(
-        "SELECT * FROM events WHERE start_time > 0"
-        " ORDER BY camera ASC, start_time ASC").fetchall()
-    new = write_visits(conn, build_visits(rows, settings, places))
-    prune(conn, settings.i("VISITS_RETENTION_DAYS"))
-    conn.commit()
+    new, total = _rebuild_visits(conn, settings, places)
     tz = settings.f("TZ_OFFSET_H")
     for visit in new:
         _log("visit: " + format_visit(visit, tz))
     _log("cycle: fetched={} new_events={} visits={} new={}".format(
-        len(events), changed, len(rows), len(new)))
+        len(events), changed, total, len(new)))
+
+
+def backfill(settings, conn, places):
+    """One-off 7-day path/feature backfill (safe to run repeatedly)."""
+    after = time.time() - settings.f("INITIAL_LOOKBACK_S")
+    events = fetch_person_events(settings.s("FRIGATE_API"), after,
+                                 settings.i("FETCH_LIMIT"), settings.b("ONLY_PERSON"))
+    changed, _ = _upsert_events(conn, events, settings)
+    analyze_pending(conn, settings)
+    new, total = _rebuild_visits(conn, settings, places)
+    _log("backfill: fetched={} new_events={} visits={} new={}".format(
+        len(events), changed, total, len(new)))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +1483,7 @@ def cmd_check(settings, places):
     print("  FRIGATE_API   :", settings.s("FRIGATE_API"))
     print("  MEDIA_DIR     :", settings.s("FRIGATE_MEDIA_DIR"))
     print("  STORE         :", settings.db_path)
+    print("  MERGE_ENGINE  :", settings.s("MERGE_ENGINE"))
     print("  INACTIVITY_S  :", settings.i("INACTIVITY_S"))
     print("  cameras/places:", len(places.camera_places), "cameras,",
           len(places.zone_places), "zones")
@@ -788,10 +1525,12 @@ def status_counts(conn):
     v = conn.execute("SELECT count(*) FROM visits").fetchone()[0]
     sig = conn.execute(
         "SELECT count(*) FROM visits WHERE significant=1").fetchone()[0]
+    review = conn.execute(
+        "SELECT count(*) FROM visits WHERE needs_review=1").fetchone()[0]
     pend = conn.execute(
         "SELECT count(*) FROM events WHERE analyzed=0").fetchone()[0]
-    return ("events={} visits={} significant={} unanalyzed={}".format(
-        e, v, sig, pend))
+    return ("events={} visits={} significant={} review={} unanalyzed={}".format(
+        e, v, sig, review, pend))
 
 
 def cmd_status(settings):
@@ -805,9 +1544,9 @@ def run_forever(settings, places):
     conn = open_store(settings.db_path)
     poll = max(5, settings.i("POLL_EVERY_S"))
     heartbeat = max(poll, settings.i("HEARTBEAT_S"))
-    _log("started: api={} store={} poll={}s inactivity={}s merge_gap={}s"
+    _log("started: api={} store={} poll={}s engine={} inactivity={}s"
          .format(settings.s("FRIGATE_API"), settings.db_path, poll,
-                 settings.i("INACTIVITY_S"), settings.i("MERGE_GAP_S")))
+                 settings.s("MERGE_ENGINE"), settings.i("INACTIVITY_S")))
     last_hb = 0.0
     while True:
         try:
@@ -815,6 +1554,10 @@ def run_forever(settings, places):
                 cycle(settings, conn, places)
         except Exception as exc:  # noqa: BLE001 - the loop must survive
             _log("ERROR in cycle: {}".format(exc))
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
         now = time.time()
         if now - last_hb >= heartbeat:
             _log("status: " + status_counts(conn))
@@ -828,6 +1571,8 @@ def main(argv=None):
         "VISITS_CONF", "/config/visits.conf"))
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--backfill", action="store_true",
+                        help="re-fetch INITIAL_LOOKBACK_S and rebuild (path features)")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--all", action="store_true", help="list includes insignificant")
@@ -844,6 +1589,11 @@ def main(argv=None):
         return cmd_list(settings, args.day, args.all)
     if args.status:
         return cmd_status(settings)
+    if args.backfill:
+        conn = open_store(settings.db_path)
+        backfill(settings, conn, places)
+        conn.close()
+        return 0
     if args.once:
         conn = open_store(settings.db_path)
         cycle(settings, conn, places)

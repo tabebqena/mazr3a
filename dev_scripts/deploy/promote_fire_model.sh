@@ -23,7 +23,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VERSIONS_DIR="${ROOT_DIR}/models/fire/versions"
 DEST_DIR="${ROOT_DIR}/models/fire"
 
@@ -90,7 +90,8 @@ else
   echo "   previous OpenVINO IR until you regenerate + deploy it. Generate IR from"
   echo "   the new best.pt (class order is fire/other/smoke for both current versions;"
   echo "   labelmap.txt MUST match the checkpoint's class index order):"
-  echo "     ./dev_scripts/deploy/prep_fire_model.sh models/fire/best.pt 640 \"fire,other,smoke\""
+  echo "     ./dev_scripts/deploy/prep_fire_model.sh models/fire/best.pt 640 \"<classes>\""
+  echo "     class order must match the checkpoint (v7: fire,smoke; v1/v4/v6: fire,other,smoke)"
 fi
 
 echo "=============================================================="

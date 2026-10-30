@@ -14441,10 +14441,10 @@
 			</output>
 		</layer>
 		<layer id="744" name="model.23.cv3.0.2.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="3, 128, 1, 1" offset="18697342" size="768" />
+			<data element_type="f16" shape="2, 128, 1, 1" offset="18697342" size="512" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.0.2.weight">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -14458,7 +14458,7 @@
 			</rt_info>
 			<input>
 				<port id="0" precision="FP16">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -14466,7 +14466,7 @@
 			</input>
 			<output>
 				<port id="1" precision="FP32">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -14483,7 +14483,7 @@
 					<dim>80</dim>
 				</port>
 				<port id="1" precision="FP32">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -14492,18 +14492,18 @@
 			<output>
 				<port id="2" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>80</dim>
 					<dim>80</dim>
 				</port>
 			</output>
 		</layer>
 		<layer id="747" name="Reshape_1406_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 3, 1, 1" offset="18698110" size="6" />
+			<data element_type="f16" shape="1, 2, 1, 1" offset="18697854" size="4" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -14517,7 +14517,7 @@
 			<input>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -14525,7 +14525,7 @@
 			<output>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -14536,13 +14536,13 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>80</dim>
 					<dim>80</dim>
 				</port>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -14550,14 +14550,14 @@
 			<output>
 				<port id="2" precision="FP32" names="/model.23/cv3.0/cv3.0.2/Conv_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>80</dim>
 					<dim>80</dim>
 				</port>
 			</output>
 		</layer>
 		<layer id="750" name="/model.23/Constant_3_output_0" type="Const" version="opset1">
-			<data element_type="i64" shape="3" offset="18698116" size="24" />
+			<data element_type="i64" shape="3" offset="18697858" size="24" />
 			<rt_info>
 				<attribute name="DisablePrecisionConversion" version="0" value="dynamic:f16" />
 			</rt_info>
@@ -14572,7 +14572,7 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>80</dim>
 					<dim>80</dim>
 				</port>
@@ -14583,13 +14583,13 @@
 			<output>
 				<port id="2" precision="FP32" names="/model.23/Reshape_3_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>6400</dim>
 				</port>
 			</output>
 		</layer>
 		<layer id="752" name="Reshape_1539_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="256, 1, 1, 3, 3" offset="18698140" size="4608" />
+			<data element_type="f16" shape="256, 1, 1, 3, 3" offset="18697882" size="4608" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>256</dim>
@@ -14651,7 +14651,7 @@
 			</output>
 		</layer>
 		<layer id="755" name="Reshape_1589_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 256, 1, 1" offset="18702748" size="512" />
+			<data element_type="f16" shape="1, 256, 1, 1" offset="18702490" size="512" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -14727,7 +14727,7 @@
 			</output>
 		</layer>
 		<layer id="759" name="model.23.cv3.1.0.1.conv.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="128, 256, 1, 1" offset="18703260" size="65536" />
+			<data element_type="f16" shape="128, 256, 1, 1" offset="18703002" size="65536" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.1.0.1.conv.weight">
 					<dim>128</dim>
@@ -14785,7 +14785,7 @@
 			</output>
 		</layer>
 		<layer id="762" name="Reshape_1626_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 128, 1, 1" offset="18768796" size="256" />
+			<data element_type="f16" shape="1, 128, 1, 1" offset="18768538" size="256" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -14861,7 +14861,7 @@
 			</output>
 		</layer>
 		<layer id="766" name="Reshape_1673_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="128, 1, 1, 3, 3" offset="18769052" size="2304" />
+			<data element_type="f16" shape="128, 1, 1, 3, 3" offset="18768794" size="2304" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>128</dim>
@@ -14923,7 +14923,7 @@
 			</output>
 		</layer>
 		<layer id="769" name="Reshape_1723_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 128, 1, 1" offset="18771356" size="256" />
+			<data element_type="f16" shape="1, 128, 1, 1" offset="18771098" size="256" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -14999,7 +14999,7 @@
 			</output>
 		</layer>
 		<layer id="773" name="model.23.cv3.1.1.1.conv.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="128, 128, 1, 1" offset="18771612" size="32768" />
+			<data element_type="f16" shape="128, 128, 1, 1" offset="18771354" size="32768" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.1.1.1.conv.weight">
 					<dim>128</dim>
@@ -15057,7 +15057,7 @@
 			</output>
 		</layer>
 		<layer id="776" name="Reshape_1759_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 128, 1, 1" offset="18804380" size="256" />
+			<data element_type="f16" shape="1, 128, 1, 1" offset="18804122" size="256" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -15133,10 +15133,10 @@
 			</output>
 		</layer>
 		<layer id="780" name="model.23.cv3.1.2.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="3, 128, 1, 1" offset="18804636" size="768" />
+			<data element_type="f16" shape="2, 128, 1, 1" offset="18804378" size="512" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.1.2.weight">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15150,7 +15150,7 @@
 			</rt_info>
 			<input>
 				<port id="0" precision="FP16">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15158,7 +15158,7 @@
 			</input>
 			<output>
 				<port id="1" precision="FP32">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15175,7 +15175,7 @@
 					<dim>40</dim>
 				</port>
 				<port id="1" precision="FP32">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15184,18 +15184,18 @@
 			<output>
 				<port id="2" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>40</dim>
 					<dim>40</dim>
 				</port>
 			</output>
 		</layer>
 		<layer id="783" name="Reshape_1793_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 3, 1, 1" offset="18805404" size="6" />
+			<data element_type="f16" shape="1, 2, 1, 1" offset="18804890" size="4" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15209,7 +15209,7 @@
 			<input>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15217,7 +15217,7 @@
 			<output>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15228,13 +15228,13 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>40</dim>
 					<dim>40</dim>
 				</port>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15242,7 +15242,7 @@
 			<output>
 				<port id="2" precision="FP32" names="/model.23/cv3.1/cv3.1.2/Conv_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>40</dim>
 					<dim>40</dim>
 				</port>
@@ -15253,7 +15253,7 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>40</dim>
 					<dim>40</dim>
 				</port>
@@ -15264,13 +15264,13 @@
 			<output>
 				<port id="2" precision="FP32" names="/model.23/Reshape_4_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1600</dim>
 				</port>
 			</output>
 		</layer>
 		<layer id="787" name="Reshape_1979_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="512, 1, 1, 3, 3" offset="18805410" size="9216" />
+			<data element_type="f16" shape="512, 1, 1, 3, 3" offset="18804894" size="9216" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>512</dim>
@@ -15332,7 +15332,7 @@
 			</output>
 		</layer>
 		<layer id="790" name="Reshape_2029_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 512, 1, 1" offset="18814626" size="1024" />
+			<data element_type="f16" shape="1, 512, 1, 1" offset="18814110" size="1024" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -15408,7 +15408,7 @@
 			</output>
 		</layer>
 		<layer id="794" name="model.23.cv3.2.0.1.conv.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="128, 512, 1, 1" offset="18815650" size="131072" />
+			<data element_type="f16" shape="128, 512, 1, 1" offset="18815134" size="131072" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.2.0.1.conv.weight">
 					<dim>128</dim>
@@ -15466,7 +15466,7 @@
 			</output>
 		</layer>
 		<layer id="797" name="Reshape_2063_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 128, 1, 1" offset="18946722" size="256" />
+			<data element_type="f16" shape="1, 128, 1, 1" offset="18946206" size="256" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -15542,7 +15542,7 @@
 			</output>
 		</layer>
 		<layer id="801" name="Reshape_2093_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="128, 1, 1, 3, 3" offset="18946978" size="2304" />
+			<data element_type="f16" shape="128, 1, 1, 3, 3" offset="18946462" size="2304" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>128</dim>
@@ -15604,7 +15604,7 @@
 			</output>
 		</layer>
 		<layer id="804" name="Reshape_2143_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 128, 1, 1" offset="18949282" size="256" />
+			<data element_type="f16" shape="1, 128, 1, 1" offset="18948766" size="256" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -15680,7 +15680,7 @@
 			</output>
 		</layer>
 		<layer id="808" name="model.23.cv3.2.1.1.conv.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="128, 128, 1, 1" offset="18949538" size="32768" />
+			<data element_type="f16" shape="128, 128, 1, 1" offset="18949022" size="32768" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.2.1.1.conv.weight">
 					<dim>128</dim>
@@ -15738,7 +15738,7 @@
 			</output>
 		</layer>
 		<layer id="811" name="Reshape_2162_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 128, 1, 1" offset="18982306" size="256" />
+			<data element_type="f16" shape="1, 128, 1, 1" offset="18981790" size="256" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
@@ -15814,10 +15814,10 @@
 			</output>
 		</layer>
 		<layer id="815" name="model.23.cv3.2.2.weight_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="3, 128, 1, 1" offset="18982562" size="768" />
+			<data element_type="f16" shape="2, 128, 1, 1" offset="18982046" size="512" />
 			<output>
 				<port id="0" precision="FP16" names="model.23.cv3.2.2.weight">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15831,7 +15831,7 @@
 			</rt_info>
 			<input>
 				<port id="0" precision="FP16">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15839,7 +15839,7 @@
 			</input>
 			<output>
 				<port id="1" precision="FP32">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15856,7 +15856,7 @@
 					<dim>20</dim>
 				</port>
 				<port id="1" precision="FP32">
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>128</dim>
 					<dim>1</dim>
 					<dim>1</dim>
@@ -15865,18 +15865,18 @@
 			<output>
 				<port id="2" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>20</dim>
 					<dim>20</dim>
 				</port>
 			</output>
 		</layer>
 		<layer id="818" name="Reshape_2203_compressed" type="Const" version="opset1">
-			<data element_type="f16" shape="1, 3, 1, 1" offset="18983330" size="6" />
+			<data element_type="f16" shape="1, 2, 1, 1" offset="18982558" size="4" />
 			<output>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15890,7 +15890,7 @@
 			<input>
 				<port id="0" precision="FP16">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15898,7 +15898,7 @@
 			<output>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15909,13 +15909,13 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>20</dim>
 					<dim>20</dim>
 				</port>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1</dim>
 					<dim>1</dim>
 				</port>
@@ -15923,7 +15923,7 @@
 			<output>
 				<port id="2" precision="FP32" names="/model.23/cv3.2/cv3.2.2/Conv_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>20</dim>
 					<dim>20</dim>
 				</port>
@@ -15934,7 +15934,7 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>20</dim>
 					<dim>20</dim>
 				</port>
@@ -15945,7 +15945,7 @@
 			<output>
 				<port id="2" precision="FP32" names="/model.23/Reshape_5_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>400</dim>
 				</port>
 			</output>
@@ -15955,24 +15955,24 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>6400</dim>
 				</port>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>1600</dim>
 				</port>
 				<port id="2" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>400</dim>
 				</port>
 			</input>
 			<output>
 				<port id="3" precision="FP32" names="/model.23/Concat_1_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>8400</dim>
 				</port>
 			</output>
@@ -15981,14 +15981,14 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>8400</dim>
 				</port>
 			</input>
 			<output>
 				<port id="1" precision="FP32" names="/model.23/Sigmoid_output_0">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>8400</dim>
 				</port>
 			</output>
@@ -16003,14 +16003,14 @@
 				</port>
 				<port id="1" precision="FP32">
 					<dim>1</dim>
-					<dim>3</dim>
+					<dim>2</dim>
 					<dim>8400</dim>
 				</port>
 			</input>
 			<output>
 				<port id="2" precision="FP32" names="output0">
 					<dim>1</dim>
-					<dim>7</dim>
+					<dim>6</dim>
 					<dim>8400</dim>
 				</port>
 			</output>
@@ -16019,7 +16019,7 @@
 			<input>
 				<port id="0" precision="FP32">
 					<dim>1</dim>
-					<dim>7</dim>
+					<dim>6</dim>
 					<dim>8400</dim>
 				</port>
 			</input>
@@ -16942,14 +16942,14 @@
 			<author value="Ultralytics" />
 			<batch value="1" />
 			<channels value="3" />
-			<date value="2026-09-07T20:10:21.463184+03:00" />
-			<description value="Ultralytics YOLO26s model trained on dfire_ft/data.yaml" />
+			<date value="2026-10-31T00:46:49.190447+03:00" />
+			<description value="Ultralytics YOLO26s model trained on /content/fire_runs/v02_01_01-yolo26s-640/data.yaml" />
 			<docs value="https://docs.ultralytics.com" />
 			<end2end value="False" />
 			<head value="Detect" />
 			<imgsz value="[640, 640]" />
 			<license value="AGPL-3.0 License (https://ultralytics.com/license)" />
-			<names value="{0: 'fire', 1: 'other', 2: 'smoke'}" />
+			<names value="{0: 'fire', 1: 'smoke'}" />
 			<stride value="32" />
 			<task value="detect" />
 			<version value="8.4.140" />

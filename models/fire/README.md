@@ -4,30 +4,36 @@ Holds the model used by the `firewatch` service (`firewatch/firewatch.py`, see
 [`plans/fire-detection.md`](../../plans/fire-detection.md)). The directory is mounted
 read-only at `/models/fire` in the `firewatch` container.
 
-## CHOSEN model (active)
+## Active model
 
-**ACTIVE = v4 (2026-09-07)** — a fine-tune of the HF YOLO26-S baseline on the **clean
-(deduplicated) D-Fire + clean Abonia** mix. Still YOLO26-S, classes (index order)
-`fire`(0), `other`(1), `smoke`(2) — `other` is a catch-all and is **ignored** by firewatch;
-only `fire`/`smoke` can alert.
+**ACTIVE = v7 (2026-10-29, promoted 2026-10-31)** — a fresh two-class
+`fire` / `smoke` YOLO26-S trained on the revised `v02_01_01` dataset. It
+replaces the three-class v4 model that served from 2026-09-07.
 
-On the **held-out clean D-Fire test (2,164 imgs)** vs the previous active v1:
-all mAP@50 **0.704** (v1 0.182), fire mAP@50 0.643 (v1 0.192), image-level fire recall
-@conf0.5 **83.8 %** (v1 73.5 %), smoke 78.8 % (v1 32.4 %), fire FP 11/1440 (v1 51/1440),
-predictions on clean/empty frames 19 (v1 193). Full write-up:
-[`fire-model-training/dedup/dfire_finetune/report.md`](../../fire-model-training/dedup/dfire_finetune/report.md).
+- Classes and labelmap order: **`fire`(0), `smoke`(1)**. There is **no `other` class**.
+  `labelmap.txt` must contain exactly two lines.
+- Active checkpoint: `models/fire/best.pt`, md5
+  `082aa9676cf99c1b75e59e957483a2d5`, 60,233,571 B.
+- OpenVINO IR: output `[1, 6, 8400]` raw per-class, input `640x640`.
+- Validation (1,529 images): P **0.764**, R **0.665**, mAP@50 **0.753**,
+  mAP@50-95 **0.445**; fire mAP@50 **0.735**, smoke **0.771**.
+- The test split was not evaluated. The main weakness is tiny/small fire recall.
+- On the 4,246-frame Firewatch evidence set, candidate raw best F1 is **43.7% @0.35**;
+  with Firewatch motion at bar 0.50 it is **53.1%**, and the moderate retune proxy is
+  **66.0%**. These are evidence-set results, not production FP guarantees.
+- Active Firewatch retune: `MOTION_MARGIN=0.0`, inside-box `MOTION_NEAR_FRAC=0.02`,
+  `MOTION_NEAR_MIN_PX=0` (pixel-count OR disabled), `MOTION_BONUS=0.20`,
+  `SCORE_THRESHOLD=0.55`.
 
-The checkpoint is **`models/fire/best.pt`** (git-tracked, 20.3 MB, md5
-`4a4ef19540518e27f886c2894ec168f8`); OpenVINO IR (`best.xml`/`best.bin`/`labelmap.txt`)
-regenerated from it. **v1 is superseded but retained** in the git-ignored archive
-`models/fire/versions/v1-2026-09-05-hf-yolo26s-8939img/` (md5
-`2fd972183c2ffec0d327ec534c119086`) — see [`VERSIONS.md`](VERSIONS.md).
+The previous active **v4** (`v4-2026-09-07-hf-dfire-cleanft52ep`) is superseded but
+retained unchanged in the git-ignored archive for rollback:
 
-> **Deploy caveat (2026-09-07):** v4's numbers are on the uncontaminated clean D-Fire test,
-> NOT yet on your cameras. It was promoted by user decision with the on-camera
-> `firewatch.py --dry-run` pilot (day/night/IR, near/distance views, a test flame) still the
-> real acceptance test. Revert is easy: promote `v1` again via
-> `./dev_scripts/deploy/promote_fire_model.sh v1-2026-09-05-hf-yolo26s-8939img`.
+```bash
+./dev_scripts/deploy/promote_fire_model.sh v4-2026-09-07-hf-dfire-cleanft52ep
+```
+
+Full provenance and evidence caveats: [`versions/v7-.../README.md`](versions/v7-2026-10-29-v020101-yolo26s-14168img/README.md)
+and [`VERSIONS.md`](VERSIONS.md).
 
 ## Required files (after conversion)
 
@@ -35,7 +41,7 @@ regenerated from it. **v1 is superseded but retained** in the git-ignored archiv
 |---|---|
 | `best.xml` | OpenVINO IR graph (the container looks for `best.xml`) |
 | `best.bin`  | OpenVINO IR weights (same basename as the `.xml`) |
-| `labelmap.txt` | one class per line, **index order = model class order** |
+| `labelmap.txt` | one class per line, **index order = model class order**; active v7 is exactly `fire`, `smoke` |
 | `best.pt`   | source checkpoint (used only to (re)convert) |
 
 The **ACTIVE set** (`best.xml`/`best.bin`/`best.pt`/`labelmap.txt`) is **tracked in
@@ -52,14 +58,15 @@ current/active version and per-version provenance: [`VERSIONS.md`](VERSIONS.md).
 
 ```
 models/fire/
-├── best.pt / best.xml / best.bin / labelmap.txt   # ACTIVE set (what firewatch loads)
+├── best.pt / best.xml / best.bin / labelmap.txt   # ACTIVE set = v7 (firewatch loads best.xml)
 └── versions/
-    ├── v1-2026-09-05-hf-yolo26s-8939img/   # HF YOLO26-S baseline (active)
-    │   ├── model.pt                        # archived checkpoint
-    │   └── VERSION.json                    # provenance: source/dataset/metrics/md5
-    └── v2-2026-09-05-hf-abonia877-ft5ep/   # fine-tune on Abonia fire-8 train (877 imgs)
-        ├── model.pt
-        └── VERSION.json
+    ├── v7-2026-10-29-v020101-yolo26s-14168img/  # ACTIVE: 2-class v02_01_01 YOLO26s
+    │   ├── model.pt                             # archived checkpoint
+    │   ├── best.xml / best.bin / labelmap.txt   # bundled IR for deploy-ready promotion
+    │   ├── VERSION.json                         # provenance: source/dataset/metrics/md5
+    │   └── README.md
+    ├── v4-2026-09-07-hf-dfire-cleanft52ep/      # previous ACTIVE, kept for rollback
+    └── v6-2026-09-13-fireviewer-hfcorpus-ft15ep/ # unpromoted candidate
 ```
 
 - **`versions/<dir>/model.pt`** — the archived checkpoint (never named `best.pt`, so a
@@ -72,7 +79,7 @@ models/fire/
 
 **Promote a version to ACTIVE:**
 ```bash
-./dev_scripts/deploy/promote_fire_model.sh v2-2026-09-05-hf-abonia877-ft5ep   # or unique prefix "v2"
+./dev_scripts/deploy/promote_fire_model.sh <version-dir|unique-prefix>
 ```
 It copies `model.pt` → `best.pt` (plus a bundled OpenVINO IR if present), prints the exact
 `prep_fire_model.sh` command to regenerate the IR, and reminds you to deploy
@@ -92,15 +99,14 @@ re-downloads it:
 
 ```python
 !pip install -q ultralytics openvino
-# Option 1: upload models/fire/best.pt from this workspace, OR:
-# !wget -q -O best.pt "https://huggingface.co/SalahALHaismawi/yolov26-fire-detection/resolve/main/best.pt"
+# Upload models/fire/best.pt from this workspace.
 
 from ultralytics import YOLO
 YOLO("best.pt").export(format="onnx", imgsz=640)   # YOLO26 needs a current ultralytics
 !ovc best.onnx --output_model best                 # -> best.xml + best.bin
 
-# 3 classes in model order: 0=fire 1=other 2=smoke. firewatch ignores 'other'.
-open("labelmap.txt", "w").write("fire\nother\nsmoke\n")
+# 2 classes in model order: 0=fire 1=smoke. Must match the checkpoint.
+open("labelmap.txt", "w").write("fire\nsmoke\n")
 import zipfile
 with zipfile.ZipFile("fire_model.zip", "w") as z:
     for fn in ["best.xml", "best.bin", "labelmap.txt"]:
@@ -121,12 +127,11 @@ git commit -m "fire model: update ACTIVE OpenVINO IR"
 unexpected output shape, share the logged shape and the decoder in `firewatch/firewatch.py`
 will be adapted.
 
-## Alternative (superseded)
+## Earlier baseline (superseded)
 
-`Abonia1/YOLOv8-Fire-and-Smoke-Detection` (GitHub) - YOLOv8s, unlicensed repo, classes
-`Fire`/`default`/`smoke`, mAP@50 85.7 from its own `results.csv`. **Not used** - the HF
-YOLO26 model above was chosen for its ~10x larger dataset, higher metrics, cleaner classes,
-and MIT license. (Its weights were superseded; `models/fire/best.pt` is now the HF model.)
+The original v1 model came from `huggingface.co/SalahALHaismawi/yolov26-fire-detection`
+(MIT, 3 classes `fire`/`other`/`smoke`). It is retained in the archive for history but is
+no longer active. The active v7 is a fresh 2-class `fire`/`smoke` training run.
 
 ## Train-your-own fallback (if on-site recall is insufficient)
 
@@ -139,9 +144,9 @@ any resulting `.pt` to this directory's OpenVINO IR format.
 
 | Item | Value |
 |---|---|
-| Source (active) | `huggingface.co/SalahALHaismawi/yolov26-fire-detection` → `best.pt` (file `models/fire/best.pt`) |
-| License | MIT (model) / CC BY 4.0 (underlying dataset) |
-| Base/input size | YOLO26-S, 640x640 |
-| Class order | `fire`(0), `other`(1), `smoke`(2) — `other` ignored by firewatch |
-| Reported metrics | mAP@50 94.9 / mAP@50-95 68.0 / P 89.6 / R 88.8 (author-reported) |
-| Acquired by | AI assistant, 2026-09-05 (`best.pt` in `models/fire/`) |
+| Source (active) | Fresh YOLO26-S run from COCO `yolo26s.pt` on `sources/training/v02_01_01` |
+| License | See `fire_model_training/sources/training/SOURCES.md` |
+| Base/input size | YOLO26-S, 640x640, 2 classes |
+| Class order | `fire`(0), `smoke`(1) — no `other` class |
+| Validation metrics | P 0.764 / R 0.665 / mAP@50 0.753 / mAP@50-95 0.445 |
+| Promoted | 2026-10-31, replacing v4 |

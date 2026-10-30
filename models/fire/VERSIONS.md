@@ -11,8 +11,9 @@ survive even where the `.pt` files are not present).
   `firewatch` loads (`MODEL_DIR=/models/fire`, hardcodes `best.xml`). They are a copy of
   the active version; `versions/` holds the canonical archive.
 
-> **Class order for every version below: `fire`(0) / `other`(1) / `smoke`(2).** Production
-> is fire-only (index 0), so alerts are unaffected; keep `labelmap.txt` in this order when
+> **Class order differs by version.** v1/v2/v4/v6 use `fire`(0) / `other`(1) /
+> `smoke`(2); **v7 uses `fire`(0) / `smoke`(1)**. Production is fire-only (index 0),
+> but the `labelmap.txt` line count and order must match the promoted checkpoint when
 > regenerating IR ([`dev_scripts/deploy/prep_fire_model.sh`](../dev_scripts/deploy/prep_fire_model.sh)).
 
 ---
@@ -21,7 +22,10 @@ survive even where the `.pt` files are not present).
 
 | Version | Description |
 |---|---|
-| `v4-2026-09-07-hf-dfire-cleanft52ep` | **Clean D-Fire fine-tune** (v1 → 6,819 clean imgs = D-Fire clean train + clean Abonia, 52 ep best@27, T4). Promoted to ACTIVE 2026-09-07 (user decision). On the held-out **clean D-Fire test (2,164 imgs)**: all mAP@50 **0.704** (v1 0.182), fire mAP@50 0.643, image-level fire recall @0.5 **83.8 %** (v1 73.5 %), fire FP 11/1440 (v1 51/1440). v1 superseded but retained in the archive. |
+| `v7-2026-10-29-v020101-yolo26s-14168img` | **v02_01_01 YOLO26s, 2-class fire/smoke** (fresh run from COCO `yolo26s.pt`, 14,168 train imgs, 68 ep completed / best@47, T4). Promoted to ACTIVE 2026-10-31. Val (1,529 imgs): P **0.764** / R **0.665** / mAP@50 **0.753** / mAP@50-95 **0.445**; fire mAP@50 **0.735**. First model without the `other` class: labelmap is `fire`, `smoke`; IR output `[1,6,8400]`. Previous v4 remains archived and unchanged for rollback. |
+
+> **v4 is superseded** — the clean D-Fire fine-tune served from 2026-09-07 until
+> 2026-10-31. Its checkpoint + IR remain archived for one-command rollback.
 
 > **v6 candidate (2026-09-13)** — FireViewer-corpus fine-tune of v4, row 4 below. Numerically a
 > large win on that corpus, but **NOT promoted**: it still needs an honest **held-out** FP audit
@@ -36,8 +40,9 @@ survive even where the `.pt` files are not present).
 |---|---|---|---|---|---|---|
 | 1 | `v1-2026-09-05-hf-yolo26s-8939img` | 2026-09-05 | YOLO26-S from `huggingface.co/SalahALHaismawi/yolov26-fire-detection` (MIT) | 8,939 imgs / 100 ep @ 640 (author Roboflow pool) | author-reported mAP@50 **0.949** / mAP@50-95 0.680 / P 0.896 / R 0.888 | superseded (kept) |
 | 2 | `v2-2026-09-05-hf-abonia877-ft5ep` | 2026-09-05 | fine-tune of v1 on Abonia `fire-8` **train** (CC BY 4.0) | 877 imgs / 5 ep @ 640, freeze 10, lr0 0.001 (CPU smoke run) | Abonia *test* split (55 imgs): all mAP@50 **0.948** / fire 0.930 / smoke 0.965; vs v1 baseline 0.405 | candidate |
-| 3 | `v4-2026-09-07-hf-dfire-cleanft52ep` | 2026-09-07 | fine-tune of v1 on the CLEAN (deduplicated) D-Fire + clean Abonia mix (see `fire-model-training/dedup/dfire_finetune/`) | 6,819 imgs / 52 ep (best@27) @ 640, freeze 10, lr0 0.001, batch 16, T4 | CLEAN D-Fire test (2,164 imgs): all mAP@50 **0.704** / fire 0.643 / smoke 0.764; image-level @0.5 fire recall **83.8 %** / smoke 78.8 %; fire FP 11/1440 | **active** |
+| 3 | `v4-2026-09-07-hf-dfire-cleanft52ep` | 2026-09-07 | fine-tune of v1 on the CLEAN (deduplicated) D-Fire + clean Abonia mix (see `fire-model-training/dedup/dfire_finetune/`) | 6,819 imgs / 52 ep (best@27) @ 640, freeze 10, lr0 0.001, batch 16, T4 | CLEAN D-Fire test (2,164 imgs): all mAP@50 **0.704** / fire 0.643 / smoke 0.764; image-level @0.5 fire recall **83.8 %** / smoke 78.8 %; fire FP 11/1440 | **superseded** (archived, rollback) |
 | 4 | `v6-2026-09-13-fireviewer-hfcorpus-ft15ep` | 2026-09-13 | fine-tune of **v4** on the FireViewer corpus v1 (in-tree dedup + class-balance) + our domain negatives (Google Colab) | 29,930 imgs = 29,089 corpus (32,609 deduped → balance) + 841 ours / 15 ep, no early stop @ 640, freeze 10, lr0 0.001, batch 16, amp, T4, 83.7 min; md5 `9894c224325d5cdef71828cd18456914`, 20,276,549 B | **held-out FireViewer test sample (1,000 imgs)**: all mAP@50 **0.687** (v4 0.446) / mAP@50-95 0.392 (0.226); fire mAP@50 **0.671** (0.483) / smoke 0.703 (0.409); image-level @0.5 fire recall 81.8 % (82.2 %), smoke recall **63.1 %** (44.3 %), fire FP **3/786** (10/786). Train-val (19,209 imgs): all mAP@50 0.622 | **candidate** |
+| 5 | `v7-2026-10-29-v020101-yolo26s-14168img` | 2026-10-29 | **fresh** 2-class fire/smoke YOLO26s from COCO `yolo26s.pt` (no parent checkpoint) | v02_01_01: 14,168 train / 1,529 val / 351 test imgs; 68 ep completed, best@47 @ 640, batch 16, T4, 5h37; md5 `082aa9676cf99c1b75e59e957483a2d5`, 60,233,571 B | Val: P **0.764** / R **0.665** / mAP@50 **0.753** / mAP@50-95 **0.445**; fire mAP@50 **0.735**, smoke **0.771**. Firewatch evidence: raw best F1 43.7 % @0.35; with motion 59.7 % @0.43; moderate retune proxy F1 66.0 %. Test split not evaluated. | **active** |
 
 **v4 provenance/md5 (see its `VERSION.json`):** `model.pt` (also `best.xml`/`best.bin`/`labelmap.txt`
 bundled), md5 `4a4ef19540518e27f886c2894ec168f8`, 20,294,341 B — copy of

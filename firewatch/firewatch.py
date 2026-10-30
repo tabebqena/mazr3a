@@ -373,6 +373,7 @@ def classify_sample(dets, cur_mask, prev_masks, margin, near_frac, near_min_px,
     (small/distant boxes), OR a previous mask (hotspot younger than the ring)
     shows >= near_min_px changed pixels AND the current frame still shows any
     change (>= 1 px) there - so a purely stale hotspot never grants a bonus.
+    `near_min_px=0` disables the pixel-count OR and uses the fraction only.
 
     eff = min(1, raw + (bonus if near else 0)).
     Returns (marked, hit, n_candidates, n_static):
@@ -389,13 +390,14 @@ def classify_sample(dets, cur_mask, prev_masks, margin, near_frac, near_min_px,
         near = False
         if cur_mask is not None:
             frac0, cnt0 = _region_stats(cur_mask, d["box"], margin)
-            near = frac0 >= near_frac or cnt0 >= near_min_px
+            near = frac0 >= near_frac or (
+                near_min_px > 0 and cnt0 >= near_min_px)
             if not near and cnt0 >= 1:            # minimal current change required
                 for pm in prev_masks:
                     if pm is None:
                         continue
                     _, pc = _region_stats(pm, d["box"], margin)
-                    if pc >= near_min_px:
+                    if near_min_px > 0 and pc >= near_min_px:
                         near = True
                         break
         eff = min(1.0, raw + (bonus if near else 0.0))
@@ -841,7 +843,7 @@ def _resolve_settings(cfg, cameras, threshold):
     s.baseline_every = max(10.0, _getf(cfg, "BASELINE_EVERY_S", 120))
     s.margin = _clampf(_getf(cfg, "MOTION_MARGIN", 0.5), 0.0, 4.0, 0.5)
     s.near_frac = _clampf(_getf(cfg, "MOTION_NEAR_FRAC", 0.02), 0.0, 1.0, 0.02)
-    s.near_min_px = max(1, int(_geti(cfg, "MOTION_NEAR_MIN_PX", 15)))
+    s.near_min_px = max(0, int(_geti(cfg, "MOTION_NEAR_MIN_PX", 15)))
     s.bonus = _clampf(_getf(cfg, "MOTION_BONUS", 0.15), 0.0, 0.9, 0.15)
     s.bar = threshold                                  # SCORE_THRESHOLD
     s.high = _clampf(_getf(cfg, "SCORE_HIGH", 0.85), s.bar, 1.0, 0.85)

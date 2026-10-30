@@ -12,8 +12,8 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v49` |
-| Last updated | 2026-10-22 |
+| Summary version | `v50` |
+| Last updated | 2026-10-31 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
 | Portal `APP_VERSION` | `0.11.13` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
@@ -118,7 +118,7 @@ with `docker compose up -d` / `docker compose down`.
 | Store export | [`dev_scripts/deploy/pull_firewatch_evidence.sh`](dev_scripts/deploy/pull_firewatch_evidence.sh) downloads every evidence JPEG (DB-referenced **and** orphans) + a consistent DB snapshot + metadata CSVs into `./firewatch-evidence/` (git-ignored local mirror; the DB is read **inside** the container only). |
 | Volumes (ro) | `./firewatch:/firewatch` · `./scripts:/scripts` · `./config:/config` · `./models:/models` · `./media:/media/firewatch` (rw) |
 | Ports | none (outbound only) |
-| Notes | Code/config edits need only `docker compose restart firewatch`. Active model = fire v4 (YOLO26-S). |
+| Notes | Code/config edits need only `docker compose restart firewatch`. Active model = fire v7 (2-class YOLO26-S fire/smoke; inside-box 2% motion, bonus 0.20, bar 0.55). |
 
 ### 3.4 `telegram-bot` — on-demand command responder
 | | |

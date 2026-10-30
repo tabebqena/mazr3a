@@ -110,6 +110,10 @@ model-training/*
 firewatch_clips/
 firewatch-fire-clips/
 
+# Fire-alert media collection (alerted firewatch frames + covering Frigate
+# recording segments). Media artifact, not source.
+firewatch-alerts-*/
+
 # Camera clip exports (Frigate recording segments scoped by camera, for
 # firewatch model testing + scene-reader fine-tuning) - large media artifacts,
 # not source. Host staging dir (/home/dr/frigate/cam-clips) and the local

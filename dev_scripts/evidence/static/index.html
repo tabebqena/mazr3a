@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firewatch evidence review</title>
+<link rel="stylesheet" href="/static/style.css?v=single7">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>Firewatch evidence review</h1>
+    <p id="summary">Loading…</p>
+  </div>
+  <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
+  <div id="stats" class="stats"></div>
+</header>
+<main>
+  <section class="toolbar">
+    <label>Camera <select id="camera"><option value="">All cameras</option></select></label>
+    <label>Marked
+      <select id="verdict">
+        <option value="">All</option>
+        <option value="true">Marked true</option>
+        <option value="false">Marked false</option>
+        <option value="unclassified">Untouched</option>
+      </select>
+    </label>
+    <label>Label <select id="label"><option value="">All labels</option></select></label>
+    <label>Min boxes <input id="min-boxes" type="number" min="0" step="1" placeholder="Any" inputmode="numeric"></label>
+    <label>Sort
+      <select id="sort">
+        <option value="newest">Newest first</option>
+        <option value="oldest">Oldest first</option>
+        <option value="high">Highest score</option>
+        <option value="low">Lowest score</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="alerted"> Alerted only</label>
+    <label class="check"><input type="checkbox" id="orphans"> Orphans only</label>
+    <label class="check"><input type="checkbox" id="hide-classified"> Hide classified</label>
+    <label class="check"><input type="checkbox" id="show-boxes" checked> Boxes</label>
+    <label class="check"><input type="checkbox" id="show-annotated"> Annotated image</label>
+    <a class="button" href="/api/export" download>Export labels CSV</a>
+  </section>
+  <section class="statusbar">
+    <button id="next-unclassified" type="button">Next unclassified</button>
+    <nav class="pager">
+      <button id="prev" type="button">‹ Prev</button>
+      <span class="page-jump">Image
+        <input id="page-input" type="number" min="1" step="1" value="1" inputmode="numeric" aria-label="Image index">
+        of <span id="page-total">0</span>
+        <span class="page-match">· <span id="match-count">0</span> matching</span>
+      </span>
+      <button id="next" type="button">Next ›</button>
+    </nav>
+    <span id="hint">T/F toggle · click active again to clear · ←/→ move</span>
+  </section>
+  <section id="grid" class="grid"></section>
+  <div id="empty" class="empty hidden">No images match these filters.</div>
+</main>
+<script src="/static/app.js?v=single7"></script>
+</body>
+</html>

@@ -27,6 +27,8 @@ const state = {
   // imgLive: the <img> is the poster shown while a live attempt is starting
   //          (or the frozen last frame while an online camera auto-retries).
   // mode: '' | 'mse' | 'hls' | 'offline'
+  ptz: { enabled: false, cameras: [], presets: {}, open: false, drag: null,
+         keep: null, busy: false, moving: false, pending: null, msgTimer: null },
   idleSec: 300,
 };
 
@@ -581,6 +583,7 @@ async function continueBoot() {
   if (vnn && state.settings.app_version) vnn.textContent = state.settings.app_version;
   loadUsageSelf();     // footer/nav self-view (non-blocking)
   await loadCameras();
+  await loadPtzInfo(); // PTZ cameras + presets (no-op without tab_ptz)
   initInstallPrompt(); // PWA install UI (no-op unless Chrome offers it)
   initNotifications(); // notification feed polling + browser alerts + badge
   window.addEventListener('hashchange', onRoute);
@@ -953,6 +956,7 @@ function syncLiveTools() {
   syncLiveCenter();     // keep the tap-to-toggle glyph in step with the state
   applyZoom();          // zoom group gated on zoomable() (see below)
   syncSoundUI();
+  syncPtzUI();          // PTZ button/overlay gated by camera + permission
 }
 
 function ensureLive() {
@@ -1434,6 +1438,7 @@ function stopStream() {
   $('#live-video').classList.add('hidden');
   $('#live-img').classList.add('hidden');
   hideSpinner();
+  ptzClose(true);       // stop any PTZ movement + dismiss the overlay
   syncLiveTools();      // stopped: no frame/no audio -> controls just disabled
   $('#live-status').textContent = '';
   resetZoom();                 // a fresh camera / restart starts at 1x, no stale pan
@@ -1531,7 +1536,8 @@ function resetZoom() { setZoom(ZOOM_MIN); }
 function onPanStart(e) {
   if (zoom.s <= ZOOM_MIN || !zoomable()) return;
   if (pinch || stagePts.size > 1) return;   // a two-finger pinch owns the gesture
-  if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
+  if (e.target.closest &&
+      e.target.closest('.overlay, .spinner, .ptz-pop, button')) return;
   const st = liveStage(); if (!st) return;
   st.classList.add('panning');
   panPt = { id: e.pointerId, x: e.clientX, y: e.clientY };
@@ -1596,6 +1602,310 @@ async function saveLiveImage() {
   }
 }
 
+/* ---------------- PTZ joystick + presets ----------------
+   The overlay is gated by `tab_ptz` AND by the camera being listed in
+   PTZ_CAMERA (the server tells us via GET /api/ptz). Movement uses short
+   /momentary pulses refreshed while the knob is held; pointer-up/cancel,
+   camera change, route change and page hide all send an explicit stop. */
+function ptzCanShow(cam) {
+  return canPtz() && state.ptz.enabled && !!cam &&
+    state.ptz.cameras.indexOf(cam) >= 0;
+}
+function ptzMsg(text) {
+  const el = $('#ptz-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  clearTimeout(state.ptz.msgTimer);
+  if (text) state.ptz.msgTimer = setTimeout(() => { el.textContent = ''; }, 3500);
+}
+function ptzPresetsFor(cam) {
+  return (state.ptz.presets && state.ptz.presets[cam]) || [];
+}
+function ptzRenderPresetSelect() {
+  const sel = $('#ptz-preset'), go = $('#ptz-goto');
+  if (!sel) return;
+  const list = ptzPresetsFor(state.live.cam);
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (!list.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No presets';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    if (go) go.disabled = true;
+    return;
+  }
+  list.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name + (p.camera_present === false ? ' (missing)' : '');
+    sel.appendChild(opt);
+  });
+  sel.disabled = false;
+  if (prev && list.some(p => p.name === prev)) sel.value = prev;
+  if (go) go.disabled = !sel.value;
+}
+function syncPtzUI() {
+  const btn = $('#live-ptz');
+  if (!btn) return;
+  const cam = state.live.cam || '';
+  const show = ptzCanShow(cam);
+  btn.classList.toggle('hidden', !show);
+  if (!show) btn.setAttribute('aria-expanded', 'false');
+  btn.disabled = !show || !isOnline(cam);
+  // The emergency stop stays available whenever the camera is a PTZ camera,
+  // even if the stream/overlay is closed. It is deliberately NOT tied to the
+  // "online" flag so it can still be sent if the camera is wedged.
+  const estop = $('#live-ptz-stop');
+  if (estop) {
+    estop.classList.toggle('hidden', !show);
+    estop.disabled = !show;
+  }
+  if (state.ptz.open && (!show || !isOnline(cam))) ptzClose(true);
+  if (show) ptzRenderPresetSelect();
+}
+async function loadPtzInfo() {
+  if (!canPtz()) {
+    state.ptz.enabled = false;
+    state.ptz.cameras = [];
+    syncPtzUI();
+    return;
+  }
+  try {
+    const data = await api('/api/ptz');
+    state.ptz.enabled = !!data.enabled;
+    state.ptz.cameras = data.cameras || [];
+    state.ptz.presets = data.presets || {};
+  } catch (e) {
+    state.ptz.enabled = false;
+    state.ptz.cameras = [];
+  }
+  syncPtzUI();
+}
+async function ptzRefreshPresets() {
+  const cam = state.live.cam;
+  if (!ptzCanShow(cam)) return;
+  try {
+    const data = await api('/api/ptz/presets?camera=' +
+      encodeURIComponent(cam));
+    state.ptz.presets[cam] = data.presets || [];
+  } catch (e) {
+    ptzMsg('Presets unavailable');
+  }
+  ptzRenderPresetSelect();
+}
+function ptzOpen() {
+  if (!ptzCanShow(state.live.cam)) return;
+  state.ptz.open = true;
+  const pop = $('#ptz-pop'), btn = $('#live-ptz');
+  if (pop) pop.classList.remove('hidden');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+  ptzResetKnob();
+  ptzRenderPresetSelect();
+  ptzRefreshPresets();
+}
+function ptzClearHold() {
+  if (state.ptz.keep) {
+    clearInterval(state.ptz.keep);
+    state.ptz.keep = null;
+  }
+}
+async function ptzSendStop(force) {
+  const hadHold = !!state.ptz.keep;
+  ptzClearHold();
+  const cam = state.ptz.activeCam || state.live.cam;
+  const wasActive = !!force || state.ptz.moving || hadHold;
+  state.ptz.moving = false;
+  state.ptz.activeCam = null;
+  if (!wasActive || !cam || !ptzCanShow(cam)) return;
+  // If a move request is still in flight, let it land BEFORE the stop so a slow
+  // move cannot arrive after the stop and restart movement.
+  if (state.ptz.pending) {
+    try { await state.ptz.pending; } catch (e) { /* ignore */ }
+  }
+  try {
+    await api('/api/ptz/stop', { method: 'POST', body: { camera: cam } });
+  } catch (e) {
+    if (force) ptzMsg('Emergency stop failed: ' + e.message);
+  }
+}
+function ptzEmergencyStop() {
+  state.ptz.drag = null;
+  const pad = $('#ptz-pad');
+  if (pad) pad.classList.remove('dragging');
+  ptzResetKnob();
+  ptzSendStop(true);
+  ptzMsg('Emergency stop sent');
+}
+function ptzClose(stop) {
+  const active = state.ptz.open || state.ptz.moving || !!state.ptz.keep;
+  state.ptz.open = false;
+  state.ptz.drag = null;
+  const pop = $('#ptz-pop'), btn = $('#live-ptz'), pad = $('#ptz-pad');
+  if (pop) pop.classList.add('hidden');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  if (pad) pad.classList.remove('dragging');
+  ptzResetKnob();
+  if (stop && active) ptzSendStop();
+  else ptzClearHold();
+}
+async function ptzSendMove(pan, tilt) {
+  const cam = state.live.cam;
+  if (!ptzCanShow(cam) || !isOnline(cam) || state.ptz.busy) return;
+  state.ptz.busy = true;
+  state.ptz.moving = true;
+  state.ptz.activeCam = cam;
+  state.ptz.pending = api('/api/ptz/move', {
+    method: 'POST',
+    body: { camera: cam, pan: pan, tilt: tilt, zoom: 0 },
+  });
+  try {
+    await state.ptz.pending;
+  } catch (e) {
+    ptzMsg('Move failed: ' + e.message);
+    ptzClearHold();
+    state.ptz.moving = false;
+    state.ptz.activeCam = null;
+  } finally {
+    state.ptz.pending = null;
+    state.ptz.busy = false;
+  }
+}
+function ptzStartHold() {
+  if (state.ptz.keep) return;
+  const send = () => {
+    const v = (state.ptz.drag && state.ptz.drag.vector) || { x: 0, y: 0 };
+    ptzSendMove(Math.round(v.x * 70), Math.round(-v.y * 70));
+  };
+  send();
+  state.ptz.keep = setInterval(send, 220);
+}
+function ptzDrawKnob(x, y) {
+  const pad = $('#ptz-pad'), knob = $('#ptz-knob');
+  if (!pad || !knob) return;
+  const r = pad.getBoundingClientRect();
+  const max = Math.max(0, r.width / 2 - knob.offsetWidth / 2 - 8);
+  knob.style.transform = 'translate(' + (x * max) + 'px,' + (y * max) + 'px)';
+}
+function ptzResetKnob() {
+  const knob = $('#ptz-knob');
+  if (knob) knob.style.transform = 'translate(0,0)';
+}
+function ptzSetVector(e) {
+  const pad = $('#ptz-pad');
+  if (!pad || !state.ptz.drag) return;
+  const r = pad.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  let x = (e.clientX - (r.left + r.width / 2)) / (r.width / 2);
+  let y = (e.clientY - (r.top + r.height / 2)) / (r.height / 2);
+  const len = Math.hypot(x, y);
+  if (len > 1) { x /= len; y /= len; }
+  if (Math.hypot(x, y) < 0.12) { x = 0; y = 0; }
+  state.ptz.drag.vector = { x: x, y: y };
+  ptzDrawKnob(x, y);
+}
+function ptzStopDrag() {
+  if (!state.ptz.drag) return;
+  state.ptz.drag = null;
+  const pad = $('#ptz-pad');
+  if (pad) pad.classList.remove('dragging');
+  ptzResetKnob();
+  ptzSendStop();
+}
+function ptzBeaconStop() {
+  const cam = state.ptz.activeCam || state.live.cam;
+  if (!state.ptz.moving || !cam) return;
+  ptzClearHold();
+  state.ptz.moving = false;
+  state.ptz.activeCam = null;
+  try {
+    const blob = new Blob([JSON.stringify({ camera: cam })],
+      { type: 'application/json' });
+    navigator.sendBeacon('/api/ptz/stop', blob);
+  } catch (e) { /* best-effort */ }
+}
+
+/* ---- wiring: PTZ overlay ---- */
+const livePtzBtn = $('#live-ptz');
+if (livePtzBtn) {
+  livePtzBtn.addEventListener('click', () => {
+    if (state.ptz.open) ptzClose(true);
+    else ptzOpen();
+  });
+}
+const ptzCloseBtn = $('#ptz-close');
+if (ptzCloseBtn) ptzCloseBtn.addEventListener('click', () => ptzClose(true));
+const ptzStopBtn = $('#ptz-stop');
+if (ptzStopBtn) ptzStopBtn.addEventListener('click', ptzEmergencyStop);
+const livePtzStopBtn = $('#live-ptz-stop');
+if (livePtzStopBtn) livePtzStopBtn.addEventListener('click', ptzEmergencyStop);
+const ptzPadEl = $('#ptz-pad');
+if (ptzPadEl) {
+  ptzPadEl.addEventListener('pointerdown', (e) => {
+    if (!ptzCanShow(state.live.cam)) return;
+    state.ptz.drag = { id: e.pointerId, vector: { x: 0, y: 0 } };
+    ptzPadEl.classList.add('dragging');
+    try { ptzPadEl.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    ptzSetVector(e);
+    ptzStartHold();
+    e.preventDefault();
+  });
+  ptzPadEl.addEventListener('pointermove', (e) => {
+    if (!state.ptz.drag || state.ptz.drag.id !== e.pointerId) return;
+    ptzSetVector(e);
+    e.preventDefault();
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(evt => {
+    ptzPadEl.addEventListener(evt, (e) => {
+      if (!state.ptz.drag || state.ptz.drag.id !== e.pointerId) return;
+      ptzStopDrag();
+    });
+  });
+}
+const ptzPresetSel = $('#ptz-preset');
+if (ptzPresetSel) ptzPresetSel.addEventListener('change', () => {
+  const go = $('#ptz-goto');
+  if (go) go.disabled = !ptzPresetSel.value;
+});
+const ptzGotoBtn = $('#ptz-goto');
+if (ptzGotoBtn) ptzGotoBtn.addEventListener('click', async () => {
+  const cam = state.live.cam, name = ptzPresetSel ? ptzPresetSel.value : '';
+  if (!name || !ptzCanShow(cam)) return;
+  try {
+    await api('/api/ptz/presets/goto', {
+      method: 'POST', body: { camera: cam, name: name },
+    });
+    ptzMsg('Moving to ' + name);
+  } catch (e) {
+    ptzMsg('Preset failed: ' + e.message);
+  }
+});
+const ptzSaveBtn = $('#ptz-save');
+if (ptzSaveBtn) ptzSaveBtn.addEventListener('click', async () => {
+  const cam = state.live.cam;
+  if (!ptzCanShow(cam)) return;
+  const name = (window.prompt('Preset name:') || '').trim();
+  if (!name) return;
+  try {
+    await api('/api/ptz/presets', {
+      method: 'POST', body: { camera: cam, name: name },
+    });
+    await ptzRefreshPresets();
+    if (ptzPresetSel) ptzPresetSel.value = name;
+    ptzMsg('Saved ' + name);
+  } catch (e) {
+    ptzMsg('Save failed: ' + e.message);
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.ptz.open) ptzClose(true);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { ptzClose(true); ptzBeaconStop(); }
+});
+window.addEventListener('pagehide', ptzBeaconStop);
+
 /* ---- wiring: control-row buttons + stage pan & wheel zoom ---- */
 $('#live-shot').addEventListener('click', saveLiveImage);
 $('#zoom-in').addEventListener('click', zoomIn);
@@ -1636,7 +1946,8 @@ if (stageEl) {
   }
   function onStageDown(e) {
     if (!smallMedScreen()) return;
-    if (e.target.closest && e.target.closest('.overlay, .spinner, button')) return;
+    if (e.target.closest &&
+        e.target.closest('.overlay, .spinner, .ptz-pop, button')) return;
     stagePts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (stagePts.size === 1) {
       liveSwipe = zoom.s > ZOOM_MIN ? null
@@ -1747,7 +2058,7 @@ if (stageEl) {
   });
   stageEl.addEventListener('click', (e) => {
     if (liveTapMoved) return;                    // it was a pan drag
-    if (e.target.closest('button, .overlay, .spinner')) return;
+    if (e.target.closest('button, .overlay, .spinner, .ptz-pop')) return;
     toggleLiveCenter();
   });
 }
@@ -1832,6 +2143,7 @@ function syncCamUI() {
   const tag = $('#live-cam-tag');
   if (tag) tag.textContent = cam;
   $$('.cam-item').forEach(b => b.classList.toggle('active', b.dataset.cam === cam));
+  syncPtzUI();
 }
 function openCamModal() {
   // Refresh the thumbnails + online tags whenever the picker is opened.
@@ -2951,10 +3263,16 @@ async function loadAllUsage() {
    container restart. Keep TABS in sync with AVAILABLE_TABS in userstore.py. */
 const TABS = [['live', 'Live'], ['events', 'Events'], ['fire', 'Fire alerts'],
               ['visits', 'Visits'], ['notifications', 'Notifications']];
+// Non-tab permissions (see EXTRA_PERMISSIONS in portal/userstore.py). They are
+// shown in the Manage box but grant no navigation tab.
+const EXTRA_PERMS = [['ptz', 'PTZ control']];
 const USER_VIEWS = TABS.map(t => t[0]);
 function tabKey(v) { return 'tab_' + v; }
 
 function isAdmin() { return !!(state.me && state.me.is_admin); }
+function canPtz() {
+  return isAdmin() || ((state.me && state.me.permissions) || []).indexOf('tab_ptz') >= 0;
+}
 
 /* A view is reachable when its `tab_*` key is granted. The Account tab ('user')
    is always available; Debug/Manage are admin-only. */
@@ -3037,7 +3355,7 @@ function renderTabBoxes(sel, perms, editable, adminAll) {
   const box = $('#' + sel);
   if (!box) return;
   const list = perms || [];
-  box.innerHTML = TABS.map(([v, label]) => {
+  box.innerHTML = TABS.concat(EXTRA_PERMS).map(([v, label]) => {
     const key = tabKey(v);
     const checked = adminAll || list.indexOf(key) >= 0;
     return '<label class="check" title="' + esc(key) + '">' +

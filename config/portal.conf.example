@@ -142,3 +142,52 @@ SCENE_JPG_ROOT=/media/scenewatch
 # Frigate's own snapshot endpoint - no image copies, no DB image paths.
 # ------------------------------------------------------------------
 VISITS_DB=/media/visits/visits.db
+
+# ------------------------------------------------------------------
+# PTZ (portal/ptz.py) - Hikvision PT camera control.
+#
+# PTZ_CAMERA is a COMMA-SEPARATED list of Frigate camera names:
+#     PTZ_CAMERA=cam08
+#     PTZ_CAMERA=cam08,cam10
+#
+# For each name the portal resolves the device host from Frigate's
+# /api/config -> go2rtc.streams.<cam> (the RTSP URL's hostname). ISAPI is then
+# reached on PTZ_PORT (default 80), channel PTZ_CHANNEL (default 1). PTZ_HOST
+# is only used as the fallback when exactly ONE camera is configured. You can
+# override per camera with PTZ_PORT_<CAM> / PTZ_CHANNEL_<CAM>, e.g.
+# PTZ_CHANNEL_CAM10=8.
+#
+# The camera has pan/tilt and camera-side presets, but NO absolute-position
+# feedback: GET /ISAPI/PTZCtrl/channels/1/status always reports zeros and
+# /absoluteEx is unsupported on this model. Presets are therefore HYBRID:
+# the physical position is saved in a camera preset slot, while
+# PTZ_PRESETS_FILE (JSON under the rw /media mount) owns the names,
+# descriptions and slot mapping, namespace per camera. portal/ptz.py does the
+# CRUD and syncs both.
+#
+# CRASH SAFETY: the portal joystick uses /momentary (move for a fixed time and
+# let the camera stop itself) refreshed while the stick is held. PTZ_HOLD_MAX_S
+# is the secondary server-side continuous auto-stop.
+#
+# Credentials are NEVER in this file. They are read from the environment, in
+# this order:
+#   PTZ_USER_<CAM> / PTZ_PASS_<CAM>                 (per-camera override)
+#   PTZ_USER / PTZ_PASS
+#   FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS   (root .env)
+#   FRIGATE_RTSP_USER / FRIGATE_RTSP_PASS           (fallback)
+# docker-compose passes the root .env to the portal service for this reason.
+#
+# PTZ_SCHEME=http works on this camera (Digest auth). Use https + set
+# PTZ_VERIFY_TLS=true only if you install a valid certificate; the camera's
+# self-signed cert needs false.
+# ------------------------------------------------------------------
+PTZ_ENABLED=true
+PTZ_CAMERA=cam08
+PTZ_HOST=192.168.1.207
+PTZ_PORT=80
+PTZ_SCHEME=http
+PTZ_CHANNEL=1
+PTZ_VERIFY_TLS=false
+PTZ_MOMENTARY_MS=400
+PTZ_HOLD_MAX_S=2
+PTZ_PRESETS_FILE=/media/portal/ptz_presets.json

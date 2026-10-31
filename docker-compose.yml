@@ -288,6 +288,10 @@ services:
                                        # the portal's own media/portal/{usage,users}.db
     env_file:
       - ./portal/.env   # SECRET_KEY (git-ignored; keeps the secret out of config/portal.conf)
+      # Camera credentials for the PTZ helper (portal/ptz.py): supplies
+      # FRIGATE_HIK_RTSP_USER/PASS for cam08. Same git-ignored root .env that
+      # Frigate already uses; never put these values in config/portal.conf.
+      - .env
     environment:
       - PORTAL_CONF=/config/portal.conf
       - PORTAL_LOGS_API=http://logs:8090   # read-only logs sidecar (Debug tab)

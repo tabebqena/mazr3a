@@ -12,10 +12,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v50` |
+| Summary version | `v53` |
 | Last updated | 2026-10-31 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.11.13` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.11.16` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 | Portal notifications | Server-side notification feed + **Notifications** tab with unread badge, browser-Notification gate, and a notification-only `/sw.js` (no fetch/cache handler). See [`plans/portal-notifications.md`](plans/portal-notifications.md) |
 
@@ -148,13 +148,13 @@ with `docker compose up -d` / `docker compose down`.
 |---|---|
 | Container | `portal` |
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
-| Purpose | Login (PBKDF2); **Live view** (MSE-over-WebSocket primary, HLS fallback); **Events** (large player fed by a clip strip with playlist auto-advance); **fire alerts** (cards/lightbox with portal-derived motion + burst-hits badges); **legacy scenereader Episodes / Scenes / Scene log** (read-only via [`portal/eventstore.py`](portal/eventstore.py) — the archived store, no longer updated); admin **Debug** tab; runtime account management and per-user bandwidth **usage**. |
-| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py), [`portal/notifstore.py`](portal/notifstore.py), [`portal/userstore.py`](portal/userstore.py), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `sw.js`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
-| Config | [`config/portal.conf`](config/portal.conf) (tracked default, no secrets; full docs [`config/portal.conf.example`](config/portal.conf.example)) |
+| Purpose | Login (PBKDF2); **Live view** (MSE-over-WebSocket primary, HLS fallback); **Events** (large player fed by a clip strip with playlist auto-advance); **fire alerts** (cards/lightbox with portal-derived motion + burst-hits badges); **legacy scenereader Episodes / Scenes / Scene log** (read-only via [`portal/eventstore.py`](portal/eventstore.py) — the archived store, no longer updated); admin **Debug** tab; runtime account management and per-user bandwidth **usage**; PTZ joystick overlay on Live + preset recall/save + emergency stop (`portal/ptz.py`, `tab_ptz` permission, comma-separated `PTZ_CAMERA`). |
+| Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py), [`portal/notifstore.py`](portal/notifstore.py), [`portal/userstore.py`](portal/userstore.py), [`portal/ptz.py`](portal/ptz.py) (PTZ ISAPI client + external preset store/CLI), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `sw.js`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
+| Config | [`config/portal.conf`](config/portal.conf) (tracked default, no secrets; full docs [`config/portal.conf.example`](config/portal.conf.example)); `PTZ_CAMERA` is a comma list of Frigate names (hosts resolved from go2rtc), `PTZ_MOMENTARY_MS`/`PTZ_HOLD_MAX_S` tune movement safety, and `PTZ_PRESETS_FILE` is the external preset JSON path. |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
-| Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/{usage,users,notifications}.db`) |
-| Env | `SECRET_KEY` from `./portal/.env` (`env_file`, git-ignored); `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB`, `PORTAL_USAGE_DB`, `PORTAL_NOTIF_DB` (defaults under `/media/portal/`) |
-| Access model | Tabs are a set of grantable `tab_*` permissions; an **admin** has every tab implicitly. Accounts are **runtime** records in `media/portal/users.db` — changes apply immediately, **no restart** — seeded once from any `user` line in `portal.conf`. |
+| Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/{usage,users,notifications}.db` + `ptz_presets.json`) |
+| Env | `SECRET_KEY` from `./portal/.env` (`env_file`, git-ignored); root `.env` (`env_file`) supplies `FRIGATE_HIK_RTSP_USER/PASS` to `portal/ptz.py`; `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB`, `PORTAL_USAGE_DB`, `PORTAL_NOTIF_DB` (defaults under `/media/portal/`) |
+| Access model | Tabs are a set of grantable `tab_*` permissions; `tab_ptz` is a separate non-tab permission for physical camera movement. An **admin** has everything implicitly. Accounts are **runtime** records in `media/portal/users.db` — changes apply immediately, **no restart** — seeded once from any `user` line in `portal.conf`. |
 | Quota | Each account carries a per-user egress **quota** (`quota_bytes`, default **5 GiB**, `0` = unlimited), editable in the admin **Manage** tab and shown as a used/quota bar (footer on large screens, collapsed menu on phones). |
 | PWA / Notifications | See the header table; details in [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) and [`plans/portal-notifications.md`](plans/portal-notifications.md). |
 | Notes | **Cache-busting policy:** bump `APP_VERSION` + use `{{ ASSET_* }}` tokens (see [`.roo/rules/portal-cache-busting.md`](.roo/rules/portal-cache-busting.md)). The event-clip proxy forwards `Range` (relays `206`) so the player can seek. Responsive UI: phones collapse the nav into a `#nav-toggle` hamburger; landscape has dedicated Live/Events layouts; centre play/stop overlays on the video. |
@@ -194,7 +194,7 @@ see [`archive/README.md`](archive/README.md)).
 | `scenereader` *(archived)* | [`scenereader/`](scenereader/) (code kept, not built), [`archive/scenereader.compose.yml`](archive/scenereader.compose.yml), [`config/scenereader.conf`](config/scenereader.conf), [`models/scene/`](models/scene/) (git-ignored) |
 | `telegram-bot` | [`scripts/telegram_bot.py`](scripts/telegram_bot.py), [`scripts/telegram_notify.py`](scripts/telegram_notify.py) |
 | `logs` | [`scripts/container_logs.py`](scripts/container_logs.py) |
-| `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf) (secret in git-ignored `portal/.env`); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
+| `portal` | [`portal/`](portal/) + [`config/portal.conf`](config/portal.conf) (secret in git-ignored `portal/.env`; cam08 creds from root `.env`); PTZ module [`portal/ptz.py`](portal/ptz.py); Android-PWA icons via [`dev_scripts/make_portal_pwa_icons.sh`](dev_scripts/make_portal_pwa_icons.sh) → [`portal/static/icons/`](portal/static/icons/) |
 
 ### 3.9 Resource limits (CPU / memory / OOM priority)
 
@@ -345,7 +345,7 @@ sudo apt install -y git python3
 | `.env` | Camera RTSP credentials (`FRIGATE_*`) |
 | `config/telegram.conf` | Bot token + `CHAT_ID`(s) + tunables |
 | `portal/.env` | Portal `SECRET_KEY` (injected via the portal service's `env_file`) |
-| `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the `visits` **text** store (`media/visits/{visits.db,.cursor}`) + the archived scenereader store (`media/events/`) + the portal's own `media/portal/{usage,users,notifications}.db` + watchdog CSVs |
+| `media/` | Frigate recordings/clips/snapshots + firewatch evidence + the `visits` **text** store (`media/visits/{visits.db,.cursor}`) + the archived scenereader store (`media/events/`) + the portal's own `media/portal/{usage,users,notifications}.db` + `media/portal/ptz_presets.json` + watchdog CSVs |
 | `mosquitto/data/`, `mosquitto/log/` | Broker runtime state |
 | `models/fire/versions/` | Versioned fire-model archive |
 | `models/scene/` | **KEPT but unused** after the scenereader archive: the small SmolVLM2-500M GGUF + mmproj and the retained Qwen2-VL-2B OpenVINO INT4 IR (never deleted) |
@@ -355,12 +355,14 @@ sudo apt install -y git python3
 ### 7.3 Credentials — how they work
 - **Camera creds:** `.env` → `env_file` on the `frigate` container → `{FRIGATE_*}`
   placeholders in `config/config.yaml` (Frigate 0.17 has no `!env_var` tag).
-  `cam08` (Hikvision) uses separate `FRIGATE_HIK_RTSP_USER/PASS`.
+  `cam08` (Hikvision) uses separate `FRIGATE_HIK_RTSP_USER/PASS`. The same root
+  `.env` is passed to the `portal` container for the PTZ helper.
 - **Telegram:** shared git-ignored `config/telegram.conf`; `CHAT_ID` accepts a
   comma-separated recipient list.
 - **Portal:** git-ignored `portal/.env` holds `SECRET_KEY` (injected via the
   portal service's `env_file`); `config/portal.conf` is a tracked default that
-  holds the tunables.
+  holds the tunables. PTZ camera credentials are env-only (`PTZ_USER/PTZ_PASS`
+  or the root `.env` `FRIGATE_HIK_RTSP_*`).
   Accounts are **runtime** records in `media/portal/users.db`, managed from the
   portal **Account**/**Manage** tabs (no restart) and seeded once from a `user`
   line (`python portal/genpass.py --username NAME`). Each account carries a
@@ -385,7 +387,7 @@ All persistent data lives under the deploy root; a **single cleaner** (root cron
 | [`watchdog.conf`](config/stores/watchdog.conf) | dir | `{DEPLOY}/media/watchdog` (`*.csv`) | 14 | 0 | 20 |
 | [`mosquitto.conf`](config/stores/mosquitto.conf) | dir | `{DEPLOY}/mosquitto` (`data,log`) | 7 | 0 | 30 |
 | [`firewatch.conf`](config/stores/firewatch.conf) | docker-exec | in-container worker | 90 | 2 | 50 |
-| [`portal.conf`](config/stores/portal.conf) | dir | `{DEPLOY}/media/portal` (usage + users + notifications DBs) | 0 | 0 | 90 |
+| [`portal.conf`](config/stores/portal.conf) | dir | `{DEPLOY}/media/portal` (usage + users + notifications DBs + `ptz_presets.json`) | 0 | 0 | 90 |
 
 - firewatch evidence is **DB-aware**: the profile delegates to
   `cleanup_firewatch_store.py` in the container (SQLite is the source of truth).

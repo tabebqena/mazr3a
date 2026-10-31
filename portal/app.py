@@ -22,8 +22,8 @@ from fastapi.responses import (
 )
 
 from portal import (
-    auth, config as pconf, eventstore, firestore, frigate, notifstore, usage,
-    userstore, visitstore,
+    auth, config as pconf, eventstore, firestore, frigate, notifstore, ptz,
+    usage, userstore, visitstore,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.13"
+APP_VERSION = "0.11.16"
 _HTMX = None
 
 
@@ -68,6 +68,16 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(10.0),
         follow_redirects=True,
     )
+    # PTZ registry (portal/ptz.py): resolves PTZ_CAMERA names through Frigate's
+    # /api/config and keeps one ISAPI client per camera. Resolution is LAZY so
+    # a Frigate outage at startup never prevents the portal from booting.
+    app.state.ptz = None
+    if pconf.getb(cfg, "PTZ_ENABLED", True):
+        app.state.ptz = ptz.PTZRegistry(
+            cfg,
+            http_client=app.state.client,
+            frigate_base=pconf.get(cfg, "FRIGATE_API", "http://frigate:5000"),
+        )
     # Per-user bandwidth accounting (portal/usage.py). The portal is the only
     # writer of this DB; a unusable path degrades to a warning (playback must
     # never depend on stats). The background task flushes the in-memory
@@ -107,6 +117,9 @@ async def lifespan(app: FastAPI):
     with contextlib.suppress(asyncio.CancelledError):
         await notif_task
     app.state.usage.flush()
+    if app.state.ptz is not None:
+        with contextlib.suppress(Exception):
+            await app.state.ptz.close()
     await app.state.client.aclose()
 
 
@@ -442,6 +455,38 @@ def _effective_permissions(user: dict) -> list:
     return list(user.get("permissions") or [])
 
 
+def _has_ptz_access(user: dict) -> bool:
+    return _is_admin(user) or "tab_ptz" in (user.get("permissions") or [])
+
+
+def current_ptz(request: Request, user: dict = Depends(current_user)):
+    """Dependency: authenticated AND granted `tab_ptz` (admin implicit)."""
+    if not _has_ptz_access(user):
+        raise HTTPException(status_code=403, detail="PTZ access not granted")
+    return user
+
+
+def _ptz_registry(request: Request):
+    registry = getattr(request.app.state, "ptz", None)
+    if registry is None:
+        raise HTTPException(status_code=503, detail="PTZ is disabled")
+    return registry
+
+
+def _ptz_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ptz.PresetNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ptz.PresetExists):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ptz.PTZAuthError):
+        return HTTPException(status_code=502, detail="camera authentication failed")
+    if isinstance(exc, ptz.PTZHTTPError):
+        return HTTPException(status_code=502, detail=str(exc))
+    if isinstance(exc, ptz.PTZError):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=502, detail="PTZ operation failed")
+
+
 def _same_user(user: dict, username: str) -> bool:
     return (user.get("username") or "").lower() == (username or "").lower()
 
@@ -651,6 +696,118 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
     cfg = _cfg(request)
     default_cam = user.get("default_camera") or pconf.get(cfg, "DEFAULT_CAMERA")
     return {"default_camera": default_cam, "cameras": items}
+
+
+# --------------------------------------------------------------------------
+# PTZ - physical camera movement + the portal-owned preset store.
+#
+# Permission: `tab_ptz` (admin implicit). The camera name is always explicit in
+# the request so the same endpoints work for a comma-separated PTZ_CAMERA list.
+# Movement uses /momentary: the camera stops itself after PTZ_MOMENTARY_MS, so a
+# portal crash cannot leave it moving forever (PTZ_HOLD_MAX_S is a secondary
+# server-side stop for the continuous path).
+# --------------------------------------------------------------------------
+def _ptz_camera(body: dict) -> str:
+    camera = str(body.get("camera") or "").strip()
+    if not camera or not frigate.valid_camera_name(camera):
+        raise HTTPException(status_code=400, detail="invalid or missing camera")
+    return camera
+
+
+def _ptz_int(body: dict, key: str, default: int = 0) -> int:
+    try:
+        value = int(body.get(key, default))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{key} must be an integer")
+    if not -100 <= value <= 100:
+        raise HTTPException(status_code=400,
+                            detail=f"{key} must be between -100 and 100")
+    return value
+
+
+@app.get("/api/ptz")
+async def ptz_info(request: Request, user: dict = Depends(current_ptz)):
+    registry = _ptz_registry(request)
+    try:
+        cameras = await registry.list_cameras()
+        presets = {}
+        for camera in cameras:
+            presets[camera] = await registry.list_presets(
+                camera, include_camera=False)
+    except ptz.PTZError as exc:
+        raise _ptz_http_error(exc)
+    return {"enabled": True, "cameras": cameras, "presets": presets}
+
+
+@app.get("/api/ptz/presets")
+async def ptz_presets(request: Request, camera: str = "",
+                      user: dict = Depends(current_ptz)):
+    if not camera or not frigate.valid_camera_name(camera):
+        raise HTTPException(status_code=400, detail="invalid or missing camera")
+    registry = _ptz_registry(request)
+    try:
+        items = await registry.list_presets(camera, include_camera=False)
+    except ptz.PTZError as exc:
+        raise _ptz_http_error(exc)
+    return {"camera": camera, "presets": items}
+
+
+@app.post("/api/ptz/move")
+async def ptz_move(request: Request, user: dict = Depends(current_ptz)):
+    body = await request.json()
+    camera = _ptz_camera(body)
+    pan = _ptz_int(body, "pan")
+    tilt = _ptz_int(body, "tilt")
+    zoom = _ptz_int(body, "zoom")
+    registry = _ptz_registry(request)
+    try:
+        service = await registry.get(camera)
+        await service.move(pan, tilt, zoom)
+    except ptz.PTZError as exc:
+        raise _ptz_http_error(exc)
+    return {"ok": True, "camera": camera, "pan": pan, "tilt": tilt}
+
+
+@app.post("/api/ptz/stop")
+async def ptz_stop(request: Request, user: dict = Depends(current_ptz)):
+    body = await request.json()
+    camera = _ptz_camera(body)
+    registry = _ptz_registry(request)
+    try:
+        service = await registry.get(camera)
+        await service.stop()
+    except ptz.PTZError as exc:
+        raise _ptz_http_error(exc)
+    return {"ok": True, "camera": camera}
+
+
+@app.post("/api/ptz/presets")
+async def ptz_preset_add(request: Request, user: dict = Depends(current_ptz)):
+    body = await request.json()
+    camera = _ptz_camera(body)
+    name = str(body.get("name") or "")
+    description = str(body.get("description") or "")[:200]
+    registry = _ptz_registry(request)
+    try:
+        service = await registry.get(camera)
+        preset = await service.add_preset(name, description)
+    except ptz.PTZError as exc:
+        raise _ptz_http_error(exc)
+    return {"ok": True, "preset": preset}
+
+
+@app.post("/api/ptz/presets/goto")
+async def ptz_preset_goto(request: Request, user: dict = Depends(current_ptz)):
+    body = await request.json()
+    camera = _ptz_camera(body)
+    name = str(body.get("name") or "")
+    registry = _ptz_registry(request)
+    try:
+        service = await registry.get(camera)
+        result = await service.goto_preset(name)
+    except ptz.PTZError as exc:
+        raise _ptz_http_error(exc)
+    return {"ok": True, "camera": camera, "preset": result}
 
 
 # Egress byte kinds recorded by the usage store (portal/usage.py).

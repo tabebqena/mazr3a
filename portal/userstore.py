@@ -45,7 +45,12 @@ import time
 # the stored keys (an EMPTY list = no tabs). Keep AVAILABLE_TABS in sync with
 # TABS in portal/static/app.js.
 AVAILABLE_TABS = ("live", "events", "fire", "visits", "notifications")
-ALLOWED_PERMISSIONS = tuple("tab_" + t for t in AVAILABLE_TABS)
+# Non-tab permissions. `tab_ptz` grants physical PTZ control (the button is
+# shown inside Live for cameras listed in PTZ_CAMERA) without granting any tab.
+EXTRA_PERMISSIONS = ("tab_ptz",)
+ALLOWED_PERMISSIONS = (
+    tuple("tab_" + t for t in AVAILABLE_TABS) + EXTRA_PERMISSIONS
+)
 
 # Usernames are path-safe (used in /api/users/<name>) and modest in length.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")

@@ -144,6 +144,15 @@
                     title="Save image (download the current frame)"
                     aria-label="Save image">&#128247;</button>
 
+            <!-- PTZ: shown only for cameras in PTZ_CAMERA and only when the user
+                 has the `tab_ptz` permission. Opens a compact joystick overlay. -->
+            <button id="live-ptz" type="button" class="hidden"
+                    title="PTZ control" aria-label="PTZ control"
+                    aria-expanded="false" aria-controls="ptz-pop">PTZ</button>
+            <button id="live-ptz-stop" type="button" class="ptz-estop hidden"
+                    title="Emergency stop PTZ"
+                    aria-label="Emergency stop PTZ">STOP</button>
+
             <!-- Zoom controls: +/- step around the frame centre + a reset. When
                  zoomed, drag the picture to pan (and use the mouse wheel to zoom
                  on desktop). The group is disabled whenever no frame is on
@@ -197,6 +206,36 @@
                (play / stop) is set by app.js from the live state. -->
           <button id="live-center" class="vid-center hidden" type="button"
                   aria-label="Play or stop the live stream"></button>
+
+          <!-- PTZ joystick overlay: a compact popover inside the stage. The
+               knob is dragged for analog pan/tilt; presets are recalled/saved
+               from the same panel. app.js gates it to PTZ_CAMERA + tab_ptz. -->
+          <div id="ptz-pop" class="ptz-pop hidden" role="dialog"
+               aria-label="PTZ control">
+            <div class="ptz-head">
+              <span class="ptz-title">PTZ</span>
+              <button id="ptz-close" class="ptz-close" type="button"
+                      title="Close PTZ" aria-label="Close PTZ">&#10005;</button>
+            </div>
+            <div id="ptz-pad" class="ptz-pad" role="application"
+                 aria-label="Pan and tilt joystick">
+              <span class="ptz-arrow up" aria-hidden="true">&#9650;</span>
+              <span class="ptz-arrow down" aria-hidden="true">&#9660;</span>
+              <span class="ptz-arrow left" aria-hidden="true">&#9664;</span>
+              <span class="ptz-arrow right" aria-hidden="true">&#9654;</span>
+              <div id="ptz-knob" class="ptz-knob"></div>
+            </div>
+            <div class="ptz-preset-row">
+              <select id="ptz-preset" aria-label="Saved PTZ preset">
+                <option value="">No presets</option>
+              </select>
+              <button id="ptz-goto" type="button" disabled>Go</button>
+              <button id="ptz-save" type="button">Save</button>
+            </div>
+            <button id="ptz-stop" class="ptz-stop" type="button"
+                    title="Emergency stop PTZ">Emergency stop</button>
+            <div id="ptz-msg" class="ptz-msg"></div>
+          </div>
         </div>
         <div id="live-status" class="status"></div>
 
@@ -567,11 +606,12 @@
                   0 = unlimited.</span>
               </label>
               <div class="user-perms">
-                <span class="user-perms-label">Tab access</span>
+                <span class="user-perms-label">Tab / PTZ access</span>
                 <div id="mu-perms" class="user-perms-box"></div>
                 <div class="user-perms-hint muted">
-                  Check the tabs this user may open. An administrator always has
-                  every tab (current and future). Unchecked = access denied.
+                  Check the tabs this user may open, plus PTZ control if they may
+                  move the camera. An administrator always has everything
+                  (current and future). Unchecked = access denied.
                 </div>
               </div>
               <div class="user-actions">

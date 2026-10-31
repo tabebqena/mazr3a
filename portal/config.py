@@ -36,6 +36,22 @@ DEFAULTS = {
     "STREAM_IDLE_TIMEOUT_S": "300",   # live-view idle time watch default
     "DEFAULT_CAMERA": "",             # optional landing camera override
     "FRIGATE_API": "http://frigate:5000",
+    # PTZ: Hikvision PT cameras, as a comma-separated list of Frigate camera
+    # names. The portal resolves each camera's host from Frigate's
+    # go2rtc.streams.<cam> (or PTZ_HOST for a single camera). Credentials are
+    # NOT stored here - they come from the environment (FRIGATE_HIK_RTSP_* or
+    # PTZ_USER/PTZ_PASS). The physical preset positions live in camera preset
+    # slots; PTZ_PRESETS_FILE holds our names/metadata (see portal/ptz.py).
+    "PTZ_ENABLED": "true",
+    "PTZ_CAMERA": "cam08",
+    "PTZ_HOST": "192.168.1.207",
+    "PTZ_PORT": "80",
+    "PTZ_SCHEME": "http",
+    "PTZ_CHANNEL": "1",
+    "PTZ_VERIFY_TLS": "false",
+    "PTZ_MOMENTARY_MS": "400",
+    "PTZ_HOLD_MAX_S": "2",
+    "PTZ_PRESETS_FILE": "/media/portal/ptz_presets.json",
     # Live view is served SAME-ORIGIN as HLS through the portal:
     # /api/live/<cam>/hls/stream.m3u8 -> Frigate go2rtc HLS (master + .ts
     # segments) via Frigate's /api/go2rtc/* reverse proxy. No public stream

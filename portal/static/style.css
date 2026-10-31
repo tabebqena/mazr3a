@@ -325,6 +325,123 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
 .live-ctl #live-sound.sound-on {
   border-color: var(--accent); background: rgba(255,255,255,.08);
 }
+/* PTZ button: compact text chip in the tools group. */
+.live-ctl #live-ptz {
+  flex: 0 0 auto; width: 44px; padding: 0;
+  text-align: center; font-size: 11px; font-weight: 700;
+  letter-spacing: .04em;
+}
+.live-ctl #live-ptz[aria-expanded="true"] {
+  border-color: var(--accent); background: rgba(255,255,255,.08);
+  color: var(--accent);
+}
+/* Emergency stop: red and always available on a PTZ camera, even when the
+   joystick overlay is closed. */
+.live-ctl #live-ptz-stop {
+  flex: 0 0 auto; width: 48px; padding: 0;
+  text-align: center; font-size: 10.5px; font-weight: 800;
+  letter-spacing: .03em;
+  color: #fff; background: #b3261e; border-color: #b3261e;
+}
+.live-ctl #live-ptz-stop:hover:not(:disabled) { background: #d1342a; }
+
+/* ============ PTZ joystick overlay (inside #live-stage) ============
+   Small translucent panel pinned bottom-left. The pad owns all pointer
+   gestures (touch-action:none); the stage's swipe/pinch handlers ignore
+   `.ptz-pop` so dragging the knob never pans the picture or changes camera. */
+.ptz-pop {
+  position: absolute; left: 10px; bottom: 10px; z-index: 8;
+  width: 176px; padding: 8px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 14px;
+  background: rgba(12,16,20,.86);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.55);
+  color: #e7edf3;
+  touch-action: none; user-select: none;
+}
+.ptz-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 4px;
+}
+.ptz-title {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em;
+  color: var(--muted);
+}
+.ptz-close {
+  width: 26px; min-width: 26px; min-height: 26px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent;
+  color: var(--muted); font-size: 13px; line-height: 1;
+}
+.ptz-close:hover { color: #fff; background: rgba(255,255,255,.08); }
+.ptz-pad {
+  position: relative; width: 128px; height: 128px;
+  margin: 4px auto 8px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.22);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,.10), rgba(255,255,255,.02) 60%),
+    radial-gradient(circle at 50% 50%, rgba(53,194,111,.16), transparent 70%);
+  cursor: grab; touch-action: none;
+}
+.ptz-pad.dragging { cursor: grabbing; }
+.ptz-knob {
+  position: absolute; left: 50%; top: 50%;
+  width: 48px; height: 48px; margin: -24px 0 0 -24px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.35);
+  background: radial-gradient(circle at 35% 30%, #86e0a8, #2e9b5b 70%);
+  box-shadow: 0 4px 14px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.35);
+  transition: transform .08s linear;
+  pointer-events: none;
+}
+.ptz-pad.dragging .ptz-knob { transition: none; }
+.ptz-arrow {
+  position: absolute; color: rgba(255,255,255,.45);
+  font-size: 11px; line-height: 1; pointer-events: none;
+}
+.ptz-arrow.up { left: 50%; top: 7px; transform: translateX(-50%); }
+.ptz-arrow.down { left: 50%; bottom: 7px; transform: translateX(-50%); }
+.ptz-arrow.left { left: 7px; top: 50%; transform: translateY(-50%); }
+.ptz-arrow.right { right: 7px; top: 50%; transform: translateY(-50%); }
+.ptz-preset-row {
+  display: flex; align-items: stretch; gap: 4px;
+}
+.ptz-preset-row select {
+  flex: 1 1 auto; min-width: 0; min-height: 32px;
+  padding: 4px 6px; font-size: 11.5px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel2); color: #e7edf3;
+}
+.ptz-preset-row button,
+.ptz-stop {
+  width: auto; min-width: 0; min-height: 32px;
+  padding: 4px 8px; font-size: 11.5px; white-space: nowrap;
+}
+.ptz-preset-row button:disabled { opacity: .45; cursor: default; }
+.ptz-stop {
+  display: block; width: 100%; margin-top: 6px;
+  color: #fff; background: #b3261e; border: 1px solid #b3261e;
+  font-weight: 800; letter-spacing: .03em;
+}
+.ptz-stop:hover { background: #d1342a; }
+.ptz-msg {
+  min-height: 14px; margin-top: 4px;
+  font-size: 10.5px; line-height: 1.3; color: var(--muted);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 520px) {
+  /* The extra PTZ chip can push the otherwise-atomic tools group past a narrow
+     phone's width. Let the chips wrap within the group (still never scattering
+     across the camera-picker row). */
+  .live-ctl .live-tools { flex-wrap: wrap; justify-content: flex-end; }
+  .ptz-pop { width: 156px; left: 6px; bottom: 6px; padding: 7px; }
+  .ptz-pad { width: 112px; height: 112px; }
+  .ptz-knob { width: 42px; height: 42px; margin: -21px 0 0 -21px; }
+}
+@media (orientation: landscape) and (max-height: 560px) {
+  .ptz-pop { width: 160px; left: 6px; bottom: 6px; }
+  .ptz-pad { width: 108px; height: 108px; }
+}
 
 /* Zoomed frame: the media transform is cosmetic (see app.js). While zoomed the
    frame becomes a grab surface (drag = pan, mouse wheel = zoom) and touch

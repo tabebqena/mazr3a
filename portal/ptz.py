@@ -23,14 +23,20 @@ preset slot; `PTZ_PRESETS_FILE` (default `/media/portal/ptz_presets.json`) is th
 source of truth for the preset NAME + description + camera slot id, namespaced
 per camera.
 
-Portal movement uses `/momentary` pulses so the camera stops itself if the
-portal disappears; `PTZ_HOLD_MAX_S` is a secondary server-side stop.
+Portal movement uses ONVIF ContinuousMove with a camera-enforced Timeout
+(portal/onvif.py); the ISAPI /momentary path remains only as an explicit
+PTZ_MOVE_BACKEND=isapi fallback.
 
-Credentials come from the environment, never this file (per-camera first):
+Credentials come from the environment, never this file.
+ISAPI presets (per-camera first):
     PTZ_USER_<CAM> / PTZ_PASS_<CAM>
     PTZ_USER / PTZ_PASS
     else FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS
     else FRIGATE_RTSP_USER / FRIGATE_RTSP_PASS
+ONVIF movement (per-camera first):
+    PTZ_ONVIF_USER_<CAM> / PTZ_ONVIF_PASS_<CAM>
+    PTZ_ONVIF_USER / PTZ_ONVIF_PASS
+    else ONVIF_USER / ONVIF_PASS
 Camera target/tuning comes from portal.conf (PTZ_* keys, see config/portal.conf).
 PTZ_CAMERA is comma-separated; the portal resolves each host from Frigate
 `/api/config` go2rtc.streams.
@@ -57,6 +63,7 @@ import httpx
 
 from portal import config as pconf
 from portal import frigate
+from portal import onvif as onvif_api
 
 NS = "http://www.hikvision.com/ver20/XMLSchema"
 DEFAULT_CONF = os.environ.get("PORTAL_CONF", "/config/portal.conf")
@@ -703,6 +710,17 @@ def _credentials_for(camera: str) -> tuple[str, str]:
     return user, password
 
 
+def _onvif_credentials_for(camera: str) -> tuple[str, str]:
+    key = _camera_key(camera)
+    user = _env_first(
+        f"PTZ_ONVIF_USER_{key}", "PTZ_ONVIF_USER", "ONVIF_USER",
+    )
+    password = _env_first(
+        f"PTZ_ONVIF_PASS_{key}", "PTZ_ONVIF_PASS", "ONVIF_PASS",
+    )
+    return user, password
+
+
 def _host_from_rtsp(url: str | None) -> str | None:
     if not url or "://" not in url or url.startswith("ffmpeg:"):
         return None
@@ -726,24 +744,45 @@ def _camera_names(cfg: dict) -> list[str]:
 
 
 class PTZService:
-    """One camera's client + manager + movement safety timers."""
+    """One camera's ISAPI preset client + ONVIF movement client."""
 
     def __init__(
         self,
         client: PTZClient,
         manager: PTZManager,
         *,
+        onvif_client: onvif_api.ONVIFClient | None = None,
+        move_backend: str = "onvif",
         hold_max_s: float = 2.0,
         momentary_ms: int = 400,
+        onvif_timeout_s: int = 1,
+        onvif_gap_s: float = 0.0,
     ):
         self.client = client
         self.manager = manager
         self.camera = manager.camera
+        self.onvif = onvif_client
+        self.backend = move_backend if move_backend in (
+            "onvif", "isapi", "momentary") else "onvif"
         self.hold_max_s = max(0.5, float(hold_max_s))
         self.momentary_ms = int(momentary_ms)
+        self.onvif_timeout_s = max(1, int(round(float(onvif_timeout_s))))
+        self.onvif_gap_s = max(0.0, float(onvif_gap_s))
         self._lock = asyncio.Lock()
         self._stop_task: asyncio.Task | None = None
         self._move_seq = 0
+        self._last_onvif_move_at = 0.0
+
+    @property
+    def move_backend(self) -> str:
+        return self.backend
+
+    @property
+    def move_interval_ms(self) -> int:
+        if self.backend == "onvif":
+            return max(200, int(
+                (self.onvif_timeout_s + self.onvif_gap_s) * 1000))
+        return 220
 
     def _cancel_stop_task(self) -> None:
         if self._stop_task is not None:
@@ -766,6 +805,25 @@ class PTZService:
             await self.client.stop()
 
     async def move(self, pan: int, tilt: int = 0, zoom: int = 0) -> None:
+        if self.backend == "onvif":
+            if self.onvif is None:
+                raise PTZError(
+                    "ONVIF credentials are not configured "
+                    "(set PTZ_ONVIF_USER/PTZ_ONVIF_PASS)")
+            async with self._lock:
+                now = time.monotonic()
+                remaining = (
+                    self.onvif_timeout_s
+                    - (now - self._last_onvif_move_at)
+                )
+                if self._last_onvif_move_at and remaining > 0.05:
+                    raise PTZError(
+                        "previous ONVIF pulse is still active; "
+                        f"wait {remaining:.2f}s")
+                await self.onvif.continuous(
+                    pan, tilt, zoom, timeout_s=self.onvif_timeout_s)
+                self._last_onvif_move_at = time.monotonic()
+            return
         async with self._lock:
             await self.client.momentary(
                 pan, tilt, zoom, duration_ms=self.momentary_ms
@@ -775,7 +833,17 @@ class PTZService:
     async def stop(self) -> None:
         async with self._lock:
             self._move_seq += 1
+            self._last_onvif_move_at = 0.0
             self._cancel_stop_task()
+            if self.backend == "onvif" and self.onvif is not None:
+                try:
+                    await self.onvif.stop()
+                    return
+                except Exception:
+                    # Fall back to ISAPI stop; if that also fails, its error
+                    # propagates.
+                    await self.client.stop()
+                    return
             await self.client.stop()
 
     async def list_presets(self, include_camera: bool = True) -> list[dict]:
@@ -798,8 +866,13 @@ class PTZService:
     async def aclose(self) -> None:
         self._move_seq += 1
         self._cancel_stop_task()
+        if self.backend == "onvif" and self.onvif is not None:
+            with contextlib.suppress(Exception):
+                await self.onvif.stop()
         with contextlib.suppress(Exception):
             await self.client.stop()
+        if self.onvif is not None:
+            await self.onvif.aclose()
         await self.client.aclose()
 
 
@@ -864,19 +937,21 @@ class PTZRegistry:
         scheme = pconf.get(self.cfg, "PTZ_SCHEME", "http").strip().lower()
         if scheme not in ("http", "https"):
             scheme = "http"
+        port = pconf.geti(
+            self.cfg, f"PTZ_PORT_{key}", pconf.geti(self.cfg, "PTZ_PORT", 80)
+        )
+        verify_tls = pconf.getb(self.cfg, "PTZ_VERIFY_TLS", False)
         client = PTZClient(
             host,
             user,
             password,
-            port=pconf.geti(
-                self.cfg, f"PTZ_PORT_{key}", pconf.geti(self.cfg, "PTZ_PORT", 80)
-            ),
+            port=port,
             scheme=scheme,
             channel=pconf.geti(
                 self.cfg, f"PTZ_CHANNEL_{key}",
                 pconf.geti(self.cfg, "PTZ_CHANNEL", 1),
             ),
-            verify_tls=pconf.getb(self.cfg, "PTZ_VERIFY_TLS", False),
+            verify_tls=verify_tls,
         )
         manager = PTZManager(client, self.store, camera)
         hold = pconf.get(self.cfg, "PTZ_HOLD_MAX_S", "2")
@@ -885,8 +960,66 @@ class PTZRegistry:
         except (TypeError, ValueError):
             hold_max_s = 2.0
         momentary = pconf.geti(self.cfg, "PTZ_MOMENTARY_MS", 400)
+
+        backend = pconf.get(
+            self.cfg, "PTZ_MOVE_BACKEND", "onvif").strip().lower()
+        if backend not in ("onvif", "isapi", "momentary"):
+            print(
+                f"WARNING: invalid PTZ_MOVE_BACKEND {backend!r}; using onvif",
+                flush=True,
+            )
+            backend = "onvif"
+
+        onvif_client = None
+        onvif_timeout_s = 1
+        onvif_gap_s = 0.0
+        if backend == "onvif":
+            onvif_user, onvif_password = _onvif_credentials_for(camera)
+            if not onvif_user or not onvif_password:
+                print(
+                    f"WARNING: PTZ camera {camera!r} has no ONVIF credentials "
+                    "(set PTZ_ONVIF_USER/PTZ_ONVIF_PASS); movement disabled",
+                    flush=True,
+                )
+            else:
+                profile = pconf.get(
+                    self.cfg, "PTZ_ONVIF_PROFILE", "Profile_1").strip()
+                try:
+                    timeout_raw = float(pconf.get(
+                        self.cfg, "PTZ_ONVIF_TIMEOUT_S", "1"))
+                except (TypeError, ValueError):
+                    timeout_raw = 1.0
+                onvif_timeout_s = max(1, int(round(timeout_raw)))
+                if timeout_raw != onvif_timeout_s:
+                    print(
+                        f"WARNING: PTZ_ONVIF_TIMEOUT_S={timeout_raw:g} rounded "
+                        f"to {onvif_timeout_s}s (whole seconds required)",
+                        flush=True,
+                    )
+                try:
+                    onvif_gap_s = max(0.0, float(pconf.get(
+                        self.cfg, "PTZ_ONVIF_GAP_S", "0")))
+                except (TypeError, ValueError):
+                    onvif_gap_s = 0.0
+                onvif_client = onvif_api.ONVIFClient(
+                    host,
+                    onvif_user,
+                    onvif_password,
+                    port=port,
+                    scheme=scheme,
+                    profile=profile or "Profile_1",
+                    verify_tls=verify_tls,
+                )
+
         return PTZService(
-            client, manager, hold_max_s=hold_max_s, momentary_ms=momentary
+            client,
+            manager,
+            onvif_client=onvif_client,
+            move_backend=backend,
+            hold_max_s=hold_max_s,
+            momentary_ms=momentary,
+            onvif_timeout_s=onvif_timeout_s,
+            onvif_gap_s=onvif_gap_s,
         )
 
     async def services(self) -> dict[str, PTZService]:
@@ -906,6 +1039,16 @@ class PTZRegistry:
 
     async def list_cameras(self) -> list[str]:
         return sorted((await self.services()).keys())
+
+    async def move_info(self) -> dict[str, dict]:
+        services = await self.services()
+        return {
+            camera: {
+                "backend": service.move_backend,
+                "interval_ms": service.move_interval_ms,
+            }
+            for camera, service in services.items()
+        }
 
     async def get(self, camera: str) -> PTZService:
         services = await self.services()

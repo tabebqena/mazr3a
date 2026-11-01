@@ -289,8 +289,10 @@ services:
     env_file:
       - ./portal/.env   # SECRET_KEY (git-ignored; keeps the secret out of config/portal.conf)
       # Camera credentials for the PTZ helper (portal/ptz.py): supplies
-      # FRIGATE_HIK_RTSP_USER/PASS for cam08. Same git-ignored root .env that
-      # Frigate already uses; never put these values in config/portal.conf.
+      # FRIGATE_HIK_RTSP_USER/PASS for ISAPI presets and
+      # PTZ_ONVIF_USER/PTZ_ONVIF_PASS for ONVIF movement. Same git-ignored root
+      # .env that Frigate already uses; never put these values in
+      # config/portal.conf.
       - .env
     environment:
       - PORTAL_CONF=/config/portal.conf

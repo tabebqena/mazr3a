@@ -22,8 +22,8 @@ from fastapi.responses import (
 )
 
 from portal import (
-    auth, config as pconf, eventstore, firestore, frigate, notifstore, ptz,
-    usage, userstore, visitstore,
+    auth, config as pconf, eventstore, firestore, frigate, notifstore, onvif,
+    ptz, usage, userstore, visitstore,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.16"
+APP_VERSION = "0.11.17"
 _HTMX = None
 
 
@@ -478,11 +478,11 @@ def _ptz_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ptz.PresetExists):
         return HTTPException(status_code=409, detail=str(exc))
-    if isinstance(exc, ptz.PTZAuthError):
+    if isinstance(exc, (ptz.PTZAuthError, onvif.ONVIFAuthError)):
         return HTTPException(status_code=502, detail="camera authentication failed")
-    if isinstance(exc, ptz.PTZHTTPError):
+    if isinstance(exc, (ptz.PTZHTTPError, onvif.ONVIFHTTPError)):
         return HTTPException(status_code=502, detail=str(exc))
-    if isinstance(exc, ptz.PTZError):
+    if isinstance(exc, (ptz.PTZError, onvif.ONVIFError)):
         return HTTPException(status_code=502, detail=str(exc))
     return HTTPException(status_code=502, detail="PTZ operation failed")
 
@@ -703,9 +703,9 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
 #
 # Permission: `tab_ptz` (admin implicit). The camera name is always explicit in
 # the request so the same endpoints work for a comma-separated PTZ_CAMERA list.
-# Movement uses /momentary: the camera stops itself after PTZ_MOMENTARY_MS, so a
-# portal crash cannot leave it moving forever (PTZ_HOLD_MAX_S is a secondary
-# server-side stop for the continuous path).
+# Movement uses ONVIF ContinuousMove with a camera-enforced Timeout (one pulse
+# per refresh). This firmware ignores the ISAPI momentary duration; the ISAPI
+# path remains only as PTZ_MOVE_BACKEND=isapi fallback.
 # --------------------------------------------------------------------------
 def _ptz_camera(body: dict) -> str:
     camera = str(body.get("camera") or "").strip()
@@ -734,9 +734,15 @@ async def ptz_info(request: Request, user: dict = Depends(current_ptz)):
         for camera in cameras:
             presets[camera] = await registry.list_presets(
                 camera, include_camera=False)
-    except ptz.PTZError as exc:
+        move = await registry.move_info()
+    except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
-    return {"enabled": True, "cameras": cameras, "presets": presets}
+    return {
+        "enabled": True,
+        "cameras": cameras,
+        "presets": presets,
+        "move": move,
+    }
 
 
 @app.get("/api/ptz/presets")
@@ -747,7 +753,7 @@ async def ptz_presets(request: Request, camera: str = "",
     registry = _ptz_registry(request)
     try:
         items = await registry.list_presets(camera, include_camera=False)
-    except ptz.PTZError as exc:
+    except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
     return {"camera": camera, "presets": items}
 
@@ -763,7 +769,7 @@ async def ptz_move(request: Request, user: dict = Depends(current_ptz)):
     try:
         service = await registry.get(camera)
         await service.move(pan, tilt, zoom)
-    except ptz.PTZError as exc:
+    except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
     return {"ok": True, "camera": camera, "pan": pan, "tilt": tilt}
 
@@ -776,7 +782,7 @@ async def ptz_stop(request: Request, user: dict = Depends(current_ptz)):
     try:
         service = await registry.get(camera)
         await service.stop()
-    except ptz.PTZError as exc:
+    except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
     return {"ok": True, "camera": camera}
 
@@ -791,7 +797,7 @@ async def ptz_preset_add(request: Request, user: dict = Depends(current_ptz)):
     try:
         service = await registry.get(camera)
         preset = await service.add_preset(name, description)
-    except ptz.PTZError as exc:
+    except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
     return {"ok": True, "preset": preset}
 
@@ -805,7 +811,7 @@ async def ptz_preset_goto(request: Request, user: dict = Depends(current_ptz)):
     try:
         service = await registry.get(camera)
         result = await service.goto_preset(name)
-    except ptz.PTZError as exc:
+    except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
     return {"ok": True, "camera": camera, "preset": result}
 

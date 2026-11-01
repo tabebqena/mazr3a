@@ -40,8 +40,9 @@ DEFAULTS = {
     # names. The portal resolves each camera's host from Frigate's
     # go2rtc.streams.<cam> (or PTZ_HOST for a single camera). Credentials are
     # NOT stored here - they come from the environment (FRIGATE_HIK_RTSP_* or
-    # PTZ_USER/PTZ_PASS). The physical preset positions live in camera preset
-    # slots; PTZ_PRESETS_FILE holds our names/metadata (see portal/ptz.py).
+    # PTZ_USER/PTZ_PASS for ISAPI presets; PTZ_ONVIF_USER/PASS for movement).
+    # The physical preset positions live in camera preset slots;
+    # PTZ_PRESETS_FILE holds our names/metadata (see portal/ptz.py).
     "PTZ_ENABLED": "true",
     "PTZ_CAMERA": "cam08",
     "PTZ_HOST": "192.168.1.207",
@@ -49,6 +50,14 @@ DEFAULTS = {
     "PTZ_SCHEME": "http",
     "PTZ_CHANNEL": "1",
     "PTZ_VERIFY_TLS": "false",
+    # ONVIF for movement: one bounded ContinuousMove pulse per refresh, with a
+    # whole-second camera-enforced Timeout. ISAPI momentary is retained only as
+    # an explicit fallback (PTZ_MOVE_BACKEND=isapi) because this firmware
+    # ignores the momentary duration.
+    "PTZ_MOVE_BACKEND": "onvif",
+    "PTZ_ONVIF_PROFILE": "Profile_1",
+    "PTZ_ONVIF_TIMEOUT_S": "1",
+    "PTZ_ONVIF_GAP_S": "0",
     "PTZ_MOMENTARY_MS": "400",
     "PTZ_HOLD_MAX_S": "2",
     "PTZ_PRESETS_FILE": "/media/portal/ptz_presets.json",

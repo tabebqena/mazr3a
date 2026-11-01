@@ -165,16 +165,23 @@ VISITS_DB=/media/visits/visits.db
 # descriptions and slot mapping, namespace per camera. portal/ptz.py does the
 # CRUD and syncs both.
 #
-# CRASH SAFETY: the portal joystick uses /momentary (move for a fixed time and
-# let the camera stop itself) refreshed while the stick is held. PTZ_HOLD_MAX_S
-# is the secondary server-side continuous auto-stop.
+# MOVEMENT SAFETY: this firmware ignores the ISAPI /momentary duration, so the
+# portal moves with ONVIF ContinuousMove and a whole-second, camera-enforced
+# Timeout. The browser sends one bounded pulse, then waits
+# PTZ_ONVIF_TIMEOUT_S + PTZ_ONVIF_GAP_S before the next. If the portal dies, the
+# camera stops itself after the timeout. PTZ_MOVE_BACKEND=isapi is a fallback
+# only (server-side PTZ_HOLD_MAX_S stop), not the recommended mode.
 #
-# Credentials are NEVER in this file. They are read from the environment, in
-# this order:
-#   PTZ_USER_<CAM> / PTZ_PASS_<CAM>                 (per-camera override)
-#   PTZ_USER / PTZ_PASS
-#   FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS   (root .env)
-#   FRIGATE_RTSP_USER / FRIGATE_RTSP_PASS           (fallback)
+# Credentials are NEVER in this file. They are read from the environment:
+#   ISAPI presets:
+#     PTZ_USER_<CAM> / PTZ_PASS_<CAM>                 (per-camera override)
+#     PTZ_USER / PTZ_PASS
+#     FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS   (root .env)
+#     FRIGATE_RTSP_USER / FRIGATE_RTSP_PASS           (fallback)
+#   ONVIF movement (operator/administrator ONVIF account):
+#     PTZ_ONVIF_USER_<CAM> / PTZ_ONVIF_PASS_<CAM>     (per-camera override)
+#     PTZ_ONVIF_USER / PTZ_ONVIF_PASS
+#     ONVIF_USER / ONVIF_PASS                         (fallback)
 # docker-compose passes the root .env to the portal service for this reason.
 #
 # PTZ_SCHEME=http works on this camera (Digest auth). Use https + set
@@ -188,6 +195,10 @@ PTZ_PORT=80
 PTZ_SCHEME=http
 PTZ_CHANNEL=1
 PTZ_VERIFY_TLS=false
+PTZ_MOVE_BACKEND=onvif
+PTZ_ONVIF_PROFILE=Profile_1
+PTZ_ONVIF_TIMEOUT_S=1
+PTZ_ONVIF_GAP_S=0
 PTZ_MOMENTARY_MS=400
 PTZ_HOLD_MAX_S=2
 PTZ_PRESETS_FILE=/media/portal/ptz_presets.json

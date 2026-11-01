@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.16"
+APP_VERSION = "0.11.17"
 _HTMX = None
 
 
@@ -703,9 +703,9 @@ async def cameras(request: Request, user: dict = Depends(current_user)):
 #
 # Permission: `tab_ptz` (admin implicit). The camera name is always explicit in
 # the request so the same endpoints work for a comma-separated PTZ_CAMERA list.
-# Movement uses /momentary: the camera stops itself after PTZ_MOMENTARY_MS, so a
-# portal crash cannot leave it moving forever (PTZ_HOLD_MAX_S is a secondary
-# server-side stop for the continuous path).
+# Movement uses /continuous. The browser refreshes the direction while the
+# joystick is held; PTZ_HOLD_MAX_S is the server-side dead-man timer that stops
+# the camera if those refreshes stop.
 # --------------------------------------------------------------------------
 def _ptz_camera(body: dict) -> str:
     camera = str(body.get("camera") or "").strip()

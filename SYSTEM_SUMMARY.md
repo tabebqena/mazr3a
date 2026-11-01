@@ -12,10 +12,10 @@
 
 | Field | Value |
 |---|---|
-| Summary version | `v53` |
-| Last updated | 2026-10-31 |
+| Summary version | `v54` |
+| Last updated | 2026-11-01 |
 | Repo | `https://github.com/tabebqena/mazr3a` (branch `master`) |
-| Portal `APP_VERSION` | `0.11.16` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
+| Portal `APP_VERSION` | `0.11.17` (see [`portal/app.py`](portal/app.py:44)) — bump on every portal change |
 | Portal PWA | Installable Android app (per-request manifest + fingerprinted icons; **no caching service worker by design**). Needs a Cloudflare Access **Bypass** for the manifest + `/static/icons/*` — see [`plans/portal-android-pwa.md`](plans/portal-android-pwa.md) |
 | Portal notifications | Server-side notification feed + **Notifications** tab with unread badge, browser-Notification gate, and a notification-only `/sw.js` (no fetch/cache handler). See [`plans/portal-notifications.md`](plans/portal-notifications.md) |
 
@@ -150,7 +150,7 @@ with `docker compose up -d` / `docker compose down`.
 | Image | **built** from [`portal/Dockerfile`](portal/Dockerfile) (`python:3.11-slim` + `fastapi`, `uvicorn`, `httpx`, `websockets`); uid 1000 |
 | Purpose | Login (PBKDF2); **Live view** (MSE-over-WebSocket primary, HLS fallback); **Events** (large player fed by a clip strip with playlist auto-advance); **fire alerts** (cards/lightbox with portal-derived motion + burst-hits badges); **legacy scenereader Episodes / Scenes / Scene log** (read-only via [`portal/eventstore.py`](portal/eventstore.py) — the archived store, no longer updated); admin **Debug** tab; runtime account management and per-user bandwidth **usage**; PTZ joystick overlay on Live + preset recall/save + emergency stop (`portal/ptz.py`, `tab_ptz` permission, comma-separated `PTZ_CAMERA`). |
 | Dev files | [`portal/app.py`](portal/app.py) (`APP_VERSION` here), [`portal/auth.py`](portal/auth.py), [`portal/config.py`](portal/config.py), [`portal/frigate.py`](portal/frigate.py), [`portal/firestore.py`](portal/firestore.py), [`portal/eventstore.py`](portal/eventstore.py), [`portal/usage.py`](portal/usage.py), [`portal/notifstore.py`](portal/notifstore.py), [`portal/userstore.py`](portal/userstore.py), [`portal/ptz.py`](portal/ptz.py) (PTZ ISAPI client + external preset store/CLI), [`portal/genpass.py`](portal/genpass.py), [`portal/static/`](portal/static/) (SPA: `index.html`, `app.js`, `style.css`, `sw.js`, `favicon.svg`, `vendor/hls.min.js`), [`portal/requirements.txt`](portal/requirements.txt) |
-| Config | [`config/portal.conf`](config/portal.conf) (tracked default, no secrets; full docs [`config/portal.conf.example`](config/portal.conf.example)); `PTZ_CAMERA` is a comma list of Frigate names (hosts resolved from go2rtc), `PTZ_MOMENTARY_MS`/`PTZ_HOLD_MAX_S` tune movement safety, and `PTZ_PRESETS_FILE` is the external preset JSON path. |
+| Config | [`config/portal.conf`](config/portal.conf) (tracked default, no secrets; full docs [`config/portal.conf.example`](config/portal.conf.example)); `PTZ_CAMERA` is a comma list of Frigate names (hosts resolved from go2rtc), `PTZ_HOLD_MAX_S` is the server dead-man stop for continuous movement, and `PTZ_PRESETS_FILE` is the external preset JSON path. |
 | Ports | `8080` (internal host port for the Cloudflare Tunnel) |
 | Volumes | `./portal:/srv/app/portal:ro` · `./config:/config:ro` · `./media:/media` (rw: SQLite WAL read + the portal's own `media/portal/{usage,users,notifications}.db` + `ptz_presets.json`) |
 | Env | `SECRET_KEY` from `./portal/.env` (`env_file`, git-ignored); root `.env` (`env_file`) supplies `FRIGATE_HIK_RTSP_USER/PASS` to `portal/ptz.py`; `PORTAL_CONF`, `PORTAL_LOGS_API=http://logs:8090`; `PORTAL_USERS_DB`, `PORTAL_USAGE_DB`, `PORTAL_NOTIF_DB` (defaults under `/media/portal/`) |

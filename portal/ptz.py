@@ -23,8 +23,10 @@ preset slot; `PTZ_PRESETS_FILE` (default `/media/portal/ptz_presets.json`) is th
 source of truth for the preset NAME + description + camera slot id, namespaced
 per camera.
 
-Portal movement uses `/momentary` pulses so the camera stops itself if the
-portal disappears; `PTZ_HOLD_MAX_S` is a secondary server-side stop.
+Portal movement uses `/continuous` while the joystick is held. The browser
+refreshes the direction about twice a second, and `PTZ_HOLD_MAX_S` is a
+server-side dead-man timer: if no move request arrives (tab closed, network
+lost), the portal sends a stop.
 
 Credentials come from the environment, never this file (per-camera first):
     PTZ_USER_<CAM> / PTZ_PASS_<CAM>
@@ -734,13 +736,11 @@ class PTZService:
         manager: PTZManager,
         *,
         hold_max_s: float = 2.0,
-        momentary_ms: int = 400,
     ):
         self.client = client
         self.manager = manager
         self.camera = manager.camera
         self.hold_max_s = max(0.5, float(hold_max_s))
-        self.momentary_ms = int(momentary_ms)
         self._lock = asyncio.Lock()
         self._stop_task: asyncio.Task | None = None
         self._move_seq = 0
@@ -750,27 +750,31 @@ class PTZService:
             self._stop_task.cancel()
             self._stop_task = None
 
-    def _schedule_stop(self) -> None:
+    def _schedule_stop(self, seq: int) -> None:
         self._cancel_stop_task()
-        self._move_seq += 1
-        self._stop_task = asyncio.create_task(self._auto_stop(self._move_seq))
+        self._stop_task = asyncio.create_task(self._auto_stop(seq))
 
     async def _auto_stop(self, seq: int) -> None:
         try:
             await asyncio.sleep(self.hold_max_s)
         except asyncio.CancelledError:
             return
-        if seq != self._move_seq:
-            return
-        with contextlib.suppress(Exception):
-            await self.client.stop()
+        async with self._lock:
+            # A newer move may have arrived while the timer was waiting for the
+            # lock. If so, that move owns the next stop timer.
+            if seq != self._move_seq:
+                return
+            with contextlib.suppress(Exception):
+                await self.client.stop()
 
     async def move(self, pan: int, tilt: int = 0, zoom: int = 0) -> None:
         async with self._lock:
-            await self.client.momentary(
-                pan, tilt, zoom, duration_ms=self.momentary_ms
-            )
-            self._schedule_stop()
+            # Bump the generation BEFORE the camera request so an older timer
+            # cannot fire a stop in the middle of this move.
+            self._move_seq += 1
+            seq = self._move_seq
+            await self.client.continuous(pan, tilt, zoom)
+            self._schedule_stop(seq)
 
     async def stop(self) -> None:
         async with self._lock:
@@ -884,10 +888,7 @@ class PTZRegistry:
             hold_max_s = float(hold)
         except (TypeError, ValueError):
             hold_max_s = 2.0
-        momentary = pconf.geti(self.cfg, "PTZ_MOMENTARY_MS", 400)
-        return PTZService(
-            client, manager, hold_max_s=hold_max_s, momentary_ms=momentary
-        )
+        return PTZService(client, manager, hold_max_s=hold_max_s)
 
     async def services(self) -> dict[str, PTZService]:
         async with self._lock:

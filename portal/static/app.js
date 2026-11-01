@@ -27,8 +27,9 @@ const state = {
   // imgLive: the <img> is the poster shown while a live attempt is starting
   //          (or the frozen last frame while an online camera auto-retries).
   // mode: '' | 'mse' | 'hls' | 'offline'
-  ptz: { enabled: false, cameras: [], presets: {}, open: false, drag: null,
-         keep: null, busy: false, moving: false, pending: null, msgTimer: null },
+  ptz: { enabled: false, cameras: [], presets: {}, move: {}, intervalMs: 220,
+         open: false, drag: null, keep: null, busy: false, moving: false,
+         pending: null, msgTimer: null },
   idleSec: 300,
 };
 
@@ -1604,9 +1605,10 @@ async function saveLiveImage() {
 
 /* ---------------- PTZ joystick + presets ----------------
    The overlay is gated by `tab_ptz` AND by the camera being listed in
-   PTZ_CAMERA (the server tells us via GET /api/ptz). Movement uses short
-   /momentary pulses refreshed while the knob is held; pointer-up/cancel,
+   PTZ_CAMERA (the server tells us via GET /api/ptz). Movement uses bounded
+   ONVIF pulses refreshed while the knob is held; pointer-up/cancel,
    camera change, route change and page hide all send an explicit stop. */
+const PTZ_SPEEDS = [1, 5, 11, 23, 29];
 function ptzCanShow(cam) {
   return canPtz() && state.ptz.enabled && !!cam &&
     state.ptz.cameras.indexOf(cam) >= 0;
@@ -1662,6 +1664,8 @@ function syncPtzUI() {
     estop.classList.toggle('hidden', !show);
     estop.disabled = !show;
   }
+  const move = (state.ptz.move && state.ptz.move[cam]) || {};
+  state.ptz.intervalMs = Math.max(200, Number(move.interval_ms) || 220);
   if (state.ptz.open && (!show || !isOnline(cam))) ptzClose(true);
   if (show) ptzRenderPresetSelect();
 }
@@ -1669,6 +1673,7 @@ async function loadPtzInfo() {
   if (!canPtz()) {
     state.ptz.enabled = false;
     state.ptz.cameras = [];
+    state.ptz.move = {};
     syncPtzUI();
     return;
   }
@@ -1677,9 +1682,11 @@ async function loadPtzInfo() {
     state.ptz.enabled = !!data.enabled;
     state.ptz.cameras = data.cameras || [];
     state.ptz.presets = data.presets || {};
+    state.ptz.move = data.move || {};
   } catch (e) {
     state.ptz.enabled = false;
     state.ptz.cameras = [];
+    state.ptz.move = {};
   }
   syncPtzUI();
 }
@@ -1707,7 +1714,7 @@ function ptzOpen() {
 }
 function ptzClearHold() {
   if (state.ptz.keep) {
-    clearInterval(state.ptz.keep);
+    clearTimeout(state.ptz.keep);
     state.ptz.keep = null;
   }
 }
@@ -1719,15 +1726,21 @@ async function ptzSendStop(force) {
   state.ptz.moving = false;
   state.ptz.activeCam = null;
   if (!wasActive || !cam || !ptzCanShow(cam)) return;
-  // If a move request is still in flight, let it land BEFORE the stop so a slow
-  // move cannot arrive after the stop and restart movement.
-  if (state.ptz.pending) {
-    try { await state.ptz.pending; } catch (e) { /* ignore */ }
-  }
-  try {
-    await api('/api/ptz/stop', { method: 'POST', body: { camera: cam } });
-  } catch (e) {
-    if (force) ptzMsg('Emergency stop failed: ' + e.message);
+  const pending = state.ptz.pending;
+  const postStop = async () => {
+    try {
+      await api('/api/ptz/stop', { method: 'POST', body: { camera: cam } });
+    } catch (e) {
+      if (force) ptzMsg('Emergency stop failed: ' + e.message);
+    }
+  };
+  // Send the stop now; the server serializes it behind any in-flight move.
+  // Send it again after that move settles, in case the stop reached the server
+  // first and the move restarted the camera afterwards.
+  await postStop();
+  if (pending) {
+    try { await pending; } catch (e) { /* ignore */ }
+    await postStop();
   }
 }
 function ptzEmergencyStop() {
@@ -1752,7 +1765,7 @@ function ptzClose(stop) {
 }
 async function ptzSendMove(pan, tilt) {
   const cam = state.live.cam;
-  if (!ptzCanShow(cam) || !isOnline(cam) || state.ptz.busy) return;
+  if (!ptzCanShow(cam) || !isOnline(cam) || state.ptz.busy) return false;
   state.ptz.busy = true;
   state.ptz.moving = true;
   state.ptz.activeCam = cam;
@@ -1762,24 +1775,48 @@ async function ptzSendMove(pan, tilt) {
   });
   try {
     await state.ptz.pending;
+    return true;
   } catch (e) {
     ptzMsg('Move failed: ' + e.message);
     ptzClearHold();
     state.ptz.moving = false;
     state.ptz.activeCam = null;
+    return false;
   } finally {
     state.ptz.pending = null;
     state.ptz.busy = false;
   }
 }
+function ptzSpeedForVector(v) {
+  const r = Math.min(1, Math.hypot(v.x, v.y));
+  if (r < 0.12) return 0;
+  const span = (1 - 0.12) / PTZ_SPEEDS.length;
+  const idx = Math.min(
+    PTZ_SPEEDS.length - 1, Math.floor((r - 0.12) / span));
+  return PTZ_SPEEDS[idx];
+}
+function ptzAxesForVector(v) {
+  const len = Math.hypot(v.x, v.y);
+  const speed = ptzSpeedForVector(v);
+  if (!len || !speed) return { pan: 0, tilt: 0 };
+  return {
+    pan: Math.round((v.x / len) * speed),
+    tilt: Math.round((-v.y / len) * speed),
+  };
+}
 function ptzStartHold() {
   if (state.ptz.keep) return;
-  const send = () => {
+  const tick = async () => {
+    state.ptz.keep = null;
+    if (!state.ptz.drag) return;
     const v = (state.ptz.drag && state.ptz.drag.vector) || { x: 0, y: 0 };
-    ptzSendMove(Math.round(v.x * 70), Math.round(-v.y * 70));
+    const axes = ptzAxesForVector(v);
+    const ok = await ptzSendMove(axes.pan, axes.tilt);
+    if (!ok || !state.ptz.drag) return;
+    const delay = Math.max(200, Number(state.ptz.intervalMs) || 220);
+    state.ptz.keep = setTimeout(tick, delay);
   };
-  send();
-  state.ptz.keep = setInterval(send, 220);
+  tick();
 }
 function ptzDrawKnob(x, y) {
   const pad = $('#ptz-pad'), knob = $('#ptz-knob');

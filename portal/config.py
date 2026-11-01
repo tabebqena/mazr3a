@@ -49,6 +49,7 @@ DEFAULTS = {
     "PTZ_SCHEME": "http",
     "PTZ_CHANNEL": "1",
     "PTZ_VERIFY_TLS": "false",
+    "PTZ_MOMENTARY_MS": "400",
     "PTZ_HOLD_MAX_S": "2",
     "PTZ_PRESETS_FILE": "/media/portal/ptz_presets.json",
     # Live view is served SAME-ORIGIN as HLS through the portal:

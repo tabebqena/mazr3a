@@ -165,10 +165,9 @@ VISITS_DB=/media/visits/visits.db
 # descriptions and slot mapping, namespace per camera. portal/ptz.py does the
 # CRUD and syncs both.
 #
-# MOVEMENT SAFETY: the portal joystick uses /continuous while the stick is held
-# and refreshes it about twice a second. PTZ_HOLD_MAX_S is the server-side
-# dead-man timer: if those refreshes stop (tab closed, network lost), the portal
-# sends a camera stop. The emergency-stop button always sends an immediate stop.
+# CRASH SAFETY: the portal joystick uses /momentary (move for a fixed time and
+# let the camera stop itself) refreshed while the stick is held. PTZ_HOLD_MAX_S
+# is the secondary server-side continuous auto-stop.
 #
 # Credentials are NEVER in this file. They are read from the environment, in
 # this order:
@@ -189,5 +188,6 @@ PTZ_PORT=80
 PTZ_SCHEME=http
 PTZ_CHANNEL=1
 PTZ_VERIFY_TLS=false
+PTZ_MOMENTARY_MS=400
 PTZ_HOLD_MAX_S=2
 PTZ_PRESETS_FILE=/media/portal/ptz_presets.json

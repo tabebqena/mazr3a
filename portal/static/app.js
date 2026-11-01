@@ -28,8 +28,7 @@ const state = {
   //          (or the frozen last frame while an online camera auto-retries).
   // mode: '' | 'mse' | 'hls' | 'offline'
   ptz: { enabled: false, cameras: [], presets: {}, open: false, drag: null,
-         keep: null, busy: false, moving: false, pending: null, msgTimer: null,
-         failures: 0 },
+         keep: null, busy: false, moving: false, pending: null, msgTimer: null },
   idleSec: 300,
 };
 
@@ -1605,10 +1604,9 @@ async function saveLiveImage() {
 
 /* ---------------- PTZ joystick + presets ----------------
    The overlay is gated by `tab_ptz` AND by the camera being listed in
-   PTZ_CAMERA (the server tells us via GET /api/ptz). Movement uses /continuous
-   commands refreshed while the knob is held (the server has a dead-man stop);
-   pointer-up/cancel, camera change, route change and page hide all send an
-   explicit stop. */
+   PTZ_CAMERA (the server tells us via GET /api/ptz). Movement uses short
+   /momentary pulses refreshed while the knob is held; pointer-up/cancel,
+   camera change, route change and page hide all send an explicit stop. */
 function ptzCanShow(cam) {
   return canPtz() && state.ptz.enabled && !!cam &&
     state.ptz.cameras.indexOf(cam) >= 0;
@@ -1721,22 +1719,15 @@ async function ptzSendStop(force) {
   state.ptz.moving = false;
   state.ptz.activeCam = null;
   if (!wasActive || !cam || !ptzCanShow(cam)) return;
-  const pending = state.ptz.pending;
-  const postStop = async () => {
-    try {
-      await api('/api/ptz/stop', { method: 'POST', body: { camera: cam } });
-    } catch (e) {
-      if (force) ptzMsg('Emergency stop failed: ' + e.message);
-    }
-  };
-  // Do not make the stop wait for a slow move request. Send it now; the server
-  // serializes it behind that move. Then send a second stop once the move
-  // settles, in case the stop reached the server first and the move restarted
-  // the camera afterwards.
-  await postStop();
-  if (pending) {
-    try { await pending; } catch (e) { /* ignore */ }
-    await postStop();
+  // If a move request is still in flight, let it land BEFORE the stop so a slow
+  // move cannot arrive after the stop and restart movement.
+  if (state.ptz.pending) {
+    try { await state.ptz.pending; } catch (e) { /* ignore */ }
+  }
+  try {
+    await api('/api/ptz/stop', { method: 'POST', body: { camera: cam } });
+  } catch (e) {
+    if (force) ptzMsg('Emergency stop failed: ' + e.message);
   }
 }
 function ptzEmergencyStop() {
@@ -1771,19 +1762,11 @@ async function ptzSendMove(pan, tilt) {
   });
   try {
     await state.ptz.pending;
-    state.ptz.failures = 0;
   } catch (e) {
-    // A single slow/failed request must not kill the whole drag. Retry on the
-    // next tick; give up only after three consecutive failures.
-    state.ptz.failures = (state.ptz.failures || 0) + 1;
-    if (state.ptz.failures >= 3) {
-      ptzMsg('Move failed: ' + e.message);
-      ptzClearHold();
-      state.ptz.moving = false;
-      state.ptz.activeCam = null;
-    } else {
-      ptzMsg('PTZ retry ' + state.ptz.failures + '/3: ' + e.message);
-    }
+    ptzMsg('Move failed: ' + e.message);
+    ptzClearHold();
+    state.ptz.moving = false;
+    state.ptz.activeCam = null;
   } finally {
     state.ptz.pending = null;
     state.ptz.busy = false;
@@ -1791,15 +1774,12 @@ async function ptzSendMove(pan, tilt) {
 }
 function ptzStartHold() {
   if (state.ptz.keep) return;
-  state.ptz.failures = 0;
   const send = () => {
     const v = (state.ptz.drag && state.ptz.drag.vector) || { x: 0, y: 0 };
     ptzSendMove(Math.round(v.x * 70), Math.round(-v.y * 70));
   };
   send();
-  // /continuous keeps the camera moving between requests. 500 ms keeps the
-  // direction responsive while staying under the server's 2 s dead-man timer.
-  state.ptz.keep = setInterval(send, 500);
+  state.ptz.keep = setInterval(send, 220);
 }
 function ptzDrawKnob(x, y) {
   const pad = $('#ptz-pad'), knob = $('#ptz-knob');

@@ -64,6 +64,7 @@ import httpx
 from portal import config as pconf
 from portal import frigate
 from portal import onvif as onvif_api
+from portal import ptzdetect
 
 NS = "http://www.hikvision.com/ver20/XMLSchema"
 DEFAULT_CONF = os.environ.get("PORTAL_CONF", "/config/portal.conf")
@@ -820,9 +821,10 @@ class PTZService:
                     raise PTZError(
                         "previous ONVIF pulse is still active; "
                         f"wait {remaining:.2f}s")
+                started = time.monotonic()
                 await self.onvif.continuous(
                     pan, tilt, zoom, timeout_s=self.onvif_timeout_s)
-                self._last_onvif_move_at = time.monotonic()
+                self._last_onvif_move_at = started
             return
         async with self._lock:
             await self.client.momentary(
@@ -895,7 +897,10 @@ class PTZRegistry:
         self.cfg = cfg
         self._http_client = http_client
         self._frigate_base = frigate_base
-        self.cameras = _camera_names(cfg)
+        self.detected_file = pconf.get(
+            cfg, "PTZ_DETECTED_FILE", ptzdetect.DEFAULT_DETECTED_FILE)
+        self.detected = ptzdetect.load_detected(self.detected_file)
+        self.cameras = self._effective_cameras()
         self.store = PresetStore(
             pconf.get(cfg, "PTZ_PRESETS_FILE", DEFAULT_PRESETS_FILE),
             legacy_camera=self.cameras[0] if self.cameras else "cam08",
@@ -904,29 +909,61 @@ class PTZRegistry:
         self._resolved = False
         self._lock = asyncio.Lock()
 
+    def _effective_cameras(self) -> list[str]:
+        explicit = _camera_names(self.cfg)
+        if explicit:
+            return explicit
+        return sorted((self.detected.get("cameras") or {}).keys())
+
+    def _detected_for(self, camera: str) -> dict:
+        return (self.detected.get("cameras") or {}).get(camera) or {}
+
     async def _resolve_hosts(self) -> dict[str, str]:
         override = pconf.get(self.cfg, "PTZ_HOST", "").strip()
         if len(self.cameras) == 1 and override:
             return {self.cameras[0]: override}
         if not self.cameras:
             return {}
-        if self._http_client is None:
-            raise PTZError("cannot resolve PTZ hosts without a Frigate HTTP client")
-        config = await frigate.fetch_json(
-            self._http_client, self._frigate_base, "/api/config"
-        )
-        streams = (config.get("go2rtc") or {}).get("streams") or {}
+
         hosts = {}
+        missing = []
         for name in self.cameras:
             if not frigate.valid_camera_name(name):
                 print(f"WARNING: PTZ camera name {name!r} is invalid", flush=True)
                 continue
+            detected_host = (self._detected_for(name).get("host") or "").strip()
+            if detected_host:
+                hosts[name] = detected_host
+            else:
+                missing.append(name)
+        if not missing:
+            return hosts
+        if self._http_client is None:
+            if hosts:
+                return hosts
+            raise PTZError("cannot resolve PTZ hosts without a Frigate HTTP client")
+        try:
+            config = await frigate.fetch_json(
+                self._http_client, self._frigate_base, "/api/config"
+            )
+        except Exception as exc:
+            if hosts:
+                print(
+                    f"WARNING: PTZ host resolution via Frigate failed ({exc}); "
+                    "using detected hosts",
+                    flush=True,
+                )
+                return hosts
+            raise
+        streams = (config.get("go2rtc") or {}).get("streams") or {}
+        for name in missing:
             host = _host_from_rtsp(streams.get(name))
             if host:
                 hosts[name] = host
             else:
                 print(
-                    f"WARNING: PTZ camera {name!r} has no usable go2rtc stream host",
+                    f"WARNING: PTZ camera {name!r} has no usable "
+                    "go2rtc stream host",
                     flush=True,
                 )
         return hosts
@@ -982,8 +1019,11 @@ class PTZRegistry:
                     flush=True,
                 )
             else:
-                profile = pconf.get(
-                    self.cfg, "PTZ_ONVIF_PROFILE", "Profile_1").strip()
+                profile = (
+                    pconf.get(self.cfg, "PTZ_ONVIF_PROFILE", "").strip()
+                    or self._detected_for(camera).get("profile")
+                    or "Profile_1"
+                )
                 try:
                     timeout_raw = float(pconf.get(
                         self.cfg, "PTZ_ONVIF_TIMEOUT_S", "1"))
@@ -1062,6 +1102,16 @@ class PTZRegistry:
     ) -> list[dict]:
         service = await self.get(camera)
         return await service.list_presets(include_camera=include_camera)
+
+    async def reload(self) -> None:
+        async with self._lock:
+            services = list(self._services.values())
+            self._services.clear()
+            self._resolved = False
+            self.detected = ptzdetect.load_detected(self.detected_file)
+            self.cameras = self._effective_cameras()
+        for service in services:
+            await service.aclose()
 
     async def close(self) -> None:
         async with self._lock:

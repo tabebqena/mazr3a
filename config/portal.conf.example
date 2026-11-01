@@ -144,18 +144,24 @@ SCENE_JPG_ROOT=/media/scenewatch
 VISITS_DB=/media/visits/visits.db
 
 # ------------------------------------------------------------------
-# PTZ (portal/ptz.py) - Hikvision PT camera control.
+# PTZ (portal/ptz.py + portal/ptzdetect.py + portal/onvif.py) - Hikvision PTZ.
 #
-# PTZ_CAMERA is a COMMA-SEPARATED list of Frigate camera names:
-#     PTZ_CAMERA=cam08
-#     PTZ_CAMERA=cam08,cam10
+# AUTODETECTION: by default the portal probes every Frigate camera host over
+# ONVIF and caches the PTZ camera name/host/profile in PTZ_DETECTED_FILE. It
+# runs once at startup when the cache file is absent (up to ~2 s); Manage can
+# rerun it. Set PTZ_AUTODETECT=false to skip the startup run.
 #
-# For each name the portal resolves the device host from Frigate's
-# /api/config -> go2rtc.streams.<cam> (the RTSP URL's hostname). ISAPI is then
-# reached on PTZ_PORT (default 80), channel PTZ_CHANNEL (default 1). PTZ_HOST
-# is only used as the fallback when exactly ONE camera is configured. You can
-# override per camera with PTZ_PORT_<CAM> / PTZ_CHANNEL_<CAM>, e.g.
-# PTZ_CHANNEL_CAM10=8.
+# PTZ_CAMERA / PTZ_HOST / PTZ_ONVIF_PROFILE are EXPLICIT OVERRIDES:
+#     PTZ_CAMERA=cam08              (or cam08,cam10)
+#     PTZ_HOST=192.168.1.207        (single-camera fallback/override)
+#     PTZ_ONVIF_PROFILE=Profile_1
+# Leave them blank to use the autodetected values. If PTZ_CAMERA is set, the
+# detection cache is still refreshed at startup but the explicit list wins.
+#
+# Without overrides, each camera host comes from the cached detection file,
+# then from Frigate's /api/config -> go2rtc.streams.<cam>. ISAPI is reached on
+# PTZ_PORT (default 80), channel PTZ_CHANNEL (default 1). You can override per
+# camera with PTZ_PORT_<CAM> / PTZ_CHANNEL_<CAM>, e.g. PTZ_CHANNEL_CAM10=8.
 #
 # The camera has pan/tilt and camera-side presets, but NO absolute-position
 # feedback: GET /ISAPI/PTZCtrl/channels/1/status always reports zeros and
@@ -167,9 +173,9 @@ VISITS_DB=/media/visits/visits.db
 #
 # MOVEMENT SAFETY: this firmware ignores the ISAPI /momentary duration, so the
 # portal moves with ONVIF ContinuousMove and a whole-second, camera-enforced
-# Timeout. The browser sends one bounded pulse, then waits
-# PTZ_ONVIF_TIMEOUT_S + PTZ_ONVIF_GAP_S before the next. If the portal dies, the
-# camera stops itself after the timeout. PTZ_MOVE_BACKEND=isapi is a fallback
+# Timeout. While held, the browser repeats one bounded pulse every
+# PTZ_ONVIF_TIMEOUT_S + PTZ_ONVIF_GAP_S; the camera stops itself after the
+# timeout if the portal dies. PTZ_MOVE_BACKEND=isapi is a fallback
 # only (server-side PTZ_HOLD_MAX_S stop), not the recommended mode.
 #
 # Credentials are NEVER in this file. They are read from the environment:
@@ -178,7 +184,7 @@ VISITS_DB=/media/visits/visits.db
 #     PTZ_USER / PTZ_PASS
 #     FRIGATE_HIK_RTSP_USER / FRIGATE_HIK_RTSP_PASS   (root .env)
 #     FRIGATE_RTSP_USER / FRIGATE_RTSP_PASS           (fallback)
-#   ONVIF movement (operator/administrator ONVIF account):
+#   ONVIF detection/movement (operator/administrator ONVIF account):
 #     PTZ_ONVIF_USER_<CAM> / PTZ_ONVIF_PASS_<CAM>     (per-camera override)
 #     PTZ_ONVIF_USER / PTZ_ONVIF_PASS
 #     ONVIF_USER / ONVIF_PASS                         (fallback)
@@ -189,14 +195,17 @@ VISITS_DB=/media/visits/visits.db
 # self-signed cert needs false.
 # ------------------------------------------------------------------
 PTZ_ENABLED=true
-PTZ_CAMERA=cam08
-PTZ_HOST=192.168.1.207
+PTZ_CAMERA=
+PTZ_HOST=
 PTZ_PORT=80
 PTZ_SCHEME=http
 PTZ_CHANNEL=1
 PTZ_VERIFY_TLS=false
+PTZ_AUTODETECT=true
+PTZ_DETECTED_FILE=/media/portal/ptz_detected.json
+PTZ_DETECT_TIMEOUT_S=2
 PTZ_MOVE_BACKEND=onvif
-PTZ_ONVIF_PROFILE=Profile_1
+PTZ_ONVIF_PROFILE=
 PTZ_ONVIF_TIMEOUT_S=1
 PTZ_ONVIF_GAP_S=0
 PTZ_MOMENTARY_MS=400

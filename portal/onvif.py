@@ -147,3 +147,141 @@ class ONVIFClient:
             "</tptz:Stop>"
         )
         await self._post(body)
+
+
+DEVICE_NS = "http://www.onvif.org/ver10/device/wsdl"
+MEDIA_NS = "http://www.onvif.org/ver10/media/wsdl"
+
+
+def _xaddr(root: ET.Element, tag: str) -> str:
+    node = root.find(f".//{{{SCHEMA_NS}}}{tag}/{{{SCHEMA_NS}}}XAddr")
+    return (node.text or "").strip() if node is not None else ""
+
+
+class ONVIFProbe:
+    """Read-only ONVIF capability/profile probe used by autodetection."""
+
+    def __init__(
+        self,
+        host: str,
+        user: str,
+        password: str,
+        *,
+        port: int = 80,
+        scheme: str = "http",
+        verify_tls: bool = False,
+        timeout: float = 2.0,
+    ):
+        if not host:
+            raise ONVIFError("ONVIF host is empty")
+        if not user or not password:
+            raise ONVIFError("ONVIF credentials are missing")
+        scheme = scheme.lower()
+        if scheme not in ("http", "https"):
+            scheme = "http"
+        host_part = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        default_port = 443 if scheme == "https" else 80
+        suffix = "" if int(port) == default_port else f":{int(port)}"
+        self.host = host
+        self.base = f"{scheme}://{host_part}{suffix}"
+        self._client = httpx.AsyncClient(
+            auth=httpx.DigestAuth(user, password),
+            verify=verify_tls,
+            timeout=timeout,
+            follow_redirects=False,
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def __aenter__(self) -> "ONVIFProbe":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.aclose()
+
+    async def _post(self, url: str, body: str) -> ET.Element:
+        try:
+            resp = await self._client.post(
+                url,
+                content=body.encode("utf-8"),
+                headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+            )
+        except httpx.HTTPError as exc:
+            raise ONVIFError(f"camera unreachable: {exc}") from exc
+        if resp.status_code == 401:
+            raise ONVIFAuthError(
+                "camera rejected the configured ONVIF credentials (401)")
+        if resp.status_code != 200:
+            raise ONVIFHTTPError(resp.status_code, _fault_text(resp.text))
+        fault = _fault_text(resp.text)
+        if fault:
+            raise ONVIFError(fault)
+        try:
+            return ET.fromstring(resp.text)
+        except ET.ParseError as exc:
+            raise ONVIFError(f"invalid ONVIF response: {exc}") from exc
+
+    async def detect(self) -> dict | None:
+        device_url = self.base + "/onvif/device_service"
+        caps = await self._post(
+            device_url,
+            _envelope(
+                f'<tds:GetCapabilities xmlns:tds="{DEVICE_NS}">'
+                "<tds:Category>All</tds:Category>"
+                "</tds:GetCapabilities>"
+            ),
+        )
+        media_url = _xaddr(caps, "Media") or self.base + "/onvif/Media"
+        ptz_url = _xaddr(caps, "PTZ") or self.base + "/onvif/PTZ"
+
+        profiles_root = await self._post(
+            media_url,
+            _envelope(
+                f'<trt:GetProfiles xmlns:trt="{MEDIA_NS}"/>'
+            ),
+        )
+        profiles = []
+        for node in profiles_root.findall(
+                f".//{{{MEDIA_NS}}}Profiles"):
+            token = (node.get("token") or "").strip()
+            name = (node.findtext(f"{{{SCHEMA_NS}}}Name") or "").strip()
+            has_ptz = node.find(f"{{{SCHEMA_NS}}}PTZConfiguration") is not None
+            if token:
+                profiles.append(
+                    {"token": token, "name": name, "ptz": has_ptz})
+        ptz_profiles = [p for p in profiles if p["ptz"]]
+        if not ptz_profiles:
+            return None
+        chosen = _pick_profile(ptz_profiles)
+
+        node_token = ""
+        try:
+            nodes_root = await self._post(
+                ptz_url,
+                _envelope(
+                    f'<tptz:GetNodes xmlns:tptz="{PTZ_NS}"/>'
+                ),
+            )
+            node = nodes_root.find(f".//{{{PTZ_NS}}}PTZNode")
+            if node is not None:
+                node_token = (node.get("token") or "").strip()
+        except ONVIFError:
+            pass
+
+        return {
+            "host": self.host,
+            "profile": chosen["token"],
+            "profile_name": chosen["name"],
+            "node": node_token,
+        }
+
+
+def _pick_profile(profiles: list[dict]) -> dict:
+    for wanted in ("profile_1", "mainstream", "main stream", "main"):
+        for profile in profiles:
+            if (profile["token"] or "").lower() == wanted:
+                return profile
+            if (profile["name"] or "").lower() == wanted:
+                return profile
+    return profiles[0]

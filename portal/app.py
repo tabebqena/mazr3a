@@ -23,7 +23,7 @@ from fastapi.responses import (
 
 from portal import (
     auth, config as pconf, eventstore, firestore, frigate, notifstore, onvif,
-    ptz, usage, userstore, visitstore,
+    ptz, ptzdetect, usage, userstore, visitstore,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -41,7 +41,7 @@ COOKIE_NAME = "portal_session"
 # to the static-asset fingerprint below, so bumping it (on every update)
 # rotates the fingerprinted /static/* filenames and forces browsers to load the
 # fresh app.js/style.css instead of a stale cached copy.
-APP_VERSION = "0.11.17"
+APP_VERSION = "0.11.19"
 _HTMX = None
 
 
@@ -73,6 +73,37 @@ async def lifespan(app: FastAPI):
     # a Frigate outage at startup never prevents the portal from booting.
     app.state.ptz = None
     if pconf.getb(cfg, "PTZ_ENABLED", True):
+        detected_file = pconf.get(
+            cfg, "PTZ_DETECTED_FILE", ptzdetect.DEFAULT_DETECTED_FILE)
+        if pconf.getb(cfg, "PTZ_AUTODETECT", True):
+            if os.path.exists(detected_file):
+                print(f"PTZ autodetect: using cached {detected_file}")
+            else:
+                try:
+                    timeout_s = max(0.5, float(pconf.get(
+                        cfg, "PTZ_DETECT_TIMEOUT_S", "2")))
+                except (TypeError, ValueError):
+                    timeout_s = ptzdetect.DEFAULT_TIMEOUT_S
+                try:
+                    result = await asyncio.wait_for(
+                        ptzdetect.detect_and_store(
+                            cfg,
+                            app.state.client,
+                            pconf.get(
+                                cfg, "FRIGATE_API", "http://frigate:5000"),
+                            detected_file,
+                            timeout_s=timeout_s,
+                        ),
+                        timeout=timeout_s + 0.5,
+                    )
+                    print(
+                        "PTZ autodetect: "
+                        f"{len(result.get('cameras') or {})} camera(s) -> "
+                        f"{detected_file}",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    print(f"WARNING: PTZ autodetect failed: {exc}", flush=True)
         app.state.ptz = ptz.PTZRegistry(
             cfg,
             http_client=app.state.client,
@@ -814,6 +845,57 @@ async def ptz_preset_goto(request: Request, user: dict = Depends(current_ptz)):
     except (ptz.PTZError, onvif.ONVIFError) as exc:
         raise _ptz_http_error(exc)
     return {"ok": True, "camera": camera, "preset": result}
+
+
+def _ptz_detect_path(request: Request) -> str:
+    return pconf.get(
+        _cfg(request), "PTZ_DETECTED_FILE", ptzdetect.DEFAULT_DETECTED_FILE)
+
+
+@app.get("/api/admin/ptz/detect")
+async def ptz_detect_info(request: Request, admin: dict = Depends(current_admin)):
+    path = _ptz_detect_path(request)
+    data = ptzdetect.load_detected(path)
+    return {
+        "file": path,
+        "exists": os.path.exists(path),
+        "autodetect": pconf.getb(_cfg(request), "PTZ_AUTODETECT", True),
+        "detected_at": data.get("detected_at"),
+        "cameras": data.get("cameras") or {},
+    }
+
+
+@app.post("/api/admin/ptz/detect")
+async def ptz_detect_run(request: Request, admin: dict = Depends(current_admin)):
+    cfg = _cfg(request)
+    path = _ptz_detect_path(request)
+    try:
+        timeout_s = max(0.5, float(pconf.get(
+            cfg, "PTZ_DETECT_TIMEOUT_S", "2")))
+    except (TypeError, ValueError):
+        timeout_s = ptzdetect.DEFAULT_TIMEOUT_S
+    try:
+        result = await ptzdetect.detect_and_store(
+            cfg,
+            request.app.state.client,
+            pconf.get(cfg, "FRIGATE_API", "http://frigate:5000"),
+            path,
+            timeout_s=timeout_s,
+        )
+    except ptzdetect.PTZDetectError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"PTZ detection failed: {exc}")
+    if request.app.state.ptz is not None:
+        await request.app.state.ptz.reload()
+    return {
+        "ok": True,
+        "file": path,
+        "detected_at": result.get("detected_at"),
+        "cameras": result.get("cameras") or {},
+        "stats": result.get("stats") or {},
+    }
 
 
 # Egress byte kinds recorded by the usage store (portal/usage.py).

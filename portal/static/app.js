@@ -1792,10 +1792,12 @@ function ptzAxesForVector(v) {
   const len = Math.hypot(v.x, v.y);
   const speed = ptzSpeedForVector(v);
   if (!len || !speed) return { pan: 0, tilt: 0 };
-  return {
-    pan: Math.round((v.x / len) * speed),
-    tilt: Math.round((-v.y / len) * speed),
-  };
+  const angle = (Math.atan2(v.x, -v.y) * 180 / Math.PI + 360) % 360;
+  const dir = Math.round(angle / 90) % 4;
+  if (dir === 0) return { pan: 0, tilt: speed };
+  if (dir === 1) return { pan: speed, tilt: 0 };
+  if (dir === 2) return { pan: 0, tilt: -speed };
+  return { pan: -speed, tilt: 0 };
 }
 function ptzFlash(pan, tilt) {
   const flash = (id) => {

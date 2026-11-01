@@ -1656,14 +1656,6 @@ function syncPtzUI() {
   btn.classList.toggle('hidden', !show);
   if (!show) btn.setAttribute('aria-expanded', 'false');
   btn.disabled = !show || !isOnline(cam);
-  // The emergency stop stays available whenever the camera is a PTZ camera,
-  // even if the stream/overlay is closed. It is deliberately NOT tied to the
-  // "online" flag so it can still be sent if the camera is wedged.
-  const estop = $('#live-ptz-stop');
-  if (estop) {
-    estop.classList.toggle('hidden', !show);
-    estop.disabled = !show;
-  }
   const move = (state.ptz.move && state.ptz.move[cam]) || {};
   state.ptz.intervalMs = Math.max(200, Number(move.interval_ms) || 220);
   if (state.ptz.open && (!show || !isOnline(cam))) ptzClose(true);
@@ -1714,7 +1706,7 @@ function ptzOpen() {
 }
 function ptzClearHold() {
   if (state.ptz.keep) {
-    clearTimeout(state.ptz.keep);
+    clearInterval(state.ptz.keep);
     state.ptz.keep = null;
   }
 }
@@ -1775,6 +1767,7 @@ async function ptzSendMove(pan, tilt) {
   });
   try {
     await state.ptz.pending;
+    ptzFlash(pan, tilt);
     return true;
   } catch (e) {
     ptzMsg('Move failed: ' + e.message);
@@ -1804,19 +1797,29 @@ function ptzAxesForVector(v) {
     tilt: Math.round((-v.y / len) * speed),
   };
 }
+function ptzFlash(pan, tilt) {
+  const flash = (id) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.remove('on');
+    void el.offsetWidth;
+    el.classList.add('on');
+  };
+  if (pan < 0) flash('#ptz-flash-left');
+  else if (pan > 0) flash('#ptz-flash-right');
+  if (tilt > 0) flash('#ptz-flash-up');
+  else if (tilt < 0) flash('#ptz-flash-down');
+}
 function ptzStartHold() {
   if (state.ptz.keep) return;
-  const tick = async () => {
-    state.ptz.keep = null;
-    if (!state.ptz.drag) return;
+  const send = () => {
     const v = (state.ptz.drag && state.ptz.drag.vector) || { x: 0, y: 0 };
     const axes = ptzAxesForVector(v);
-    const ok = await ptzSendMove(axes.pan, axes.tilt);
-    if (!ok || !state.ptz.drag) return;
-    const delay = Math.max(200, Number(state.ptz.intervalMs) || 220);
-    state.ptz.keep = setTimeout(tick, delay);
+    ptzSendMove(axes.pan, axes.tilt);
   };
-  tick();
+  send();
+  const delay = Math.max(200, Number(state.ptz.intervalMs) || 220);
+  state.ptz.keep = setInterval(send, delay);
 }
 function ptzDrawKnob(x, y) {
   const pad = $('#ptz-pad'), knob = $('#ptz-knob');
@@ -1875,8 +1878,6 @@ const ptzCloseBtn = $('#ptz-close');
 if (ptzCloseBtn) ptzCloseBtn.addEventListener('click', () => ptzClose(true));
 const ptzStopBtn = $('#ptz-stop');
 if (ptzStopBtn) ptzStopBtn.addEventListener('click', ptzEmergencyStop);
-const livePtzStopBtn = $('#live-ptz-stop');
-if (livePtzStopBtn) livePtzStopBtn.addEventListener('click', ptzEmergencyStop);
 const ptzPadEl = $('#ptz-pad');
 if (ptzPadEl) {
   ptzPadEl.addEventListener('pointerdown', (e) => {
@@ -3261,7 +3262,63 @@ async function loadUsageSelf() {
   renderUsageSelf();
 }
 
-/* Admin: every user's usage, rendered into the Account tab's admin card. */
+/* ---------------- PTZ autodetection (Manage tab) ---------------- */
+function fmtDetectedAt(value) {
+  if (!value) return 'never';
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+function renderPtzDetection(data) {
+  const box = $('#ptz-detect-result');
+  if (!box) return;
+  const cameras = data && data.cameras ? Object.values(data.cameras) : [];
+  if (!cameras.length) {
+    box.innerHTML = '<div class="empty">No PTZ camera detected.</div>' +
+      '<div class="muted">Last run: ' + esc(fmtDetectedAt(data && data.detected_at)) +
+      '</div>';
+    return;
+  }
+  const rows = cameras.map(c =>
+    '<tr><td>' + esc(c.name || '') + '</td>' +
+    '<td>' + esc(c.host || '') + '</td>' +
+    '<td>' + esc(c.profile || '') + '</td>' +
+    '<td>' + esc(c.profile_name || '') + '</td></tr>').join('');
+  box.innerHTML = '<div class="usage-scroll"><table class="usage-table">' +
+    '<thead><tr><th>Camera</th><th>IP / host</th><th>Profile</th>' +
+    '<th>Profile name</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="muted">Detected: ' + esc(fmtDetectedAt(data.detected_at)) +
+    '</div>';
+}
+async function loadPtzDetection() {
+  if (!isAdmin()) return;
+  const msg = $('#ptz-detect-msg');
+  try {
+    const data = await api('/api/admin/ptz/detect');
+    if (msg) msg.textContent = '';
+    renderPtzDetection(data);
+  } catch (e) {
+    if (msg) msg.textContent = e.message;
+  }
+}
+async function runPtzDetection() {
+  const msg = $('#ptz-detect-msg');
+  const btn = $('#ptz-detect-run');
+  if (msg) msg.textContent = 'Detecting PTZ camera…';
+  if (btn) btn.disabled = true;
+  try {
+    const data = await api('/api/admin/ptz/detect', { method: 'POST' });
+    if (msg) msg.textContent = '';
+    renderPtzDetection(data);
+    await loadPtzInfo();
+    toast('PTZ detection complete');
+  } catch (e) {
+    if (msg) msg.textContent = e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* Admin: every user's usage, rendered into the Manage tab's admin card. */
 async function loadAllUsage() {
   const box = $('#mu-all-usage');
   if (!box) return;
@@ -3583,6 +3640,7 @@ async function loadManage() {
   }
   renderManageEdit();
   loadAllUsage();
+  loadPtzDetection();
 }
 
 /* ---- Manage tab wiring ---- */
@@ -3687,6 +3745,7 @@ $('#mu-delete').addEventListener('click', async () => {
   }
 });
 $('#mu-usage-refresh').addEventListener('click', loadAllUsage);
+$('#ptz-detect-run').addEventListener('click', runPtzDetection);
 
 /* ---------------- Account (User) tab ----------------
    Always the SIGNED-IN user's own profile (display name / photo / password) with

@@ -264,9 +264,8 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
    (- / + / reset) and the refresh/restart button (LAST). Every control shares
    one uniform height so the row reads as a single compact toolbar. Buttons are
    NEVER forced full width (mobile override of the generic
-   `button { width: 100% }` rule); on very narrow screens the flex row wraps
-   the WHOLE .live-tools group under the camera name - the zoom control itself
-   never wraps. */
+   `button { width: 100% }` rule). The .live-tools group wraps internally when
+   needed, keeping every control visible without horizontal scrolling. */
 .live-ctl {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: 8px; margin-bottom: 10px;
@@ -282,13 +281,13 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
   overflow: hidden; text-overflow: ellipsis;
   font-weight: 600; background: var(--panel);
 }
-/* Right-hand tool cluster: one atomic group (never wraps internally) so a
-   narrow row drops the whole cluster below the camera name instead of
-   scattering individual buttons across lines. */
+/* Right-hand tool cluster. It wraps internally instead of overflowing, so
+   every control stays visible on narrow screens without horizontal scrolling. */
 .live-ctl .live-tools {
-  flex: 0 0 auto;
-  display: inline-flex; align-items: center;
-  flex-wrap: nowrap; gap: 6px;
+  flex: 0 1 auto;
+  display: flex; align-items: center;
+  flex-wrap: wrap; justify-content: flex-end;
+  gap: 6px; min-width: 0; max-width: 100%;
 }
 /* Compact square icon chips (sound / save): same height as the text buttons
    but a narrow small glyph, so the take-photo button no longer dominates the
@@ -335,16 +334,6 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
   border-color: var(--accent); background: rgba(255,255,255,.08);
   color: var(--accent);
 }
-/* Emergency stop: red and always available on a PTZ camera, even when the
-   joystick overlay is closed. */
-.live-ctl #live-ptz-stop {
-  flex: 0 0 auto; width: 48px; padding: 0;
-  text-align: center; font-size: 10.5px; font-weight: 800;
-  letter-spacing: .03em;
-  color: #fff; background: #b3261e; border-color: #b3261e;
-}
-.live-ctl #live-ptz-stop:hover:not(:disabled) { background: #d1342a; }
-
 /* ============ PTZ joystick overlay (inside #live-stage) ============
    Small translucent panel pinned bottom-left. The pad owns all pointer
    gestures (touch-action:none); the stage's swipe/pinch handlers ignore
@@ -429,11 +418,29 @@ main { max-width: var(--content); margin: 0 auto; padding: 12px; }
   font-size: 10.5px; line-height: 1.3; color: var(--muted);
   overflow-wrap: anywhere;
 }
+/* PTZ edge arrows: flash on each successful joystick move response. */
+.ptz-flash {
+  position: absolute; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%;
+  pointer-events: none; opacity: 0;
+  color: #fff; font-size: 16px; line-height: 1;
+  background: rgba(12,16,20,.72);
+  border: 1px solid rgba(255,255,255,.35);
+  box-shadow: 0 2px 12px rgba(0,0,0,.45);
+}
+.ptz-flash.on { animation: ptzFlash .55s ease-out; }
+.ptz-flash-up { top: 10px; left: 50%; margin-left: -17px; }
+.ptz-flash-down { bottom: 10px; left: 50%; margin-left: -17px; }
+.ptz-flash-left { left: 10px; top: 50%; margin-top: -17px; }
+.ptz-flash-right { right: 10px; top: 50%; margin-top: -17px; }
+@keyframes ptzFlash {
+  0% { opacity: 0; transform: scale(.7); }
+  20% { opacity: 1; transform: scale(1); }
+  75% { opacity: .9; transform: scale(1.05); }
+  100% { opacity: 0; transform: scale(1.15); }
+}
 @media (max-width: 520px) {
-  /* The extra PTZ chip can push the otherwise-atomic tools group past a narrow
-     phone's width. Let the chips wrap within the group (still never scattering
-     across the camera-picker row). */
-  .live-ctl .live-tools { flex-wrap: wrap; justify-content: flex-end; }
   .ptz-pop { width: 156px; left: 6px; bottom: 6px; padding: 7px; }
   .ptz-pad { width: 112px; height: 112px; }
   .ptz-knob { width: 42px; height: 42px; margin: -21px 0 0 -21px; }

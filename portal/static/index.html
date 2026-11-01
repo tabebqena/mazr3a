@@ -122,8 +122,8 @@
                It flexes to fill the spare width, pushing the .live-tools group
                to the far end.
                Buttons are never forced full width on phones - they size to
-               their content and, on very narrow screens, the whole .live-tools
-               group wraps BELOW the camera name as ONE unit (never scattered). -->
+               their content and the .live-tools group wraps internally when
+               needed, so every control stays visible without horizontal scroll. -->
           <button id="cam-picker" type="button"
                   title="Select camera" aria-label="Select camera"
                   aria-haspopup="dialog"></button>
@@ -149,9 +149,6 @@
             <button id="live-ptz" type="button" class="hidden"
                     title="PTZ control" aria-label="PTZ control"
                     aria-expanded="false" aria-controls="ptz-pop">PTZ</button>
-            <button id="live-ptz-stop" type="button" class="ptz-estop hidden"
-                    title="Emergency stop PTZ"
-                    aria-label="Emergency stop PTZ">STOP</button>
 
             <!-- Zoom controls: +/- step around the frame centre + a reset. When
                  zoomed, drag the picture to pan (and use the mouse wheel to zoom
@@ -193,6 +190,14 @@
         </div>
         <div id="live-stage" class="stage">
           <div id="live-cam-tag" class="cam-tag"></div>
+          <span id="ptz-flash-up" class="ptz-flash ptz-flash-up"
+                aria-hidden="true">&#9650;</span>
+          <span id="ptz-flash-down" class="ptz-flash ptz-flash-down"
+                aria-hidden="true">&#9660;</span>
+          <span id="ptz-flash-left" class="ptz-flash ptz-flash-left"
+                aria-hidden="true">&#9664;</span>
+          <span id="ptz-flash-right" class="ptz-flash ptz-flash-right"
+                aria-hidden="true">&#9654;</span>
           <div id="live-spinner" class="spinner hidden" title="Connecting…"></div>
           <video id="live-video" autoplay muted playsinline class="hidden"></video>
           <img id="live-img" alt="live camera" class="hidden">
@@ -551,8 +556,9 @@
       <!-- Admin-only Manage tab. The FIRST card manages users: add an account
            by username + password, then SELECT a user in the list to edit their
            password and check the tab_* permissions they get. The second card
-           shows every user's bandwidth usage. Accounts live in the portal's own
-           users DB, so every change applies immediately (no container restart). -->
+           runs PTZ autodetection; the third shows every user's bandwidth usage.
+           Accounts live in the portal's own users DB, so every change applies
+           immediately (no container restart). -->
       <section id="view-manage" class="view hidden">
         <!-- Card 1: manage users -->
         <div class="card user-card">
@@ -622,7 +628,18 @@
           </div>
         </div>
 
-        <!-- Card 2: every user's bandwidth usage -->
+        <!-- Card 2: PTZ camera autodetection -->
+        <div class="card user-card">
+          <div class="user-card-head">
+            <span>PTZ camera detection</span>
+            <button id="ptz-detect-run" type="button" class="ghost">
+              Detect now</button>
+          </div>
+          <div id="ptz-detect-msg" class="status"></div>
+          <div id="ptz-detect-result" class="usage-body"></div>
+        </div>
+
+        <!-- Card 3: every user's bandwidth usage -->
         <div class="card user-card">
           <div class="user-card-head">
             <span>All users &middot; usage</span>
